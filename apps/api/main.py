@@ -135,6 +135,10 @@ def health_ready() -> dict:
     except Exception as exc:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Storage is not ready.") from exc
 
+def readable_rows() -> list[dict]:
+    if customer_db is None: return list(repo.customers.values())
+    return [{"bcn": item.bcn, "name": item.name, "ownerId": item.owner_id, "ownerName": repo.users.get(item.owner_id or "", {}).get("name"), "status": item.status, "phones": [], "source": item.source, "version": item.version, "histories": []} for item in customer_db.all()]
+
 
 @app.middleware("http")
 async def origin_guard(request: Request, call_next):
@@ -206,7 +210,7 @@ def sample_records(_: Annotated[User, Depends(current_user)]) -> list[dict]:
 
 @app.get("/customers", response_model=CustomerPage)
 def list_customers(user: Annotated[User, Depends(current_user)], page: int = Query(1, ge=1), page_size: int = Query(25, ge=1, le=100), mine: bool = False, q: str = "", status_filter: str | None = Query(None, alias="status"), owner: str | None = None) -> CustomerPage:
-    rows = [{"bcn": item.bcn, "name": item.name, "ownerId": item.owner_id, "ownerName": repo.users.get(item.owner_id or "", {}).get("name"), "status": item.status, "phones": [], "source": item.source, "version": item.version, "histories": []} for item in customer_db.all()] if customer_db is not None else list(repo.customers.values())
+    rows = readable_rows()
     if mine: rows = [row for row in rows if row["ownerId"] == user.id]
     if q: rows = [row for row in rows if q.casefold() in f"{row['bcn']} {row['name']} {' '.join(row.get('phones', []))}".casefold()]
     if status_filter: rows = [row for row in rows if row["status"] == status_filter]
@@ -556,20 +560,20 @@ def run_assignment_contract(body: AssignmentRunRequest, user: Annotated[User, De
 @app.get("/sales/workload")
 def sales_workload(user: Annotated[User, Depends(current_user)]) -> dict:
     if user.role != "Sales": raise HTTPException(status.HTTP_403_FORBIDDEN, "Sales access required.")
-    owned = [row for row in repo.customers.values() if row["ownerId"] == user.id and row["status"] == "Open"]
+    owned = [row for row in readable_rows() if row["ownerId"] == user.id and row["status"] == "Open"]
     return {"ownerId": user.id, "totalOpen": len(owned), "neverContacted": sum(1 for row in owned if not any(item.get("kind") == "Interaction" and not item.get("deleted") for item in row["histories"])), "pendingFollowUps": sum(1 for item in repo.followups.values() if item["bcn"] in {row["bcn"] for row in owned} and item["status"] == "Open")}
 
 @app.get("/workload")
 def workload_contract(user: Annotated[User, Depends(current_user)]) -> dict:
     if user.role != "Sales": raise HTTPException(status.HTTP_403_FORBIDDEN, "Sales access required.")
-    owned = [row for row in repo.customers.values() if row["ownerId"] == user.id and row["status"] == "Open"]
+    owned = [row for row in readable_rows() if row["ownerId"] == user.id and row["status"] == "Open"]
     return {"asOf": datetime.now(timezone.utc).isoformat(), "today": datetime.now(timezone.utc).date().isoformat(), "counts": {"overdue": 0, "today": 0, "undated": 0, "never-contacted": sum(1 for row in owned if not any(event.get("kind") == "Interaction" and not event.get("deleted") for event in row["histories"])), "other": 0}, "customers": [Customer.model_validate(row).model_dump() | {"workloadBucket": None, "relevantDue": None} for row in owned]}
 
 @app.get("/admin/reports")
 def admin_reports(start: str | None = None, end: str | None = None, _: Annotated[User, Depends(admin_user)] = None) -> dict:
     if start and end and start > end: raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Start date must not be after end date.")
     owners: dict[str, dict] = {}; daily: dict[str, dict] = {}
-    for row in repo.customers.values():
+    for row in readable_rows():
         key = row["ownerId"] or "unassigned"; bucket = owners.setdefault(key, {"ownerId": row["ownerId"], "owner": repo.users.get(key, {}).get("name", "Unassigned"), "open": 0, "closed": 0, "neverContacted": 0, "attempts": 0, "contacts": 0, "pendingFollowUps": 0})
         bucket["open" if row["status"] == "Open" else "closed"] += 1
         if row["status"] == "Open" and not any(event.get("kind") == "Interaction" and not event.get("deleted") for event in row["histories"]): bucket["neverContacted"] += 1

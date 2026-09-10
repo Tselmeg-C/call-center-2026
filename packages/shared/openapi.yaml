@@ -1,0 +1,86 @@
+openapi: 3.1.0
+info:
+  title: Call Center Sales API
+  version: 0.1.0
+  description: Sales/session contract derived from the in-memory service adapter.
+servers:
+  - url: https://example.invalid
+paths:
+  /session/login:
+    post:
+      operationId: login
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/LoginRequest' }, example: { email: river@example.test, password: synthetic-only } } }
+      responses: { '200': { description: Signed in, content: { application/json: { schema: { $ref: '#/components/schemas/User' } } } }, '401': { $ref: '#/components/responses/Unauthenticated' }, '422': { $ref: '#/components/responses/Validation' } }
+  /session/logout:
+    post:
+      operationId: logout
+      responses: { '204': { description: Signed out }, '401': { $ref: '#/components/responses/Unauthenticated' } }
+  /session/me:
+    get:
+      operationId: currentUser
+      responses: { '200': { description: Current user, content: { application/json: { schema: { $ref: '#/components/schemas/User' } } } }, '401': { $ref: '#/components/responses/Unauthenticated' } }
+  /customers:
+    get:
+      operationId: listCustomers
+      parameters: [ { $ref: '#/components/parameters/Page' }, { $ref: '#/components/parameters/PageSize' }, { name: status, in: query, schema: { type: string, enum: [Open, Closed] } } ]
+      responses: { '200': { description: Customers, content: { application/json: { schema: { $ref: '#/components/schemas/CustomerPage' } } } }, '401': { $ref: '#/components/responses/Unauthenticated' } }
+  /customers/{bcn}:
+    parameters: [ { $ref: '#/components/parameters/Bcn' } ]
+    get:
+      operationId: getCustomer
+      responses: { '200': { description: Customer detail, content: { application/json: { schema: { $ref: '#/components/schemas/CustomerDetail' } } } }, '401': { $ref: '#/components/responses/Unauthenticated' }, '404': { $ref: '#/components/responses/NotFound' } }
+  /customers/{bcn}/interactions:
+    post:
+      operationId: createInteraction
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/InteractionRequest' } } } }
+      responses: { '201': { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/History' } } } }, '401': { $ref: '#/components/responses/Unauthenticated' }, '403': { $ref: '#/components/responses/Forbidden' }, '409': { $ref: '#/components/responses/Conflict' }, '422': { $ref: '#/components/responses/Validation' } }
+  /customers/{bcn}/notes:
+    post:
+      operationId: createNote
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/NoteRequest' } } } }
+      responses: { '201': { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/History' } } } }, '401': { $ref: '#/components/responses/Unauthenticated' }, '403': { $ref: '#/components/responses/Forbidden' }, '422': { $ref: '#/components/responses/Validation' } }
+  /customers/{bcn}/history/{id}:
+    delete:
+      operationId: deleteHistory
+      parameters: [ { $ref: '#/components/parameters/Bcn' }, { name: id, in: path, required: true, schema: { type: string } } ]
+      responses: { '200': { description: Tombstone, content: { application/json: { schema: { $ref: '#/components/schemas/History' } } } }, '401': { $ref: '#/components/responses/Unauthenticated' }, '403': { $ref: '#/components/responses/Forbidden' }, '404': { $ref: '#/components/responses/NotFound' } }
+  /workload:
+    get:
+      operationId: workload
+      responses: { '200': { description: Workload, content: { application/json: { schema: { $ref: '#/components/schemas/Workload' } } } }, '401': { $ref: '#/components/responses/Unauthenticated' } }
+  /customers/{bcn}/close:
+    post:
+      operationId: closeCustomer
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/LifecycleRequest' } } } }
+      responses: { '200': { description: Closed }, '401': { $ref: '#/components/responses/Unauthenticated' }, '409': { $ref: '#/components/responses/Conflict' }, '422': { $ref: '#/components/responses/Validation' } }
+  /customers/{bcn}/reopen:
+    post:
+      operationId: reopenCustomer
+      requestBody: { required: false, content: { application/json: { schema: { $ref: '#/components/schemas/MutationMeta' } } } }
+      responses: { '200': { description: Reopened }, '401': { $ref: '#/components/responses/Unauthenticated' }, '409': { $ref: '#/components/responses/Conflict' } }
+components:
+  parameters:
+    Bcn: { name: bcn, in: path, required: true, schema: { type: string, pattern: '^[0-9]{6,}$' } }
+    Page: { name: page, in: query, schema: { type: integer, minimum: 1, default: 1 } }
+    PageSize: { name: page_size, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 25 } }
+  responses:
+    Unauthenticated: { description: Unauthenticated, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+    Forbidden: { description: Forbidden, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+    NotFound: { description: Not found, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+    Conflict: { description: Conflict, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+    Validation: { description: Validation error, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+  schemas:
+    User: { type: object, required: [id, name, role], properties: { id: { type: string }, name: { type: string }, email: { type: string, format: email }, role: { type: string, enum: [Admin, Sales] }, active: { type: boolean } }, additionalProperties: false }
+    LoginRequest: { type: object, required: [email, password], properties: { email: { type: string, format: email }, password: { type: string, writeOnly: true } }, additionalProperties: false }
+    MutationMeta: { type: object, required: [submissionId], properties: { submissionId: { type: string, minLength: 1 }, expectedVersion: { type: string } }, additionalProperties: false }
+    Customer: { type: object, required: [bcn, name, status], properties: { bcn: { type: string }, name: { type: string }, ownerId: { type: [string, 'null'] }, ownerName: { type: [string, 'null'] }, status: { type: string, enum: [Open, Closed] } }, additionalProperties: false }
+    CustomerDetail: { allOf: [{ $ref: '#/components/schemas/Customer' }, { type: object, properties: { histories: { type: array, items: { $ref: '#/components/schemas/History' } } } }] }
+    CustomerPage: { type: object, required: [items, page, page_size, total], properties: { items: { type: array, items: { $ref: '#/components/schemas/Customer' } }, page: { type: integer }, page_size: { type: integer }, total: { type: integer } }, additionalProperties: false }
+    History: { type: object, required: [id, kind, actor, timestamp], properties: { id: { type: string }, kind: { type: string }, actor: { type: string }, timestamp: { type: string, format: date-time }, text: { type: [string, 'null'] }, deleted: { type: boolean } }, additionalProperties: false }
+    InteractionRequest: { allOf: [{ $ref: '#/components/schemas/MutationMeta' }, { type: object, required: [outcome], properties: { outcome: { type: string, enum: [Attempt, Contact] }, note: { type: [string, 'null'], maxLength: 4000 } }, additionalProperties: false }] }
+    NoteRequest: { allOf: [{ $ref: '#/components/schemas/MutationMeta' }, { type: object, required: [text], properties: { text: { type: string, minLength: 1, maxLength: 4000 } }, additionalProperties: false }] }
+    LifecycleRequest: { allOf: [{ $ref: '#/components/schemas/MutationMeta' }, { type: object, required: [reasonId], properties: { reasonId: { type: string } }, additionalProperties: false }] }
+    Workload: { type: object, required: [asOf, today, counts, customers], properties: { asOf: { type: string, format: date-time }, today: { type: string, format: date }, counts: { type: object, additionalProperties: { type: integer } }, customers: { type: array, items: { $ref: '#/components/schemas/Customer' } } }, additionalProperties: false }
+    Error: { type: object, required: [code, message, requestId], properties: { code: { type: string }, message: { type: string }, requestId: { type: string }, fieldErrors: { type: object, additionalProperties: { type: array, items: { type: string } } } }, additionalProperties: false }

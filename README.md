@@ -40,6 +40,7 @@ Interaction and note permissions, validation, idempotency, and soft deletion are
 Follow-up validation, lifecycle transitions, UTC semantics, and next-action rules are documented in [`_docs/follow-ups-lifecycle.md`](_docs/follow-ups-lifecycle.md).
 Administration and authentication policies are documented in [`_docs/administration.md`](_docs/administration.md) and [`_docs/authentication.md`](_docs/authentication.md).
 Import, assignment, and reporting/audit definitions are documented in [`_docs/excel-import.md`](_docs/excel-import.md), [`_docs/assignment.md`](_docs/assignment.md), and [`_docs/reporting-audit.md`](_docs/reporting-audit.md).
+The Sales OpenAPI contract and service mapping are documented in [`_docs/api-contract.md`](_docs/api-contract.md), [`packages/shared/openapi.yaml`](packages/shared/openapi.yaml), and [`packages/shared/service-map.md`](packages/shared/service-map.md).
 
 ## Checks
 

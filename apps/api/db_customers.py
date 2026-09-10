@@ -31,10 +31,12 @@ class CustomerDatabase:
             row = session.get(CustomerRow, bcn)
             if row is None: row = CustomerRow(bcn=bcn, name=name or bcn, status="Open", source={}); session.add(row)
             row.name = name or row.name; row.source = source
-            if primary_phone is not None:
-                existing = session.scalars(select(PhoneRow).where(PhoneRow.bcn == bcn, PhoneRow.primary.is_(True))).first()
+            existing = session.scalars(select(PhoneRow).where(PhoneRow.bcn == bcn, PhoneRow.primary.is_(True))).first()
+            if primary_phone:
                 if existing: existing.phone = primary_phone
                 else: session.add(PhoneRow(bcn=bcn, phone=primary_phone, primary=True))
+            elif existing:
+                session.delete(existing)
             session.commit(); session.refresh(row); return row
 
     def upsert_sources(self, records: list[dict]) -> None:

@@ -1,10 +1,10 @@
 import type { MockControls, Result, Services, User, Customer, CustomerDetail, HistoryRecord, FollowUp, ClosureReason, ReportData, AuditEvent, WorkloadData, AssignmentRule, AssignmentRunResult, AssignmentRunInput, CreateInteractionInput, CreateNoteInput, FollowUpInput, UpdateFollowUpInput, CompleteFollowUpInput, LifecycleInput, UserDraft, ImportInput, ImportResult, AssignmentResult } from "./types";
 
 const base = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
-const failure = <T>(message = "Request failed."): Result<T> => ({ ok: false, error: { code: "request-failure", message } });
-const mapError = (status: number) => status === 401 ? "Authentication required." : status === 403 ? "Access denied." : status === 404 ? "Not found." : status === 409 ? "Conflict. Refresh and retry." : status === 422 ? "Invalid request." : "Request failed.";
+const failure = <T>(message = "Request failed.", code: "unauthenticated" | "forbidden" | "request-failure" | "validation" | "conflict" = "request-failure"): Result<T> => ({ ok: false, error: { code, message } });
+const mapError = (status: number): [string, "unauthenticated" | "forbidden" | "request-failure" | "validation" | "conflict"] => status === 401 ? ["Authentication required.", "unauthenticated"] : status === 403 ? ["Access denied.", "forbidden"] : status === 404 ? ["Not found.", "request-failure"] : status === 409 ? ["Conflict. Refresh and retry.", "conflict"] : status === 422 ? ["Invalid request.", "validation"] : ["Request failed.", "request-failure"];
 async function request<T>(path: string, init?: RequestInit): Promise<Result<T>> {
-  try { const response = await fetch(`${base}${path}`, { credentials: "include", ...init, headers: { ...(init?.body instanceof FormData ? {} : { "content-type": "application/json" }), ...init?.headers } }); if (!response.ok) return failure(mapError(response.status)); return { ok: true, data: await response.json() as T }; } catch { return failure("Network request failed."); }
+  try { const response = await fetch(`${base}${path}`, { credentials: "include", ...init, headers: { ...(init?.body instanceof FormData ? {} : { "content-type": "application/json" }), ...init?.headers } }); if (!response.ok) { const [message, code] = mapError(response.status); return failure(message, code); } return { ok: true, data: await response.json() as T }; } catch { return failure("Network request failed."); }
 }
 const body = (value: unknown): RequestInit => ({ method: "POST", body: JSON.stringify(value) });
 const customer = (bcn: string) => encodeURIComponent(bcn);

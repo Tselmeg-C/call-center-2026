@@ -2,6 +2,7 @@ from datetime import datetime, timedelta, timezone
 from copy import deepcopy
 from contextlib import contextmanager
 from secrets import token_urlsafe
+from uuid import uuid4
 from typing import Annotated
 
 from fastapi import Cookie, Depends, FastAPI, HTTPException, Query, Request, Response, UploadFile, File, status
@@ -70,11 +71,12 @@ class MemoryRepo:
         self.followups: dict[str, dict] = {}
         self.rules: list[dict] = []
         self.assignment_runs: dict[str, dict] = {}
+        self.login_failures: dict[tuple[str, str], list[datetime]] = {}
         self.imports: dict[str, dict] = {}
         self.reset()
 
     def reset(self) -> None:
-        self.users.clear(); self.sessions.clear(); self.submissions.clear(); self.interactions.clear(); self.notes.clear(); self.followups.clear(); self.imports.clear(); self.rules.clear(); self.assignment_runs.clear(); self.reasons = {"closure-1": {"id": "closure-1", "label": "Won", "active": True}}
+        self.users.clear(); self.sessions.clear(); self.submissions.clear(); self.interactions.clear(); self.notes.clear(); self.followups.clear(); self.imports.clear(); self.rules.clear(); self.assignment_runs.clear(); self.login_failures.clear(); self.reasons = {"closure-1": {"id": "closure-1", "label": "Won", "active": True}}
         self.customers = {
             "000123": {"bcn": "000123", "name": "Acme North", "ownerId": "sales-river", "ownerName": "River Sales", "status": "Open", "phones": ["(555) 010-0101"], "source": {"propensity_score": 0.98}, "version": 0, "histories": []},
             "000124": {"bcn": "000124", "name": "Acme North", "ownerId": "sales-sky", "ownerName": "Sky Sales", "status": "Closed", "phones": ["555 010 0103"], "source": {"propensity_score": 0.7}, "version": 0, "histories": []},
@@ -109,7 +111,9 @@ async def origin_guard(request: Request, call_next):
         referer = request.headers.get("referer", "")
         if origin not in {"http://localhost:3000", "http://127.0.0.1:3000"} and not referer.startswith("http://localhost:3000/") and not referer.startswith("http://127.0.0.1:3000/"):
             return Response("Origin not allowed.", status_code=403, media_type="application/json")
-    return await call_next(request)
+    response = await call_next(request)
+    response.headers["x-request-id"] = request.headers.get("x-request-id", str(uuid4()))[:128]
+    return response
 
 
 def safe_email(value: str) -> str:
@@ -128,9 +132,16 @@ def current_user(session: Annotated[str | None, Cookie(alias="call_center_sessio
 
 @app.post("/session/login", response_model=User)
 def login(body: Login, request: Request, response: Response) -> User:
+    now = datetime.now(timezone.utc); ip = request.client.host if request.client else "unknown"; key = (safe_email(body.email), ip)
+    recent = [stamp for stamp in repo.login_failures.get(key, []) if now - stamp < timedelta(minutes=15)]
+    if len(recent) >= 5:
+        response.headers["retry-after"] = "900"
+        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "Too many sign-in attempts.")
     record = next((u for u in repo.users.values() if u["email"] == safe_email(body.email)), None)
     if not record or not record["active"] or not password_hash.verify(body.password, record["password"]):
+        repo.login_failures[key] = recent + [now]
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Unable to sign in.")
+    repo.login_failures.pop(key, None)
     token = token_urlsafe(32); repo.sessions[token] = (record["id"], datetime.now(timezone.utc) + timedelta(seconds=SESSION_SECONDS))
     response.set_cookie("call_center_session", token, httponly=True, samesite="lax", secure=request.url.hostname not in {"localhost", "127.0.0.1"}, path="/", max_age=SESSION_SECONDS)
     return User.model_validate(record)

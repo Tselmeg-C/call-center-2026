@@ -55,3 +55,10 @@ class CustomerDatabase:
 
     def get(self, bcn: str) -> CustomerRow | None:
         with Session(self.engine) as session: return session.get(CustomerRow, bcn)
+
+    def save_operational(self, *, bcn: str, owner_id: str | None, status: str, version: int) -> None:
+        with Session(self.engine) as session:
+            row = session.get(CustomerRow, bcn)
+            if row:
+                row.owner_id, row.status, row.version = owner_id, status, version
+                session.commit()

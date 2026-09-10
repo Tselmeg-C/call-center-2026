@@ -254,12 +254,22 @@ def customer_history(bcn: str, user: Annotated[User, Depends(current_user)], pag
         rows, total = activity_db.history(bcn, page, page_size)
         return {"items": [{"id": item.id, "bcn": item.bcn, "kind": item.kind, "outcome": item.outcome, "text": None if item.deleted_at else item.text, "actorId": item.actor_id, "timestamp": item.created_at.isoformat(), "deleted": item.deleted_at is not None} for item in rows], "page": page, "page_size": page_size, "total": total}
     row = repo.customers.get(bcn)
+    if row is None and customer_db is not None:
+        stored = customer_db.get(bcn)
+        if stored:
+            row = {"bcn": stored.bcn, "name": stored.name, "ownerId": stored.owner_id, "ownerName": repo.users.get(stored.owner_id or "", {}).get("name"), "status": stored.status, "phones": [], "source": stored.source, "version": stored.version, "histories": []}; repo.customers[bcn] = row
     if not row: raise HTTPException(status.HTTP_404_NOT_FOUND, "Customer not found.")
     events = row["histories"]; start = (page - 1) * page_size
     return {"items": events[start:start + page_size], "page": page, "page_size": page_size, "total": len(events)}
 
 def writable_customer(bcn: str, user: User) -> dict:
     row = repo.customers.get(bcn)
+    if row is None and customer_db is not None:
+        stored = customer_db.get(bcn)
+        if stored:
+            history = []
+            if activity_db is not None: history = [{"id": item.id, "bcn": item.bcn, "kind": item.kind, "outcome": item.outcome, "note": item.text, "actorId": item.actor_id, "timestamp": item.created_at.isoformat(), "deleted": item.deleted_at is not None} for item in activity_db.history(bcn, 1, 10000)[0]]
+            row = {"bcn": stored.bcn, "name": stored.name, "ownerId": stored.owner_id, "ownerName": repo.users.get(stored.owner_id or "", {}).get("name"), "status": stored.status, "phones": [], "source": stored.source, "version": stored.version, "histories": history}; repo.customers[bcn] = row
     if not row: raise HTTPException(status.HTTP_404_NOT_FOUND, "Customer not found.")
     if row["status"] == "Closed": raise HTTPException(status.HTTP_409_CONFLICT, "Customer is closed.")
     if user.role != "Admin" and row["ownerId"] != user.id: raise HTTPException(status.HTTP_403_FORBIDDEN, "Customer access denied.")
@@ -312,6 +322,7 @@ def close_customer(bcn: str, body: LifecycleRequest, user: Annotated[User, Depen
     row["status"] = "Closed"; row["version"] += 1; row["histories"].append({"kind": "Closure", "reasonId": reason["id"], "reason": reason["label"], "actor": user.name, "timestamp": datetime.now(timezone.utc).isoformat()}); append_audit(user.id, "Customer closed", bcn, {"reasonId": reason["id"], "reason": reason["label"]})
     for item in repo.followups.values():
         if item["bcn"] == bcn and item["status"] == "Open": item["status"] = "Cancelled"
+    if customer_db is not None: customer_db.save_operational(bcn=bcn, owner_id=row["ownerId"], status=row["status"], version=row["version"])
     return Customer.model_validate(row)
 
 @app.post("/customers/{bcn}/reopen")
@@ -319,7 +330,9 @@ def reopen_customer(bcn: str, body: LifecycleRequest, user: Annotated[User, Depe
     row = repo.customers.get(bcn)
     if not row: raise HTTPException(status.HTTP_404_NOT_FOUND, "Customer not found.")
     if user.role != "Admin" and row["ownerId"] != user.id: raise HTTPException(status.HTTP_403_FORBIDDEN, "Customer access denied.")
-    row["status"] = "Open"; row["version"] += 1; row["histories"].append({"kind": "Reopen", "actor": user.name, "timestamp": datetime.now(timezone.utc).isoformat()}); append_audit(user.id, "Customer reopened", bcn, {}); return Customer.model_validate(row)
+    row["status"] = "Open"; row["version"] += 1; row["histories"].append({"kind": "Reopen", "actor": user.name, "timestamp": datetime.now(timezone.utc).isoformat()}); append_audit(user.id, "Customer reopened", bcn, {})
+    if customer_db is not None: customer_db.save_operational(bcn=bcn, owner_id=row["ownerId"], status=row["status"], version=row["version"])
+    return Customer.model_validate(row)
 
 def find_followup(bcn: str, followup_id: str, user: User) -> dict:
     row = writable_customer(bcn, user)
@@ -381,6 +394,7 @@ def assign_customer(bcn: str, body: AssignmentRequest, user: Annotated[User, Dep
         row["version"] += 1
         row["histories"].append({"kind": "Assignment", "actor": user.name, "actorId": user.id, "oldOwner": old, "newOwner": body.ownerId, "reason": "Manual assignment", "timestamp": datetime.now(timezone.utc).isoformat()})
         if assignment_db is not None: assignment_db.append_assignment(bcn=bcn, actor_id=user.id, old_owner_id=old, new_owner_id=body.ownerId, reason="Manual assignment")
+        if customer_db is not None: customer_db.save_operational(bcn=bcn, owner_id=row["ownerId"], status=row["status"], version=row["version"])
         append_audit(user.id, "Customer assigned", bcn, {"oldOwner": old, "newOwner": body.ownerId})
         repo.submissions[key] = {"ownerId": body.ownerId, "expectedVersion": body.expectedVersion}
     result = Customer.model_validate(row)

@@ -1,5 +1,5 @@
-from datetime import datetime, timezone
-from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, create_engine, select
+from datetime import datetime, timedelta, timezone
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, create_engine, func, select
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
 from sqlalchemy.pool import StaticPool
 
@@ -61,9 +61,15 @@ class AssignmentDatabase:
 
     def audit(self, page: int = 1, page_size: int = 25, *, actor: str | None = None, action: str | None = None, target: str | None = None, start: str | None = None, end: str | None = None) -> tuple[list[AuditRow], int]:
         with Session(self.engine) as session:
-            rows = list(session.scalars(select(AuditRow).order_by(AuditRow.id)))
-            rows = [row for row in rows if (not actor or actor.casefold() in (row.actor_id or "").casefold()) and (not action or action.casefold() in row.action.casefold()) and (not target or target.casefold() in row.target.casefold()) and (not start or row.created_at.isoformat()[:10] >= start) and (not end or row.created_at.isoformat()[:10] <= end)]
-            return rows[(page - 1) * page_size:page * page_size], len(rows)
+            query = select(AuditRow)
+            if actor: query = query.where(AuditRow.actor_id.ilike(f"%{actor}%"))
+            if action: query = query.where(AuditRow.action.ilike(f"%{action}%"))
+            if target: query = query.where(AuditRow.target.ilike(f"%{target}%"))
+            if start: query = query.where(AuditRow.created_at >= datetime.fromisoformat(start))
+            if end: query = query.where(AuditRow.created_at < datetime.fromisoformat(end) + timedelta(days=1))
+            filtered = query.order_by(AuditRow.id)
+            total = session.scalar(select(func.count()).select_from(filtered.order_by(None).subquery())) or 0
+            return list(session.scalars(filtered.offset((page - 1) * page_size).limit(page_size))), total
 
     def append_audit(self, *, actor_id: str | None, action: str, target: str, details: dict) -> None:
         with Session(self.engine) as session:

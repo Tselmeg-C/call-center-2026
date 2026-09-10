@@ -182,6 +182,8 @@ def current_user(session: Annotated[str | None, Cookie(alias="call_center_sessio
         row = auth_db.user_for_session(session or "")
         if not row or not row.active: raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Authentication required.")
         for item in auth_db.all_users(): repo.users[item.id] = {"id": item.id, "name": item.name, "email": item.email, "role": item.role, "active": item.active, "password": ""}
+        if activity_db is not None:
+            for item in activity_db.reasons(): repo.reasons[item.id] = {"id": item.id, "label": item.label, "active": item.active}
         return User(id=row.id, name=row.name, email=row.email, role=row.role, active=row.active)
     if not session or session not in repo.sessions:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Authentication required.")

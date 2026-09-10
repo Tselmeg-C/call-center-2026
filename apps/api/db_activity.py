@@ -76,3 +76,6 @@ class ActivityDatabase:
         with Session(self.engine) as session:
             row = session.get(ClosureReasonRow, reason["id"]) or ClosureReasonRow(id=reason["id"], label=reason["label"], active=reason["active"])
             row.label = reason["label"]; row.active = reason["active"]; session.add(row); session.commit()
+
+    def reasons(self) -> list[ClosureReasonRow]:
+        with Session(self.engine) as session: return list(session.scalars(select(ClosureReasonRow).order_by(ClosureReasonRow.id)))

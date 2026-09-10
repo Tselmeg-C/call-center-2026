@@ -23,9 +23,10 @@ class AuditRow(AssignmentBase):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 class AssignmentDatabase:
-    def __init__(self, url: str):
+    def __init__(self, url: str, *, create_schema: bool = True):
         options = {"connect_args": {"check_same_thread": False}, "poolclass": StaticPool} if ":memory:" in url else {}
-        self.engine = create_engine(url, **options); AssignmentBase.metadata.create_all(self.engine)
+        self.engine = create_engine(url, **options)
+        if create_schema: AssignmentBase.metadata.create_all(self.engine)
 
     def create_rule(self, *, rule_id: str, name: str, position: int, actor_id: str) -> RuleRow:
         with Session(self.engine) as session:
@@ -37,3 +38,7 @@ class AssignmentDatabase:
     def audit(self, page: int = 1, page_size: int = 25) -> tuple[list[AuditRow], int]:
         with Session(self.engine) as session:
             total = session.query(AuditRow).count(); rows = list(session.scalars(select(AuditRow).order_by(AuditRow.id).offset((page - 1) * page_size).limit(page_size))); return rows, total
+
+    def append_audit(self, *, actor_id: str | None, action: str, target: str, details: dict) -> None:
+        with Session(self.engine) as session:
+            session.add(AuditRow(actor_id=actor_id, action=action, target=target, details=details, created_at=datetime.now(timezone.utc))); session.commit()

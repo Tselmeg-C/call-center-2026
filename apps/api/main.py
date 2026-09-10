@@ -13,6 +13,7 @@ from pwdlib import PasswordHash
 from .storage import mode
 from .db_auth import AuthDatabase
 from .db_customers import CustomerDatabase
+from .db_assignment import AssignmentDatabase
 from sqlalchemy import inspect
 
 app = FastAPI(title="Call Center API", version="0.1.0")
@@ -122,6 +123,10 @@ repo = MemoryRepo()
 storage_mode = mode()
 auth_db = AuthDatabase(__import__("os").environ["DATABASE_URL"], create_schema=False) if storage_mode == "postgres" else None
 customer_db = CustomerDatabase(__import__("os").environ["DATABASE_URL"], create_schema=False) if storage_mode == "postgres" else None
+assignment_db = AssignmentDatabase(__import__("os").environ["DATABASE_URL"], create_schema=False) if storage_mode == "postgres" else None
+
+def append_audit(actor_id: str | None, action: str, target: str, details: dict) -> None:
+    if assignment_db is not None: assignment_db.append_audit(actor_id=actor_id, action=action, target=target, details=details)
 
 @app.get("/health/live")
 def health_live() -> dict:
@@ -253,7 +258,7 @@ def create_interaction(bcn: str, body: InteractionCreate, user: Annotated[User, 
         return prior
     if body.outcome not in {"Attempt", "Contact"}: raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Invalid outcome.")
     record = {"id": f"interaction-{len(repo.interactions)+1}", "bcn": bcn, "kind": "Interaction", "outcome": body.outcome, "note": body.note, "actor": user.name, "actorId": user.id, "timestamp": datetime.now(timezone.utc).isoformat(), "deleted": False}
-    repo.interactions[key] = record; row["histories"].append(record); return record
+    repo.interactions[key] = record; row["histories"].append(record); append_audit(user.id, "Interaction created", bcn, {"outcome": body.outcome}); return record
 
 @app.post("/customers/{bcn}/notes")
 def create_note(bcn: str, body: NoteCreate, user: Annotated[User, Depends(current_user)]) -> dict:
@@ -263,7 +268,7 @@ def create_note(bcn: str, body: NoteCreate, user: Annotated[User, Depends(curren
         if prior["text"] != body.text: raise HTTPException(status.HTTP_409_CONFLICT, "Submission already used.")
         return prior
     record = {"id": f"note-{len(repo.notes)+1}", "bcn": bcn, "kind": "Standalone note", "text": body.text, "actor": user.name, "actorId": user.id, "timestamp": datetime.now(timezone.utc).isoformat(), "deleted": False}
-    repo.notes[key] = record; row["histories"].append(record); return record
+    repo.notes[key] = record; row["histories"].append(record); append_audit(user.id, "Note created", bcn, {}); return record
 
 @app.delete("/customers/{bcn}/history/{record_id}")
 def delete_history(bcn: str, record_id: str, user: Annotated[User, Depends(current_user)]) -> dict:
@@ -273,7 +278,7 @@ def delete_history(bcn: str, record_id: str, user: Annotated[User, Depends(curre
     if not record: raise HTTPException(status.HTTP_404_NOT_FOUND, "Record not found.")
     if user.role != "Admin" and record.get("actorId") != user.id: raise HTTPException(status.HTTP_403_FORBIDDEN, "Record access denied.")
     if record.get("deleted"): return {"id": record_id, "deleted": True, "deletedBy": record.get("deletedBy"), "deletedAt": record.get("deletedAt")}
-    record.update(deleted=True, deletedBy=user.id, deletedAt=datetime.now(timezone.utc).isoformat())
+    record.update(deleted=True, deletedBy=user.id, deletedAt=datetime.now(timezone.utc).isoformat()); append_audit(user.id, "History deleted", bcn, {"recordId": record_id})
     return {"id": record_id, "deleted": True, "deletedBy": user.id, "deletedAt": record["deletedAt"]}
 
 @app.post("/customers/{bcn}/follow-ups")
@@ -288,7 +293,7 @@ def create_followup(bcn: str, body: FollowUpCreate, user: Annotated[User, Depend
 def close_customer(bcn: str, body: LifecycleRequest, user: Annotated[User, Depends(current_user)]) -> Customer:
     row = writable_customer(bcn, user); reason = repo.reasons.get(body.reasonId or "")
     if not reason or not reason["active"]: raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Choose an active closure reason.")
-    row["status"] = "Closed"; row["version"] += 1; row["histories"].append({"kind": "Closure", "reasonId": reason["id"], "reason": reason["label"], "actor": user.name, "timestamp": datetime.now(timezone.utc).isoformat()})
+    row["status"] = "Closed"; row["version"] += 1; row["histories"].append({"kind": "Closure", "reasonId": reason["id"], "reason": reason["label"], "actor": user.name, "timestamp": datetime.now(timezone.utc).isoformat()}); append_audit(user.id, "Customer closed", bcn, {"reasonId": reason["id"], "reason": reason["label"]})
     for item in repo.followups.values():
         if item["bcn"] == bcn and item["status"] == "Open": item["status"] = "Cancelled"
     return Customer.model_validate(row)
@@ -298,7 +303,7 @@ def reopen_customer(bcn: str, body: LifecycleRequest, user: Annotated[User, Depe
     row = repo.customers.get(bcn)
     if not row: raise HTTPException(status.HTTP_404_NOT_FOUND, "Customer not found.")
     if user.role != "Admin" and row["ownerId"] != user.id: raise HTTPException(status.HTTP_403_FORBIDDEN, "Customer access denied.")
-    row["status"] = "Open"; row["version"] += 1; row["histories"].append({"kind": "Reopen", "actor": user.name, "timestamp": datetime.now(timezone.utc).isoformat()}); return Customer.model_validate(row)
+    row["status"] = "Open"; row["version"] += 1; row["histories"].append({"kind": "Reopen", "actor": user.name, "timestamp": datetime.now(timezone.utc).isoformat()}); append_audit(user.id, "Customer reopened", bcn, {}); return Customer.model_validate(row)
 
 def find_followup(bcn: str, followup_id: str, user: User) -> dict:
     row = writable_customer(bcn, user)
@@ -353,6 +358,7 @@ def assign_customer(bcn: str, body: AssignmentRequest, user: Annotated[User, Dep
         row["ownerId"] = body.ownerId; row["ownerName"] = owner["name"] if owner else None
         row["version"] += 1
         row["histories"].append({"kind": "Assignment", "actor": user.name, "actorId": user.id, "oldOwner": old, "newOwner": body.ownerId, "reason": "Manual assignment", "timestamp": datetime.now(timezone.utc).isoformat()})
+        append_audit(user.id, "Customer assigned", bcn, {"oldOwner": old, "newOwner": body.ownerId})
         repo.submissions[key] = {"ownerId": body.ownerId, "expectedVersion": body.expectedVersion}
     return Customer.model_validate(row)
 
@@ -497,7 +503,7 @@ async def import_customers(file: UploadFile = File(...), submission_id: str = Qu
                 else:
                     repo.customers[bcn] = {"bcn": bcn, "name": name or bcn, "ownerId": None, "ownerName": None, "status": "Open", "phones": [phone] if phone else [], "source": {"customer_name": name or bcn}, "version": 0, "histories": []}; created += 1
         result = {"jobId": f"import-{len(repo.imports)+1}", "submissionId": submission_id, "filename": file.filename, "created": created, "updated": updated, "errors": errors, "processed": created + updated + len(errors), "actorId": user.id}
-        repo.imports[submission_id] = result; return result
+        repo.imports[submission_id] = result; append_audit(user.id, "Import completed", result["jobId"], {"created": created, "updated": updated, "errors": len(errors)}); return result
     except HTTPException:
         raise
     except Exception as exc:

@@ -221,17 +221,18 @@ def current_user(session: Annotated[str | None, Cookie(alias="call_center_sessio
 
 @app.post("/session/login", response_model=User)
 def login(body: Login, request: Request, response: Response) -> User:
-    if auth_db is not None:
-        record = auth_db.user_by_email(safe_email(body.email))
-        if not record or not record.active or not password_hash.verify(body.password, record.password_hash): raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Unable to sign in.")
-        token, expires = auth_db.issue(record.id, SESSION_SECONDS); response.set_cookie("call_center_session", token, httponly=True, samesite="lax", secure=request.url.hostname not in {"localhost", "127.0.0.1"}, path="/", max_age=SESSION_SECONDS); return User(id=record.id, name=record.name, email=record.email, role=record.role, active=record.active)
     now = datetime.now(timezone.utc); ip = request.client.host if request.client else "unknown"; key = (safe_email(body.email), ip)
     recent = [stamp for stamp in repo.login_failures.get(key, []) if now - stamp < timedelta(minutes=15)]
     ip_recent = [stamp for stamp in repo.login_failures_by_ip.get(ip, []) if now - stamp < timedelta(minutes=15)]
-    if len(ip_recent) >= 50:
+    if len(ip_recent) >= 50 or len(recent) >= 5:
         raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "Too many sign-in attempts.", headers={"Retry-After": "900"})
-    if len(recent) >= 5:
-        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "Too many sign-in attempts.", headers={"Retry-After": "900"})
+    if auth_db is not None:
+        record = auth_db.user_by_email(safe_email(body.email))
+        if not record or not record.active or not password_hash.verify(body.password, record.password_hash):
+            repo.login_failures[key] = recent + [now]; repo.login_failures_by_ip[ip] = ip_recent + [now]
+            raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Unable to sign in.")
+        repo.login_failures.pop(key, None)
+        token, expires = auth_db.issue(record.id, SESSION_SECONDS); response.set_cookie("call_center_session", token, httponly=True, samesite="lax", secure=request.url.hostname not in {"localhost", "127.0.0.1"}, path="/", max_age=SESSION_SECONDS); return User(id=record.id, name=record.name, email=record.email, role=record.role, active=record.active)
     record = next((u for u in repo.users.values() if u["email"] == safe_email(body.email)), None)
     if not record or not record["active"] or not password_hash.verify(body.password, record["password"]):
         repo.login_failures[key] = recent + [now]

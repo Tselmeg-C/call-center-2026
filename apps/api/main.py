@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 from pwdlib import PasswordHash
 from .storage import mode
 from .db_auth import AuthDatabase
+from .db_customers import CustomerDatabase
 
 app = FastAPI(title="Call Center API", version="0.1.0")
 password_hash = PasswordHash.recommended()
@@ -119,6 +120,7 @@ class MemoryRepo:
 repo = MemoryRepo()
 storage_mode = mode()
 auth_db = AuthDatabase(__import__("os").environ["DATABASE_URL"], create_schema=False) if storage_mode == "postgres" else None
+customer_db = CustomerDatabase(__import__("os").environ["DATABASE_URL"], create_schema=False) if storage_mode == "postgres" else None
 
 @app.get("/health/live")
 def health_live() -> dict:
@@ -480,6 +482,7 @@ async def import_customers(file: UploadFile = File(...), submission_id: str = Qu
                 if not bcn or not bcn.isdigit(): errors.append({"row": row_number, "field": "bcn", "reason": "Invalid bcn"}); continue
                 bcn = bcn.zfill(6); name = str(values[name_index]).strip() if name_index is not None and name_index < len(values) and values[name_index] is not None else ""
                 phone = str(values[phone_index]).strip() if phone_index is not None and phone_index < len(values) and values[phone_index] is not None else None
+                if customer_db is not None: customer_db.upsert_source(bcn=bcn, name=name, source={"customer_name": name or bcn}, primary_phone=phone)
                 if bcn in repo.customers:
                     record = repo.customers[bcn]; record["name"] = name or record["name"]; record["phones"] = [phone] if phone else []; record.setdefault("source", {})["customer_name"] = record["name"]; updated += 1
                 else:

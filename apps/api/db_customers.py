@@ -21,9 +21,10 @@ class PhoneRow(CustomerBase):
     primary: Mapped[bool] = mapped_column(default=False)
 
 class CustomerDatabase:
-    def __init__(self, url: str):
+    def __init__(self, url: str, *, create_schema: bool = True):
         options = {"connect_args": {"check_same_thread": False}, "poolclass": StaticPool} if ":memory:" in url else {}
-        self.engine = create_engine(url, **options); CustomerBase.metadata.create_all(self.engine)
+        self.engine = create_engine(url, **options)
+        if create_schema: CustomerBase.metadata.create_all(self.engine)
 
     def upsert_source(self, *, bcn: str, name: str, source: dict, primary_phone: str | None = None) -> CustomerRow:
         with Session(self.engine) as session:

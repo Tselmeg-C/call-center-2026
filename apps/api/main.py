@@ -37,6 +37,16 @@ class MemoryRepo:
 repo = MemoryRepo()
 
 
+@app.middleware("http")
+async def origin_guard(request: Request, call_next):
+    if request.method in {"POST", "PATCH", "PUT", "DELETE"} and request.url.path != "/session/login":
+        origin = request.headers.get("origin")
+        referer = request.headers.get("referer", "")
+        if origin not in {"http://localhost:3000", "http://127.0.0.1:3000"} and not referer.startswith("http://localhost:3000/") and not referer.startswith("http://127.0.0.1:3000/"):
+            return Response("Origin not allowed.", status_code=403, media_type="application/json")
+    return await call_next(request)
+
+
 def safe_email(value: str) -> str:
     return value.strip().casefold()
 
@@ -70,3 +80,46 @@ def logout(response: Response, session: Annotated[str | None, Cookie(alias="call
 @app.get("/session/me", response_model=User)
 def me(user: Annotated[User, Depends(current_user)]) -> User:
     return user
+
+
+class Provision(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    email: str = Field(min_length=3, max_length=254)
+    role: str = "Admin"
+    password: str = Field(min_length=12, max_length=128)
+
+
+class ResetPassword(BaseModel):
+    password: str = Field(min_length=12, max_length=128)
+
+
+def provision_user(data: Provision) -> User:
+    email = safe_email(data.email)
+    if any(item["email"] == email for item in repo.users.values()):
+        raise ValueError("normalized identity already exists")
+    if data.role not in {"Admin", "Sales"}:
+        raise ValueError("invalid role")
+    record = {"id": f"user-{len(repo.users) + 1}", "name": data.name, "email": email, "role": data.role, "active": True, "password": password_hash.hash(data.password)}
+    repo.users[record["id"]] = record
+    return User.model_validate(record)
+
+
+@app.post("/operator/provision", response_model=User, include_in_schema=False)
+def operator_provision(data: Provision) -> User:
+    if repo.users:
+        raise HTTPException(status.HTTP_409_CONFLICT, "Initial Admin already provisioned.")
+    try:
+        return provision_user(data)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
+
+
+@app.post("/operator/reset-password/{user_id}", response_model=User, include_in_schema=False)
+def operator_reset_password(user_id: str, data: ResetPassword) -> User:
+    record = repo.users.get(user_id)
+    if not record:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "User not found.")
+    record["password"] = password_hash.hash(data.password)
+    for token, (owner, _) in list(repo.sessions.items()):
+        if owner == user_id: repo.sessions.pop(token, None)
+    return User.model_validate(record)

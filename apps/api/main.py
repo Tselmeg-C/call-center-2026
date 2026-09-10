@@ -10,6 +10,8 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from pwdlib import PasswordHash
+from .storage import mode
+from .db_auth import AuthDatabase
 
 app = FastAPI(title="Call Center API", version="0.1.0")
 password_hash = PasswordHash.recommended()
@@ -94,6 +96,8 @@ class MemoryRepo:
 
 
 repo = MemoryRepo()
+storage_mode = mode()
+auth_db = AuthDatabase(__import__("os").environ["DATABASE_URL"]) if storage_mode == "postgres" else None
 
 @app.get("/health/live")
 def health_live() -> dict:
@@ -101,7 +105,12 @@ def health_live() -> dict:
 
 @app.get("/health/ready")
 def health_ready() -> dict:
-    return {"status": "ok", "storage": "memory"}
+    if auth_db is None: return {"status": "ok", "storage": "memory"}
+    try:
+        with auth_db.engine.connect() as connection: connection.exec_driver_sql("SELECT 1")
+        return {"status": "ok", "storage": "postgres"}
+    except Exception as exc:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Storage is not ready.") from exc
 
 
 @app.middleware("http")
@@ -121,6 +130,10 @@ def safe_email(value: str) -> str:
 
 
 def current_user(session: Annotated[str | None, Cookie(alias="call_center_session")] = None) -> User:
+    if auth_db is not None:
+        row = auth_db.user_for_session(session or "")
+        if not row or not row.active: raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Authentication required.")
+        return User(id=row.id, name=row.name, email=row.email, role=row.role, active=row.active)
     if not session or session not in repo.sessions:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Authentication required.")
     user_id, expires = repo.sessions[session]
@@ -132,6 +145,10 @@ def current_user(session: Annotated[str | None, Cookie(alias="call_center_sessio
 
 @app.post("/session/login", response_model=User)
 def login(body: Login, request: Request, response: Response) -> User:
+    if auth_db is not None:
+        record = auth_db.user_by_email(safe_email(body.email))
+        if not record or not record.active or not password_hash.verify(body.password, record.password_hash): raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Unable to sign in.")
+        token, expires = auth_db.issue(record.id, SESSION_SECONDS); response.set_cookie("call_center_session", token, httponly=True, samesite="lax", secure=request.url.hostname not in {"localhost", "127.0.0.1"}, path="/", max_age=SESSION_SECONDS); return User(id=record.id, name=record.name, email=record.email, role=record.role, active=record.active)
     now = datetime.now(timezone.utc); ip = request.client.host if request.client else "unknown"; key = (safe_email(body.email), ip)
     recent = [stamp for stamp in repo.login_failures.get(key, []) if now - stamp < timedelta(minutes=15)]
     if len(recent) >= 5:
@@ -148,7 +165,9 @@ def login(body: Login, request: Request, response: Response) -> User:
 
 @app.post("/session/logout", status_code=204)
 def logout(response: Response, session: Annotated[str | None, Cookie(alias="call_center_session")] = None) -> None:
-    if session: repo.sessions.pop(session, None)
+    if session:
+        if auth_db is not None: auth_db.revoke(session)
+        else: repo.sessions.pop(session, None)
     response.delete_cookie("call_center_session", path="/")
 
 
@@ -362,6 +381,11 @@ class AssignmentRunRequest(BaseModel):
 
 def provision_user(data: Provision) -> User:
     email = safe_email(data.email)
+    if auth_db is not None:
+        if auth_db.user_by_email(email): raise ValueError("normalized identity already exists")
+        if data.role not in {"Admin", "Sales"}: raise ValueError("invalid role")
+        row = auth_db.create_user(user_id=f"user-{uuid4()}", name=data.name, email=email, role=data.role, password_hash=password_hash.hash(data.password))
+        return User(id=row.id, name=row.name, email=row.email, role=row.role, active=row.active)
     if any(item["email"] == email for item in repo.users.values()):
         raise ValueError("normalized identity already exists")
     if data.role not in {"Admin", "Sales"}:

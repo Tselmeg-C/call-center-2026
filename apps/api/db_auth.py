@@ -1,7 +1,8 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 from sqlalchemy import Boolean, DateTime, ForeignKey, String, create_engine, select
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
+from secrets import token_urlsafe
 
 class Base(DeclarativeBase): pass
 
@@ -35,6 +36,20 @@ class AuthDatabase:
         with Session(self.engine) as session:
             row = session.scalar(select(SessionRow).where(SessionRow.digest == digest(token), SessionRow.revoked_at.is_(None), SessionRow.expires_at > now))
             return session.get(UserRow, row.user_id) if row else None
+
+    def create_user(self, *, user_id: str, name: str, email: str, role: str, password_hash: str) -> UserRow:
+        with Session(self.engine) as session:
+            row = UserRow(id=user_id, name=name, email=email, role=role, active=True, password_hash=password_hash)
+            session.add(row); session.commit(); session.refresh(row); return row
+
+    def user_by_email(self, email: str) -> UserRow | None:
+        with Session(self.engine) as session: return session.scalar(select(UserRow).where(UserRow.email == email))
+
+    def issue(self, user_id: str, lifetime: int = 8 * 60 * 60) -> tuple[str, datetime]:
+        token = token_urlsafe(32); now = datetime.now(timezone.utc); expires = now + timedelta(seconds=lifetime)
+        with Session(self.engine) as session:
+            session.add(SessionRow(digest=digest(token), user_id=user_id, issued_at=now, expires_at=expires)); session.commit()
+        return token, expires
 
     def revoke(self, token: str) -> None:
         with Session(self.engine) as session:

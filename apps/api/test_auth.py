@@ -10,6 +10,7 @@ from .storage import mode
 from .db_auth import AuthDatabase, UserRow, SessionRow, digest
 from .db_customers import CustomerDatabase
 from .db_assignment import AssignmentDatabase
+from .db_activity import ActivityDatabase
 
 
 def test_login_logout_and_generic_failure() -> None:
@@ -68,6 +69,14 @@ def test_assignment_database_keeps_ordered_rules_and_audit() -> None:
     database.create_rule(rule_id="r1", name="First", position=1, actor_id="admin")
     assert [row.id for row in database.ordered_rules()] == ["r1", "r2"]
     events, total = database.audit(); assert total == 2 and len(events) == 2
+
+def test_activity_idempotency_replays_and_rejects_payload_reuse() -> None:
+    database = ActivityDatabase("sqlite+pysqlite:///:memory:")
+    assert database.save_idempotent(actor_id="u1", operation="note", submission_id="s1", payload="hello", result={"id": "n1"}) == {"id": "n1"}
+    assert database.save_idempotent(actor_id="u1", operation="note", submission_id="s1", payload="hello", result={"id": "ignored"}) == {"id": "n1"}
+    try: database.save_idempotent(actor_id="u1", operation="note", submission_id="s1", payload="different", result={})
+    except ValueError as exc: assert "already used" in str(exc)
+    else: assert False
 
 
 def test_expired_session_is_rejected() -> None:

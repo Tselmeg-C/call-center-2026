@@ -183,3 +183,19 @@ test("admin reports use UTC ranges and audit includes safe administrative events
   const audit = await services.audit(); expect(audit).toMatchObject({ ok: true }); expect((audit as { ok: true; data: { action: string; details: Record<string, unknown> }[] }).data.some(event => event.action === "User created" && !("password" in event.details))).toBe(true);
   await services.signIn("sales-river"); expect(await services.reports()).toMatchObject({ ok: false, error: { code: "forbidden" } }); expect(await services.audit()).toMatchObject({ ok: false, error: { code: "forbidden" } });
 });
+
+test("mocked Admin journey keeps customer, workload, report, and audit state aligned", async () => {
+  const { services } = createMockAdapter({ now: () => "2026-09-10T12:00:00.000Z" });
+  await services.signIn("admin-demo");
+  expect(await services.createUser({ name: "Journey Sales", email: "journey@example.test", role: "Sales" })).toMatchObject({ ok: true });
+  expect(await services.importWorkbook({ name: "mixed.xlsx", size: 1024, submissionId: "journey-import" })).toMatchObject({ ok: true, data: { processed: 3, created: 1, updated: 1, errorRows: 1 } });
+  expect(await services.assignCustomer("000125", "sales-river", "journey-assignment")).toMatchObject({ ok: true, data: { newOwner: "sales-river" } });
+  expect(await services.createNote({ bcn: "000125", text: "journey note", submissionId: "journey-note" })).toMatchObject({ ok: true });
+  expect(await services.createInteraction({ bcn: "000125", outcome: "Contact", submissionId: "journey-contact" })).toMatchObject({ ok: true });
+  const follow = await services.createFollowUp({ bcn: "000125", type: "Reminder", dueKind: "date", due: "2026-09-11", submissionId: "journey-follow" }); expect(follow).toMatchObject({ ok: true });
+  expect(await services.closeCustomer({ bcn: "000125", reasonId: "closure-1", submissionId: "journey-close" })).toMatchObject({ ok: true, data: { status: "Closed" } });
+  expect(await services.reopenCustomer({ bcn: "000125", submissionId: "journey-reopen" })).toMatchObject({ ok: true, data: { status: "Open" } });
+  expect(await services.reports("2026-09-10", "2026-09-10")).toMatchObject({ ok: true });
+  const audit = await services.audit(); expect(audit).toMatchObject({ ok: true }); const actions = (audit as { ok: true; data: { action: string }[] }).data.map(event => event.action); expect(actions).toEqual(expect.arrayContaining(["Assignment", "Closure", "Reopen", "User created"]));
+  const detail = await services.getCustomer("000125"); expect(detail).toMatchObject({ ok: true, data: { ownerId: "sales-river", status: "Open" } });
+});

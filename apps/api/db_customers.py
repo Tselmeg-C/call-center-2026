@@ -36,3 +36,9 @@ class CustomerDatabase:
                 if existing: existing.phone = primary_phone
                 else: session.add(PhoneRow(bcn=bcn, phone=primary_phone, primary=True))
             session.commit(); session.refresh(row); return row
+
+    def all(self) -> list[CustomerRow]:
+        with Session(self.engine) as session: return list(session.scalars(select(CustomerRow).order_by(CustomerRow.bcn)))
+
+    def get(self, bcn: str) -> CustomerRow | None:
+        with Session(self.engine) as session: return session.get(CustomerRow, bcn)

@@ -206,7 +206,7 @@ def sample_records(_: Annotated[User, Depends(current_user)]) -> list[dict]:
 
 @app.get("/customers", response_model=CustomerPage)
 def list_customers(user: Annotated[User, Depends(current_user)], page: int = Query(1, ge=1), page_size: int = Query(25, ge=1, le=100), mine: bool = False, q: str = "", status_filter: str | None = Query(None, alias="status"), owner: str | None = None) -> CustomerPage:
-    rows = list(repo.customers.values())
+    rows = [{"bcn": item.bcn, "name": item.name, "ownerId": item.owner_id, "ownerName": repo.users.get(item.owner_id or "", {}).get("name"), "status": item.status, "phones": [], "source": item.source, "version": item.version, "histories": []} for item in customer_db.all()] if customer_db is not None else list(repo.customers.values())
     if mine: rows = [row for row in rows if row["ownerId"] == user.id]
     if q: rows = [row for row in rows if q.casefold() in f"{row['bcn']} {row['name']} {' '.join(row.get('phones', []))}".casefold()]
     if status_filter: rows = [row for row in rows if row["status"] == status_filter]
@@ -217,7 +217,8 @@ def list_customers(user: Annotated[User, Depends(current_user)], page: int = Que
 
 @app.get("/customers/{bcn}", response_model=Customer)
 def get_customer(bcn: str, user: Annotated[User, Depends(current_user)]) -> Customer:
-    row = repo.customers.get(bcn)
+    db_row = customer_db.get(bcn) if customer_db is not None else None
+    row = {"bcn": db_row.bcn, "name": db_row.name, "ownerId": db_row.owner_id, "ownerName": repo.users.get(db_row.owner_id or "", {}).get("name"), "status": db_row.status, "phones": [], "source": db_row.source, "version": db_row.version, "histories": []} if db_row else repo.customers.get(bcn)
     if not row: raise HTTPException(status.HTTP_404_NOT_FOUND, "Customer not found.")
     return Customer.model_validate(row)
 

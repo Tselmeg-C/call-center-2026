@@ -323,7 +323,7 @@ def create_followup(bcn: str, body: FollowUpCreate, user: Annotated[User, Depend
 def close_customer(bcn: str, body: LifecycleRequest, user: Annotated[User, Depends(current_user)]) -> Customer:
     row = writable_customer(bcn, user); reason = repo.reasons.get(body.reasonId or "")
     if not reason or not reason["active"]: raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Choose an active closure reason.")
-    row["status"] = "Closed"; row["version"] += 1; row["histories"].append({"kind": "Closure", "reasonId": reason["id"], "reason": reason["label"], "actor": user.name, "timestamp": datetime.now(timezone.utc).isoformat()}); append_audit(user.id, "Customer closed", bcn, {"reasonId": reason["id"], "reason": reason["label"]})
+    timestamp = datetime.now(timezone.utc).isoformat(); row["status"] = "Closed"; row["version"] += 1; event = {"id": f"closure-{bcn}-{row['version']}", "bcn": bcn, "kind": "Closure", "reasonId": reason["id"], "reason": reason["label"], "actor": user.name, "actorId": user.id, "timestamp": timestamp}; row["histories"].append(event); persist_activity({**event, "text": reason["label"]}); append_audit(user.id, "Customer closed", bcn, {"reasonId": reason["id"], "reason": reason["label"]})
     for item in repo.followups.values():
         if item["bcn"] == bcn and item["status"] == "Open": item["status"] = "Cancelled"
     if customer_db is not None: customer_db.save_operational(bcn=bcn, owner_id=row["ownerId"], status=row["status"], version=row["version"])
@@ -334,7 +334,7 @@ def reopen_customer(bcn: str, body: LifecycleRequest, user: Annotated[User, Depe
     row = repo.customers.get(bcn)
     if not row: raise HTTPException(status.HTTP_404_NOT_FOUND, "Customer not found.")
     if user.role != "Admin" and row["ownerId"] != user.id: raise HTTPException(status.HTTP_403_FORBIDDEN, "Customer access denied.")
-    row["status"] = "Open"; row["version"] += 1; row["histories"].append({"kind": "Reopen", "actor": user.name, "timestamp": datetime.now(timezone.utc).isoformat()}); append_audit(user.id, "Customer reopened", bcn, {})
+    timestamp = datetime.now(timezone.utc).isoformat(); row["status"] = "Open"; row["version"] += 1; event = {"id": f"reopen-{bcn}-{row['version']}", "bcn": bcn, "kind": "Reopen", "actor": user.name, "actorId": user.id, "timestamp": timestamp}; row["histories"].append(event); persist_activity({**event, "text": None}); append_audit(user.id, "Customer reopened", bcn, {})
     if customer_db is not None: customer_db.save_operational(bcn=bcn, owner_id=row["ownerId"], status=row["status"], version=row["version"])
     return Customer.model_validate(row)
 

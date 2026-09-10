@@ -46,6 +46,10 @@ def test_request_id_rejects_malformed_client_value() -> None:
     response = TestClient(app, base_url="http://localhost").get("/health/live", headers={"x-request-id": "bad\nvalue"})
     assert response.status_code == 200 and "\n" not in response.headers["x-request-id"] and len(response.headers["x-request-id"]) > 10
 
+def test_cors_allows_configured_frontend_origin() -> None:
+    response = TestClient(app, base_url="http://localhost").options("/health/live", headers={"origin": "http://localhost:3000", "access-control-request-method": "GET"})
+    assert response.status_code == 200 and response.headers.get("access-control-allow-origin") == "http://localhost:3000"
+
 def test_import_rejects_oversized_multipart_envelope() -> None:
     response = TestClient(app, base_url="http://localhost").post("/admin/imports?submission_id=large", headers={"origin": "http://localhost:3000", "content-length": str(11 * 1024 * 1024 + 1)})
     assert response.status_code == 413 and response.headers.get("x-request-id")

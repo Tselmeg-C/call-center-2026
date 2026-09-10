@@ -24,6 +24,7 @@ app = FastAPI(title="Call Center API", version="0.1.0")
 logger = logging.getLogger("call-center.api")
 password_hash = PasswordHash.recommended()
 SESSION_SECONDS = 8 * 60 * 60
+ALEMBIC_HEAD = "008_assignment_settings"
 
 
 @app.exception_handler(RequestValidationError)
@@ -159,6 +160,7 @@ def health_ready() -> dict:
         with auth_db.engine.connect() as connection:
             connection.exec_driver_sql("SELECT 1")
             if not inspect(connection).has_table("users"): raise RuntimeError("migrations incomplete")
+            if not inspect(connection).has_table("alembic_version") or connection.exec_driver_sql("SELECT version_num FROM alembic_version").scalar() != ALEMBIC_HEAD: raise RuntimeError("migrations incomplete")
         return {"status": "ok", "storage": "postgres"}
     except Exception as exc:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Storage is not ready.") from exc

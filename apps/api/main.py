@@ -549,9 +549,11 @@ async def import_customers(file: UploadFile = File(...), submission_id: str = Qu
         bcn_index = next(index for index, value in enumerate(headers) if value.casefold() == "bcn")
         name_index = next((index for index, value in enumerate(headers) if value.casefold() in {"customer_name", "name"}), None)
         phone_index = next((index for index, value in enumerate(headers) if value.casefold() == "phone"), None)
-        errors = []; created = updated = 0; nonblank_rows = 0; source_rows = []; seen_bcns: set[str] = set()
+        errors = []; created = updated = 0; nonblank_rows = 0; expanded_bytes = 0; source_rows = []; seen_bcns: set[str] = set()
         with repo.transaction():
             for row_number, values in enumerate(rows, 2):
+                expanded_bytes += sum(len(str(value).encode("utf-8")) for value in values if value is not None)
+                if expanded_bytes > 100 * 1024 * 1024: raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, "Workbook expands beyond the processing limit.")
                 if not any(value not in (None, "") for value in values): continue
                 nonblank_rows += 1
                 if nonblank_rows > 10_000: raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, "Workbook has too many rows.")

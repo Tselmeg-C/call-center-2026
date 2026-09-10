@@ -602,6 +602,9 @@ def admin_reports(start: str | None = None, end: str | None = None, _: Annotated
 
 @app.get("/admin/audit")
 def admin_audit(actor: str | None = None, action: str | None = None, bcn: str | None = None, start: str | None = None, end: str | None = None, page: int = Query(1, ge=1), page_size: int = Query(25, ge=1, le=100), _: Annotated[User, Depends(admin_user)] = None) -> dict:
+    if assignment_db is not None:
+        rows, total = assignment_db.audit(page, page_size)
+        return {"items": [{"id": str(item.id), "actor": item.actor_id or "", "actorId": item.actor_id or "", "action": item.action, "target": item.target, "timestamp": item.created_at.isoformat(), "details": item.details} for item in rows], "page": page, "page_size": page_size, "total": total}
     events = []
     for row in repo.customers.values():
         for index, event in enumerate(row["histories"]):

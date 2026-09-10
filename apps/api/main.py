@@ -67,10 +67,11 @@ class MemoryRepo:
         self.reasons: dict[str, dict] = {}
         self.interactions: dict[str, dict] = {}
         self.notes: dict[str, dict] = {}
+        self.followups: dict[str, dict] = {}
         self.reset()
 
     def reset(self) -> None:
-        self.users.clear(); self.sessions.clear(); self.submissions.clear(); self.interactions.clear(); self.notes.clear(); self.reasons = {"closure-1": {"id": "closure-1", "label": "Won", "active": True}}
+        self.users.clear(); self.sessions.clear(); self.submissions.clear(); self.interactions.clear(); self.notes.clear(); self.followups.clear(); self.reasons = {"closure-1": {"id": "closure-1", "label": "Won", "active": True}}
         self.customers = {
             "000123": {"bcn": "000123", "name": "Acme North", "ownerId": "sales-river", "ownerName": "River Sales", "status": "Open", "phones": ["(555) 010-0101"], "source": {"propensity_score": 0.98}, "version": 0, "histories": []},
             "000124": {"bcn": "000124", "name": "Acme North", "ownerId": "sales-sky", "ownerName": "Sky Sales", "status": "Closed", "phones": ["555 010 0103"], "source": {"propensity_score": 0.7}, "version": 0, "histories": []},
@@ -79,11 +80,11 @@ class MemoryRepo:
 
     @contextmanager
     def transaction(self):
-        snapshot = (deepcopy(self.users), deepcopy(self.sessions), deepcopy(self.customers), deepcopy(self.submissions), deepcopy(self.interactions), deepcopy(self.notes))
+        snapshot = (deepcopy(self.users), deepcopy(self.sessions), deepcopy(self.customers), deepcopy(self.submissions), deepcopy(self.interactions), deepcopy(self.notes), deepcopy(self.followups))
         try:
             yield self
         except Exception:
-            self.users, self.sessions, self.customers, self.submissions, self.interactions, self.notes = snapshot
+            self.users, self.sessions, self.customers, self.submissions, self.interactions, self.notes, self.followups = snapshot
             raise
 
 
@@ -199,6 +200,30 @@ def delete_history(bcn: str, record_id: str, user: Annotated[User, Depends(curre
     record.update(deleted=True, deletedBy=user.id, deletedAt=datetime.now(timezone.utc).isoformat())
     return {"id": record_id, "deleted": True, "deletedBy": user.id, "deletedAt": record["deletedAt"]}
 
+@app.post("/customers/{bcn}/follow-ups")
+def create_followup(bcn: str, body: FollowUpCreate, user: Annotated[User, Depends(current_user)]) -> dict:
+    row = writable_customer(bcn, user); key = f"{user.id}:{bcn}:followup:{body.submissionId}"
+    if key in repo.followups: return repo.followups[key]
+    if body.type not in {"Appointment", "Reminder"}: raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Invalid follow-up type.")
+    record = {"id": f"followup-{len(repo.followups)+1}", "bcn": bcn, "type": body.type, "due": body.due, "note": body.note, "status": "Open", "actor": user.name, "actorId": user.id, "createdAt": datetime.now(timezone.utc).isoformat()}
+    repo.followups[key] = record; row["histories"].append({**record, "kind": "Follow-up"}); return record
+
+@app.post("/customers/{bcn}/close")
+def close_customer(bcn: str, body: LifecycleRequest, user: Annotated[User, Depends(current_user)]) -> Customer:
+    row = writable_customer(bcn, user); reason = repo.reasons.get(body.reasonId or "")
+    if not reason or not reason["active"]: raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Choose an active closure reason.")
+    row["status"] = "Closed"; row["version"] += 1; row["histories"].append({"kind": "Closure", "reasonId": reason["id"], "reason": reason["label"], "actor": user.name, "timestamp": datetime.now(timezone.utc).isoformat()})
+    for item in repo.followups.values():
+        if item["bcn"] == bcn and item["status"] == "Open": item["status"] = "Cancelled"
+    return Customer.model_validate(row)
+
+@app.post("/customers/{bcn}/reopen")
+def reopen_customer(bcn: str, body: LifecycleRequest, user: Annotated[User, Depends(current_user)]) -> Customer:
+    row = repo.customers.get(bcn)
+    if not row: raise HTTPException(status.HTTP_404_NOT_FOUND, "Customer not found.")
+    if user.role != "Admin" and row["ownerId"] != user.id: raise HTTPException(status.HTTP_403_FORBIDDEN, "Customer access denied.")
+    row["status"] = "Open"; row["version"] += 1; row["histories"].append({"kind": "Reopen", "actor": user.name, "timestamp": datetime.now(timezone.utc).isoformat()}); return Customer.model_validate(row)
+
 
 @app.post("/admin/assignments/manual/{bcn}", response_model=Customer)
 def assign_customer(bcn: str, body: AssignmentRequest, user: Annotated[User, Depends(current_user)]) -> Customer:
@@ -266,6 +291,16 @@ class InteractionCreate(BaseModel):
 
 class NoteCreate(BaseModel):
     text: str = Field(min_length=1, max_length=4000)
+    submissionId: str = Field(min_length=1)
+
+class FollowUpCreate(BaseModel):
+    type: str
+    due: str | None = None
+    note: str = Field(min_length=1, max_length=4000)
+    submissionId: str = Field(min_length=1)
+
+class LifecycleRequest(BaseModel):
+    reasonId: str | None = None
     submissionId: str = Field(min_length=1)
 
 

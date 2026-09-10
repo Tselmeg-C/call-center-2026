@@ -534,7 +534,9 @@ def create_assignment_rule(body: AssignmentRuleDraft, _: Annotated[User, Depends
     if any(item["name"].casefold() == body.name.strip().casefold() for item in repo.rules): raise HTTPException(status.HTTP_409_CONFLICT, "Rule already exists.")
     owner = repo.users.get(body.ownerId)
     if not owner or owner["role"] != "Sales" or not owner["active"]: raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Owner must be active Sales.")
-    rule = {"id": f"rule-{len(repo.rules)+1}", "name": body.name.strip(), "ownerId": body.ownerId, "active": body.active, "order": len(repo.rules)+1}; repo.rules.append(rule); repo.assignment_version += 1; return rule
+    rule = {"id": f"rule-{len(repo.rules)+1}", "name": body.name.strip(), "ownerId": body.ownerId, "active": body.active, "order": len(repo.rules)+1}; repo.rules.append(rule); repo.assignment_version += 1
+    if assignment_db is not None: assignment_db.create_rule(rule_id=rule["id"], name=rule["name"], position=rule["order"], actor_id=_.id)
+    return rule
 
 @app.patch("/admin/assignment-rules/{rule_id}")
 def update_assignment_rule(rule_id: str, patch: dict, _: Annotated[User, Depends(admin_user)]) -> dict:
@@ -543,7 +545,9 @@ def update_assignment_rule(rule_id: str, patch: dict, _: Annotated[User, Depends
     if "name" in patch and any(item["id"] != rule_id and item["name"].casefold() == str(patch["name"]).strip().casefold() for item in repo.rules): raise HTTPException(status.HTTP_409_CONFLICT, "Rule already exists.")
     for key in ("name", "active", "order"):
         if key in patch: rule[key] = patch[key]
-    repo.rules.sort(key=lambda item: item["order"]); repo.assignment_version += 1; return rule
+    repo.rules.sort(key=lambda item: item["order"]); repo.assignment_version += 1
+    if assignment_db is not None: assignment_db.update_rule(rule_id, {"name": rule["name"], "active": rule["active"], "position": rule["order"]}, _.id)
+    return rule
 
 @app.get("/admin/assignment-fallback")
 def assignment_fallback(_: Annotated[User, Depends(admin_user)]) -> list[str]:

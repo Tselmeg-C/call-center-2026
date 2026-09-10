@@ -35,6 +35,7 @@ Session and fixture state live only in memory, survive navigation, and reset on 
 Typed asynchronous application services live in `apps/web/services/types.ts`. The resettable mock adapter is `apps/web/services/mock.ts`; select or replace the adapter at the single composition point in `apps/web/services/provider.tsx`. UI components consume service interfaces, while scenario/reset controls use a separate mock-only interface. Full business screens and production authentication follow in later backlog tasks.
 
 Customer browsing decisions and display rules are documented in [`_docs/customer-browsing.md`](_docs/customer-browsing.md).
+Interaction and note permissions, validation, idempotency, and soft deletion are documented in [`_docs/interactions.md`](_docs/interactions.md).
 
 ## Checks
 

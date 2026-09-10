@@ -6,9 +6,17 @@ export type Customer = {
   propensityTier: string | null; propensityRank: number | null; propensityScore: number | null;
   phones: string[]; nextFollowUp: string | null; contactStatus: "Contact" | "Attempt" | "No recorded interaction";
 };
-export type CustomerDetail = Customer & { source: Record<string, string | number | boolean | null>; histories: { kind: string; id: string; actor: string; timestamp: string; text: string }[] };
-export type ServiceError = { code: "unauthenticated" | "forbidden" | "request-failure"; message: string };
+export type InteractionOutcome = "Attempt" | "Contact";
+export type HistoryRecord = {
+  kind: string; id: string; actor: string; actorId?: string; timestamp: string;
+  text: string | null; outcome?: InteractionOutcome; deleted?: boolean;
+  deletedAt?: string; deletedBy?: string; deletedById?: string; attachedNoteId?: string;
+};
+export type CustomerDetail = Customer & { source: Record<string, string | number | boolean | null>; histories: HistoryRecord[] };
+export type ServiceError = { code: "unauthenticated" | "forbidden" | "request-failure" | "validation"; message: string };
 export type Result<T> = { ok: true; data: T } | { ok: false; error: ServiceError };
+export type CreateInteractionInput = { bcn: string; outcome: InteractionOutcome; note?: string | null; submissionId?: string };
+export type CreateNoteInput = { bcn: string; text: string; submissionId?: string };
 
 export interface Services {
   signIn(personaId: string): Promise<Result<User>>;
@@ -17,6 +25,9 @@ export interface Services {
   sampleRecords(): Promise<Result<SampleRecord[]>>;
   listCustomers(): Promise<Result<Customer[]>>;
   getCustomer(bcn: string): Promise<Result<CustomerDetail>>;
+  createInteraction(input: CreateInteractionInput): Promise<Result<HistoryRecord>>;
+  createNote(input: CreateNoteInput): Promise<Result<HistoryRecord>>;
+  deleteHistory(bcn: string, recordId: string): Promise<Result<HistoryRecord>>;
   subscribeSession(listener: (user: User | null) => void): () => void;
 }
 

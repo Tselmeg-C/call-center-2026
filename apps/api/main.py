@@ -247,7 +247,7 @@ def list_customers(user: Annotated[User, Depends(current_user)], page: int = Que
 @app.get("/customers/{bcn}", response_model=Customer)
 def get_customer(bcn: str, user: Annotated[User, Depends(current_user)]) -> Customer:
     db_row = customer_db.get(bcn) if customer_db is not None else None
-    row = {"bcn": db_row.bcn, "name": db_row.name, "ownerId": db_row.owner_id, "ownerName": repo.users.get(db_row.owner_id or "", {}).get("name"), "status": db_row.status, "phones": [], "source": db_row.source, "version": db_row.version, "histories": []} if db_row else repo.customers.get(bcn)
+    row = {"bcn": db_row.bcn, "name": db_row.name, "ownerId": db_row.owner_id, "ownerName": repo.users.get(db_row.owner_id or "", {}).get("name"), "status": db_row.status, "phones": customer_db.phones(bcn) if customer_db is not None else [], "source": db_row.source, "version": db_row.version, "histories": []} if db_row else repo.customers.get(bcn)
     if not row: raise HTTPException(status.HTTP_404_NOT_FOUND, "Customer not found.")
     return Customer.model_validate(row)
 
@@ -273,7 +273,7 @@ def writable_customer(bcn: str, user: User) -> dict:
         if stored:
             history = []
             if activity_db is not None: history = [{"id": item.id, "bcn": item.bcn, "kind": item.kind, "outcome": item.outcome, "note": item.text, "actorId": item.actor_id, "timestamp": item.created_at.isoformat(), "deleted": item.deleted_at is not None} for item in activity_db.history(bcn, 1, 10000)[0]]
-            row = {"bcn": stored.bcn, "name": stored.name, "ownerId": stored.owner_id, "ownerName": repo.users.get(stored.owner_id or "", {}).get("name"), "status": stored.status, "phones": [], "source": stored.source, "version": stored.version, "histories": history}; repo.customers[bcn] = row
+            row = {"bcn": stored.bcn, "name": stored.name, "ownerId": stored.owner_id, "ownerName": repo.users.get(stored.owner_id or "", {}).get("name"), "status": stored.status, "phones": customer_db.phones(bcn), "source": stored.source, "version": stored.version, "histories": history}; repo.customers[bcn] = row
     if not row: raise HTTPException(status.HTTP_404_NOT_FOUND, "Customer not found.")
     if row["status"] == "Closed": raise HTTPException(status.HTTP_409_CONFLICT, "Customer is closed.")
     if user.role != "Admin" and row["ownerId"] != user.id: raise HTTPException(status.HTTP_403_FORBIDDEN, "Customer access denied.")
@@ -373,6 +373,9 @@ def complete_followup(bcn: str, followup_id: str, body: InteractionCreate, user:
 def assign_customer(bcn: str, body: AssignmentRequest, user: Annotated[User, Depends(current_user)]) -> Customer:
     if user.role != "Admin": raise HTTPException(status.HTTP_403_FORBIDDEN, "Admin access required.")
     row = repo.customers.get(bcn)
+    if row is None and customer_db is not None:
+        stored = customer_db.get(bcn)
+        if stored: row = {"bcn": stored.bcn, "name": stored.name, "ownerId": stored.owner_id, "ownerName": repo.users.get(stored.owner_id or "", {}).get("name"), "status": stored.status, "phones": customer_db.phones(bcn), "source": stored.source, "version": stored.version, "histories": []}; repo.customers[bcn] = row
     if not row: raise HTTPException(status.HTTP_404_NOT_FOUND, "Customer not found.")
     if body.ownerId and not any(item["id"] == body.ownerId and item["role"] == "Sales" and item["active"] for item in repo.users.values()): raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Owner must be an active Sales user.")
     payload = f"{bcn}|{body.ownerId}|{body.expectedVersion}"

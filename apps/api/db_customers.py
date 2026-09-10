@@ -56,6 +56,9 @@ class CustomerDatabase:
     def get(self, bcn: str) -> CustomerRow | None:
         with Session(self.engine) as session: return session.get(CustomerRow, bcn)
 
+    def phones(self, bcn: str) -> list[str]:
+        with Session(self.engine) as session: return list(session.scalars(select(PhoneRow.phone).where(PhoneRow.bcn == bcn).order_by(PhoneRow.id)))
+
     def save_operational(self, *, bcn: str, owner_id: str | None, status: str, version: int) -> None:
         with Session(self.engine) as session:
             row = session.get(CustomerRow, bcn)

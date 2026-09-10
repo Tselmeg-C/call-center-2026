@@ -244,6 +244,9 @@ def get_customer(bcn: str, user: Annotated[User, Depends(current_user)]) -> Cust
 
 @app.get("/customers/{bcn}/history")
 def customer_history(bcn: str, user: Annotated[User, Depends(current_user)], page: int = Query(1, ge=1), page_size: int = Query(25, ge=1, le=100)) -> dict:
+    if activity_db is not None:
+        rows, total = activity_db.history(bcn, page, page_size)
+        return {"items": [{"id": item.id, "bcn": item.bcn, "kind": item.kind, "outcome": item.outcome, "text": None if item.deleted_at else item.text, "actorId": item.actor_id, "timestamp": item.created_at.isoformat(), "deleted": item.deleted_at is not None} for item in rows], "page": page, "page_size": page_size, "total": total}
     row = repo.customers.get(bcn)
     if not row: raise HTTPException(status.HTTP_404_NOT_FOUND, "Customer not found.")
     events = row["histories"]; start = (page - 1) * page_size

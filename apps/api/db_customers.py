@@ -37,6 +37,19 @@ class CustomerDatabase:
                 else: session.add(PhoneRow(bcn=bcn, phone=primary_phone, primary=True))
             session.commit(); session.refresh(row); return row
 
+    def upsert_sources(self, records: list[dict]) -> None:
+        with Session(self.engine) as session:
+            for record in records:
+                row = session.get(CustomerRow, record["bcn"])
+                if row is None: row = CustomerRow(bcn=record["bcn"], name=record["name"] or record["bcn"], status="Open", source={}); session.add(row)
+                row.name = record["name"] or row.name; row.source = record["source"]
+                phone = record.get("primary_phone")
+                if phone:
+                    existing = session.scalars(select(PhoneRow).where(PhoneRow.bcn == record["bcn"], PhoneRow.primary.is_(True))).first()
+                    if existing: existing.phone = phone
+                    else: session.add(PhoneRow(bcn=record["bcn"], phone=phone, primary=True))
+            session.commit()
+
     def all(self) -> list[CustomerRow]:
         with Session(self.engine) as session: return list(session.scalars(select(CustomerRow).order_by(CustomerRow.bcn)))
 

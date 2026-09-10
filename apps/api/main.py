@@ -503,7 +503,7 @@ async def import_customers(file: UploadFile = File(...), submission_id: str = Qu
         bcn_index = next(index for index, value in enumerate(headers) if value.casefold() == "bcn")
         name_index = next((index for index, value in enumerate(headers) if value.casefold() in {"customer_name", "name"}), None)
         phone_index = next((index for index, value in enumerate(headers) if value.casefold() == "phone"), None)
-        errors = []; created = updated = 0; nonblank_rows = 0
+        errors = []; created = updated = 0; nonblank_rows = 0; source_rows = []
         with repo.transaction():
             for row_number, values in enumerate(rows, 2):
                 if not any(value not in (None, "") for value in values): continue
@@ -514,11 +514,12 @@ async def import_customers(file: UploadFile = File(...), submission_id: str = Qu
                 if not bcn or not bcn.isdigit(): errors.append({"row": row_number, "field": "bcn", "reason": "Invalid bcn"}); continue
                 bcn = bcn.zfill(6); name = str(values[name_index]).strip() if name_index is not None and name_index < len(values) and values[name_index] is not None else ""
                 phone = str(values[phone_index]).strip() if phone_index is not None and phone_index < len(values) and values[phone_index] is not None else None
-                if customer_db is not None: customer_db.upsert_source(bcn=bcn, name=name, source={"customer_name": name or bcn}, primary_phone=phone)
+                source_rows.append({"bcn": bcn, "name": name, "source": {"customer_name": name or bcn}, "primary_phone": phone})
                 if bcn in repo.customers:
                     record = repo.customers[bcn]; record["name"] = name or record["name"]; record["phones"] = [phone] if phone else []; record.setdefault("source", {})["customer_name"] = record["name"]; updated += 1
                 else:
                     repo.customers[bcn] = {"bcn": bcn, "name": name or bcn, "ownerId": None, "ownerName": None, "status": "Open", "phones": [phone] if phone else [], "source": {"customer_name": name or bcn}, "version": 0, "histories": []}; created += 1
+        if customer_db is not None: customer_db.upsert_sources(source_rows)
         result = {"jobId": f"import-{len(repo.imports)+1}", "submissionId": submission_id, "filename": file.filename, "created": created, "updated": updated, "errors": errors, "processed": created + updated + len(errors), "actorId": user.id}
         repo.imports[submission_id] = result; append_audit(user.id, "Import completed", result["jobId"], {"created": created, "updated": updated, "errors": len(errors)}); return result
     except HTTPException:

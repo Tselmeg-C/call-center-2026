@@ -9,6 +9,8 @@ export type AssignmentOperator = "=" | "!=" | "contains" | "in" | "<" | "<=" | "
 export type AssignmentRule = { id: string; name: string; active: boolean; position: number; field: AssignmentField; operator: AssignmentOperator; value: string; eligibleSalesIds: string[] };
 export type AssignmentRunInput = { scope: "unassigned" | "all" | "selected"; selectedBcns?: string[]; submissionId?: string; expectedVersion?: number };
 export type AssignmentRunResult = { scanned: number; assigned: number; reassigned: number; unchanged: number; skipped: number; results: AssignmentResult[] };
+export type ReportData = { owners: Array<{ ownerId: string | null; owner: string; open: number; closed: number; neverContacted: number; attempts: number; contacts: number; contactRate: number | null; pendingFollowUps: number }>; daily: Array<{ date: string; attempts: number; contacts: number }>; closureReasons: Array<{ reasonId: string; label: string; count: number }>; followUps: { overdue: number; today: number; undated: number; completed: number } };
+export type AuditEvent = { id: string; actor: string; actorId: string; action: string; target: string; timestamp: string; details: Record<string, string | number | null> };
 export type SampleRecord = { id: string; label: string };
 export type Customer = {
   bcn: string; mbcn: string; name: string; ownerId: string | null; ownerName: string | null;
@@ -77,6 +79,8 @@ export interface Services {
   assignmentFallback(): Promise<Result<string[]>>;
   setAssignmentFallback(ids: string[]): Promise<Result<string[]>>;
   assignmentVersion(): Promise<Result<number>>;
+  reports(start?: string, end?: string): Promise<Result<ReportData>>;
+  audit(): Promise<Result<AuditEvent[]>>;
   runAssignments(input: AssignmentRunInput): Promise<Result<AssignmentRunResult>>;
   deleteHistory(bcn: string, recordId: string): Promise<Result<HistoryRecord>>;
   subscribeSession(listener: (user: User | null) => void): () => void;

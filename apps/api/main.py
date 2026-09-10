@@ -543,21 +543,33 @@ def sales_workload(user: Annotated[User, Depends(current_user)]) -> dict:
     return {"ownerId": user.id, "totalOpen": len(owned), "neverContacted": sum(1 for row in owned if not any(item.get("kind") == "Interaction" and not item.get("deleted") for item in row["histories"])), "pendingFollowUps": sum(1 for item in repo.followups.values() if item["bcn"] in {row["bcn"] for row in owned} and item["status"] == "Open")}
 
 @app.get("/admin/reports")
-def admin_reports(_: Annotated[User, Depends(admin_user)]) -> dict:
-    owners: dict[str, dict] = {}
+def admin_reports(start: str | None = None, end: str | None = None, _: Annotated[User, Depends(admin_user)] = None) -> dict:
+    if start and end and start > end: raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Start date must not be after end date.")
+    owners: dict[str, dict] = {}; daily: dict[str, dict] = {}
     for row in repo.customers.values():
-        key = row["ownerId"] or "unassigned"; bucket = owners.setdefault(key, {"ownerId": row["ownerId"], "open": 0, "closed": 0, "attempts": 0, "contacts": 0})
+        key = row["ownerId"] or "unassigned"; bucket = owners.setdefault(key, {"ownerId": row["ownerId"], "owner": repo.users.get(key, {}).get("name", "Unassigned"), "open": 0, "closed": 0, "neverContacted": 0, "attempts": 0, "contacts": 0, "pendingFollowUps": 0})
         bucket["open" if row["status"] == "Open" else "closed"] += 1
+        if row["status"] == "Open" and not any(event.get("kind") == "Interaction" and not event.get("deleted") for event in row["histories"]): bucket["neverContacted"] += 1
+        bucket["pendingFollowUps"] += sum(1 for item in repo.followups.values() if item["bcn"] == row["bcn"] and item["status"] == "Open")
         for event in row["histories"]:
             if event.get("deleted") or event.get("kind") != "Interaction": continue
+            date = event.get("timestamp", "")[:10]
+            if start and date < start or end and date > end: continue
             bucket["attempts" if event.get("outcome") == "Attempt" else "contacts"] += 1
+            daily.setdefault(date, {"date": date, "attempts": 0, "contacts": 0})["attempts" if event.get("outcome") == "Attempt" else "contacts"] += 1
     for bucket in owners.values(): bucket["contactRate"] = bucket["contacts"] / bucket["attempts"] * 100 if bucket["attempts"] else None
-    return {"owners": list(owners.values())}
+    followups = {"overdue": 0, "today": 0, "undated": 0, "completed": sum(1 for item in repo.followups.values() if item["status"] == "Completed")}
+    for item in repo.followups.values():
+        if item["status"] != "Open": continue
+        if not item.get("due"): followups["undated"] += 1
+    return {"owners": list(owners.values()), "daily": sorted(daily.values(), key=lambda item: item["date"]), "closureReasons": [], "followUps": followups}
 
 @app.get("/admin/audit")
 def admin_audit(page: int = Query(1, ge=1), page_size: int = Query(25, ge=1, le=100), _: Annotated[User, Depends(admin_user)] = None) -> dict:
     events = []
-    for row in repo.customers.values(): events.extend({"customerId": row["bcn"], **event} for event in row["histories"])
+    for row in repo.customers.values():
+        for index, event in enumerate(row["histories"]):
+            events.append({"id": event.get("id", f"{row['bcn']}-{index}"), "actor": event.get("actor", ""), "actorId": event.get("actorId", ""), "action": event.get("kind", ""), "target": row["bcn"], "timestamp": event.get("timestamp", ""), "details": {key: value for key, value in event.items() if key not in {"text", "note", "outcome"}}})
     events.sort(key=lambda item: item.get("timestamp", ""), reverse=True); start = (page - 1) * page_size
     return {"items": events[start:start + page_size], "page": page, "page_size": page_size, "total": len(events)}
 

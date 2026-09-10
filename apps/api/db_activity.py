@@ -90,6 +90,9 @@ class ActivityDatabase:
     def followups(self, bcn: str) -> list[FollowUpRow]:
         with Session(self.engine) as session: return list(session.scalars(select(FollowUpRow).where(FollowUpRow.bcn == bcn).order_by(FollowUpRow.created_at, FollowUpRow.id)))
 
+    def all_followups(self) -> list[FollowUpRow]:
+        with Session(self.engine) as session: return list(session.scalars(select(FollowUpRow).order_by(FollowUpRow.created_at, FollowUpRow.id)))
+
     def save_reason(self, reason: dict) -> None:
         with Session(self.engine) as session:
             row = session.get(ClosureReasonRow, reason["id"]) or ClosureReasonRow(id=reason["id"], label=reason["label"], active=reason["active"])

@@ -141,6 +141,10 @@ def persist_followup(record: dict) -> None:
 def persist_reason(reason: dict) -> None:
     if activity_db is not None: activity_db.save_reason(reason)
 
+def readable_followups() -> list[dict]:
+    if activity_db is None: return list(repo.followups.values())
+    return [{"id": item.id, "bcn": item.bcn, "type": item.type, "due": item.due.isoformat() if item.due else None, "note": item.note, "status": item.status, "actorId": item.actor_id, "createdAt": item.created_at.isoformat()} for item in activity_db.all_followups()]
+
 @app.get("/health/live")
 def health_live() -> dict:
     return {"status": "ok"}
@@ -656,7 +660,7 @@ def run_assignment_contract(body: AssignmentRunRequest, user: Annotated[User, De
 def sales_workload(user: Annotated[User, Depends(current_user)]) -> dict:
     if user.role != "Sales": raise HTTPException(status.HTTP_403_FORBIDDEN, "Sales access required.")
     owned = [row for row in readable_rows() if row["ownerId"] == user.id and row["status"] == "Open"]
-    return {"ownerId": user.id, "totalOpen": len(owned), "neverContacted": sum(1 for row in owned if not any(item.get("kind") == "Interaction" and not item.get("deleted") for item in row["histories"])), "pendingFollowUps": sum(1 for item in repo.followups.values() if item["bcn"] in {row["bcn"] for row in owned} and item["status"] == "Open")}
+    followups = readable_followups(); return {"ownerId": user.id, "totalOpen": len(owned), "neverContacted": sum(1 for row in owned if not any(item.get("kind") == "Interaction" and not item.get("deleted") for item in row["histories"])), "pendingFollowUps": sum(1 for item in followups if item["bcn"] in {row["bcn"] for row in owned} and item["status"] == "Open")}
 
 @app.get("/workload")
 def workload_contract(user: Annotated[User, Depends(current_user)]) -> dict:
@@ -667,12 +671,12 @@ def workload_contract(user: Annotated[User, Depends(current_user)]) -> dict:
 @app.get("/admin/reports")
 def admin_reports(start: str | None = None, end: str | None = None, _: Annotated[User, Depends(admin_user)] = None) -> dict:
     if start and end and start > end: raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Start date must not be after end date.")
-    owners: dict[str, dict] = {}; daily: dict[str, dict] = {}
+    owners: dict[str, dict] = {}; daily: dict[str, dict] = {}; all_followups = readable_followups()
     for row in readable_rows():
         key = row["ownerId"] or "unassigned"; bucket = owners.setdefault(key, {"ownerId": row["ownerId"], "owner": repo.users.get(key, {}).get("name", "Unassigned"), "open": 0, "closed": 0, "neverContacted": 0, "attempts": 0, "contacts": 0, "pendingFollowUps": 0})
         bucket["open" if row["status"] == "Open" else "closed"] += 1
         if row["status"] == "Open" and not any(event.get("kind") == "Interaction" and not event.get("deleted") for event in row["histories"]): bucket["neverContacted"] += 1
-        bucket["pendingFollowUps"] += sum(1 for item in repo.followups.values() if item["bcn"] == row["bcn"] and item["status"] == "Open")
+        bucket["pendingFollowUps"] += sum(1 for item in all_followups if item["bcn"] == row["bcn"] and item["status"] == "Open")
         for event in row["histories"]:
             if event.get("deleted") or event.get("kind") != "Interaction": continue
             date = event.get("timestamp", "")[:10]
@@ -680,8 +684,8 @@ def admin_reports(start: str | None = None, end: str | None = None, _: Annotated
             bucket["attempts" if event.get("outcome") == "Attempt" else "contacts"] += 1
             daily.setdefault(date, {"date": date, "attempts": 0, "contacts": 0})["attempts" if event.get("outcome") == "Attempt" else "contacts"] += 1
     for bucket in owners.values(): bucket["contactRate"] = bucket["contacts"] / bucket["attempts"] * 100 if bucket["attempts"] else None
-    followups = {"overdue": 0, "today": 0, "undated": 0, "completed": sum(1 for item in repo.followups.values() if item["status"] == "Completed")}
-    for item in repo.followups.values():
+    followups = {"overdue": 0, "today": 0, "undated": 0, "completed": sum(1 for item in all_followups if item["status"] == "Completed")}
+    for item in all_followups:
         if item["status"] != "Open": continue
         if not item.get("due"): followups["undated"] += 1
     return {"owners": list(owners.values()), "daily": sorted(daily.values(), key=lambda item: item["date"]), "closureReasons": [], "followUps": followups}

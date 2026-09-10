@@ -1,6 +1,6 @@
 # Persistence
 
-Start PostgreSQL with `POSTGRES_PASSWORD=local-only docker compose -f infra/docker-compose.yml up -d postgres`, then run `DATABASE_URL=postgresql+psycopg://call_center:local-only@localhost:5432/call_center alembic -c apps/api/alembic.ini upgrade head`. Credentials belong in the environment and are never committed or logged.
+Start PostgreSQL with `docker compose -f infra/docker-compose.yml up -d postgres` after setting `POSTGRES_PASSWORD` in the environment, then run `DATABASE_URL="$DATABASE_URL" alembic -c apps/api/alembic.ini upgrade head`. Credentials belong in the environment and are never committed or logged.
 
 `CALL_CENTER_STORAGE=memory` is the explicit local/test setting. `CALL_CENTER_STORAGE=postgres` requires `DATABASE_URL` and never silently falls back to memory; migrations must be applied before the API is ready. Authentication, customer source/operational fields, assignment/audit records, activity/follow-up records, and durable retry records use SQLAlchemy adapters in PostgreSQL mode; the in-memory suite remains the fast default.
 

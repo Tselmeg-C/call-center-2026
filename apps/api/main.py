@@ -194,7 +194,8 @@ async def origin_guard(request: Request, call_next):
             return Response("Origin not allowed.", status_code=403, headers={"x-request-id": request_id}, media_type="application/json")
     response = await call_next(request)
     response.headers["x-request-id"] = request_id
-    logger.info("request id=%s method=%s route=%s status=%s duration_ms=%.3f error=%s", request_id, request.method, request.url.path, response.status_code, (perf_counter() - started) * 1000, "none" if response.status_code < 400 else "http_error")
+    route = getattr(request.scope.get("route"), "path", request.url.path)
+    logger.info("request id=%s method=%s route=%s status=%s duration_ms=%.3f error=%s", request_id, request.method, route, response.status_code, (perf_counter() - started) * 1000, "none" if response.status_code < 400 else "http_error")
     return response
 
 

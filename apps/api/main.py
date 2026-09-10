@@ -427,7 +427,14 @@ def find_followup(bcn: str, followup_id: str, user: User) -> dict:
 def update_followup(bcn: str, followup_id: str, body: FollowUpCreate, user: Annotated[User, Depends(current_user)]) -> dict:
     item = find_followup(bcn, followup_id, user)
     if item["status"] != "Open": raise HTTPException(status.HTTP_409_CONFLICT, "Follow-up is no longer open.")
-    item.update(type=body.type, due=body.due, note=body.note, updatedAt=datetime.now(timezone.utc).isoformat()); persist_followup(item); persist_activity({"id": f"activity-{uuid4()}", "bcn": bcn, "kind": "Follow-up edit", "actorId": user.id, "text": item.get("note")}); return item
+    payload = f"{bcn}|{followup_id}|{body.type}|{body.due or ''}|{body.note}"
+    if activity_db is not None:
+        try: persisted = activity_db.get_idempotent(actor_id=user.id, operation="followup-edit", submission_id=body.submissionId, payload=payload)
+        except ValueError as exc: raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+        if persisted: return persisted
+    item.update(type=body.type, due=body.due, note=body.note, updatedAt=datetime.now(timezone.utc).isoformat()); persist_followup(item); persist_activity({"id": f"activity-{uuid4()}", "bcn": bcn, "kind": "Follow-up edit", "actorId": user.id, "text": item.get("note")})
+    if activity_db is not None: activity_db.save_idempotent(actor_id=user.id, operation="followup-edit", submission_id=body.submissionId, payload=payload, result=item)
+    return item
 
 @app.post("/customers/{bcn}/follow-ups/{followup_id}/cancel")
 def cancel_followup(bcn: str, followup_id: str, user: Annotated[User, Depends(current_user)]) -> dict:

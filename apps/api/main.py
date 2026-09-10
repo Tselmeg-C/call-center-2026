@@ -13,6 +13,7 @@ from pwdlib import PasswordHash
 from .storage import mode
 from .db_auth import AuthDatabase
 from .db_customers import CustomerDatabase
+from sqlalchemy import inspect
 
 app = FastAPI(title="Call Center API", version="0.1.0")
 password_hash = PasswordHash.recommended()
@@ -130,7 +131,9 @@ def health_live() -> dict:
 def health_ready() -> dict:
     if auth_db is None: return {"status": "ok", "storage": "memory"}
     try:
-        with auth_db.engine.connect() as connection: connection.exec_driver_sql("SELECT 1")
+        with auth_db.engine.connect() as connection:
+            connection.exec_driver_sql("SELECT 1")
+            if not inspect(connection).has_table("users"): raise RuntimeError("migrations incomplete")
         return {"status": "ok", "storage": "postgres"}
     except Exception as exc:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Storage is not ready.") from exc

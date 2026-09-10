@@ -565,11 +565,14 @@ def admin_reports(start: str | None = None, end: str | None = None, _: Annotated
     return {"owners": list(owners.values()), "daily": sorted(daily.values(), key=lambda item: item["date"]), "closureReasons": [], "followUps": followups}
 
 @app.get("/admin/audit")
-def admin_audit(page: int = Query(1, ge=1), page_size: int = Query(25, ge=1, le=100), _: Annotated[User, Depends(admin_user)] = None) -> dict:
+def admin_audit(actor: str | None = None, action: str | None = None, bcn: str | None = None, start: str | None = None, end: str | None = None, page: int = Query(1, ge=1), page_size: int = Query(25, ge=1, le=100), _: Annotated[User, Depends(admin_user)] = None) -> dict:
     events = []
     for row in repo.customers.values():
         for index, event in enumerate(row["histories"]):
-            events.append({"id": event.get("id", f"{row['bcn']}-{index}"), "actor": event.get("actor", ""), "actorId": event.get("actorId", ""), "action": event.get("kind", ""), "target": row["bcn"], "timestamp": event.get("timestamp", ""), "details": {key: value for key, value in event.items() if key not in {"text", "note", "outcome"}}})
+            item = {"id": event.get("id", f"{row['bcn']}-{index}"), "actor": event.get("actor", ""), "actorId": event.get("actorId", ""), "action": event.get("kind", ""), "target": row["bcn"], "timestamp": event.get("timestamp", ""), "details": {key: value for key, value in event.items() if key not in {"text", "note", "outcome"}}}
+            date = item["timestamp"][:10]
+            if (bcn and bcn != row["bcn"]) or (actor and actor.casefold() not in item["actor"].casefold()) or (action and action.casefold() not in item["action"].casefold()) or (start and date < start) or (end and date > end): continue
+            events.append(item)
     events.sort(key=lambda item: item.get("timestamp", ""), reverse=True); start = (page - 1) * page_size
     return {"items": events[start:start + page_size], "page": page, "page_size": page_size, "total": len(events)}
 

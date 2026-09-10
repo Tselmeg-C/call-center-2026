@@ -10,7 +10,8 @@ export type InteractionOutcome = "Attempt" | "Contact";
 export type HistoryRecord = {
   kind: string; id: string; actor: string; actorId?: string; timestamp: string;
   text: string | null; outcome?: InteractionOutcome; deleted?: boolean;
-  deletedAt?: string; deletedBy?: string; deletedById?: string; attachedNoteId?: string;
+  deletedAt?: string; deletedBy?: string; deletedById?: string; customerBcn?: string; targetId?: string;
+  attachedNoteId?: string; interactionId?: string; followUpStatus?: "Open" | "Completed";
 };
 export type CustomerDetail = Customer & { source: Record<string, string | number | boolean | null>; histories: HistoryRecord[] };
 export type ServiceError = { code: "unauthenticated" | "forbidden" | "request-failure" | "validation"; message: string };

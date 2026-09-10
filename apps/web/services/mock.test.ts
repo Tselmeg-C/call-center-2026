@@ -85,3 +85,25 @@ test("ownership, closed status, deletion tombstones, idempotent delete, and fail
   expect(await services.deleteHistory("000123", recordId)).toMatchObject({ ok: false, error: { code: "forbidden" } });
   expect(await services.createInteraction({ bcn: "000124", outcome: "Attempt" })).toMatchObject({ ok: false, error: { code: "forbidden" } });
 });
+
+test("deletion only targets activities and standalone notes, keeps follow-up links, and records audit target", async () => {
+  const { services } = createMockAdapter({ now: () => "2026-09-10T12:00:00.000Z" }); await services.signIn("sales-sky");
+  const before = await services.getCustomer("000124"); expect(before).toMatchObject({ ok: true });
+  const histories = (before as { ok: true; data: { histories: { id: string; kind: string; attachedNoteId?: string }[] } }).data.histories;
+  expect(histories.find(item => item.id === "i-1")).toMatchObject({ kind: "Interaction", attachedNoteId: "note-fixture-1" });
+  expect(histories.find(item => item.id === "i-3")).toMatchObject({ interactionId: "i-1", followUpStatus: "Completed" });
+  expect(await services.deleteHistory("000124", "i-3")).toMatchObject({ ok: false, error: { code: "forbidden" } });
+  const deleted = await services.deleteHistory("000124", "i-1"); expect(deleted).toMatchObject({ ok: true, data: { customerBcn: "000124", targetId: "i-1", attachedNoteId: "note-fixture-1", deletedBy: "Sky Sales" } });
+  const after = await services.getCustomer("000124"); const current = (after as { ok: true; data: { histories: { id: string; deleted?: boolean; interactionId?: string; followUpStatus?: string }[]; contactStatus: string } }).data;
+  expect(current.histories.find(item => item.id === "i-1")).toMatchObject({ deleted: true });
+  expect(current.histories.find(item => item.id === "i-3")).toMatchObject({ interactionId: "i-1", followUpStatus: "Completed" });
+  expect(current.contactStatus).toBe("No recorded interaction");
+});
+
+test("a session change during a pending mutation rejects it without changing storage", async () => {
+  const { services, controls } = createMockAdapter(); await services.signIn("sales-river"); controls.setScenario("Loading");
+  const pending = services.createNote({ bcn: "000123", text: "must not save", submissionId: "session-change" }); controls.setScenario("Normal"); await services.signIn("sales-sky");
+  expect(await pending).toMatchObject({ ok: false, error: { code: "unauthenticated" } });
+  await services.signIn("sales-river"); const detail = await services.getCustomer("000123");
+  expect((detail as { ok: true; data: { histories: { text: string | null }[] } }).data.histories.some(item => item.text === "must not save")).toBe(false);
+});

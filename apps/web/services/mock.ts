@@ -1,4 +1,4 @@
-import type { ClosureReason, CreateInteractionInput, CreateNoteInput, Customer, CustomerDetail, FollowUp, FollowUpInput, HistoryRecord, MockControls, MockSnapshot, Result, SampleRecord, Services, User, UpdateFollowUpInput, CompleteFollowUpInput, LifecycleInput } from "./types";
+import type { ClosureReason, CreateInteractionInput, CreateNoteInput, Customer, CustomerDetail, FollowUp, FollowUpInput, HistoryRecord, ImportResult, MockControls, MockSnapshot, Result, SampleRecord, Services, User, UpdateFollowUpInput, CompleteFollowUpInput, LifecycleInput } from "./types";
 import { calculateWorkload } from "./workload";
 
 const seedUsers: User[] = [
@@ -138,6 +138,15 @@ export function createMockAdapter(options: { now?: () => string } = {}): { servi
     updateClosureReason: (id, patch) => {
       if (!user || user.role !== "Admin") return Promise.resolve(failure("forbidden", "Admin access required.")); const target = closureReasons.find(item => item.id === id); if (!target) return Promise.resolve(failure("request-failure", "Reason not found."));
       const label = patch.label?.trim() ?? target.label; if (!label || label.length > 120) return Promise.resolve(failure("validation", "Reason must be 1–120 characters.")); if (closureReasons.some(item => item.id !== id && item.label.toLowerCase() === label.toLowerCase())) return Promise.resolve(failure("conflict", "Reason already exists.")); closureReasons = closureReasons.map(item => item.id === id ? { ...item, ...patch, label } : item); publish(); return Promise.resolve({ ok: true, data: { ...(closureReasons.find(item => item.id === id) as ClosureReason) } });
+    },
+    importWorkbook: input => {
+      if (!user || user.role !== "Admin") return Promise.resolve(failure("forbidden", "Admin access required."));
+      if (!input.name.toLowerCase().endsWith(".xlsx")) return Promise.resolve(failure("validation", "Choose an .xlsx workbook."));
+      if (input.size > 10_485_760) return Promise.resolve(failure("validation", "Workbook must be 10 MiB or smaller."));
+      const errors = input.name.toLowerCase().includes("mixed") ? [{ row: 4, field: "bcn", reason: "BCN must be text." }] : [];
+      const result: ImportResult = { jobId: `import-${nextRecord++}`, filename: input.name, completedAt: now(), status: errors.length ? "Partial" : "Completed", processed: errors.length ? 3 : 0, created: errors.length ? 1 : 0, updated: errors.length ? 1 : 0, errorRows: errors.length, errors };
+      if (errors.length) { const existing = customers.find(item => item.bcn === "000123"); if (existing) existing.source.customer_name = "Acme North (imported)"; customers.push({ bcn: "009999", mbcn: "M-09999", name: "Imported Customer", ownerId: null, ownerName: null, status: "Open", previouslyContacted: null, recent: false, propensityTier: null, propensityRank: null, propensityScore: null, phones: [], nextFollowUp: null, contactStatus: "No recorded interaction", source: { bcn: "009999", MBCN: "M-09999", customer_name: "Imported Customer" }, histories: [], followUps: [], closure: undefined }); publish(); }
+      return Promise.resolve({ ok: true, data: result });
     },
     deleteHistory: (bcn, recordId) => {
       if (!user) return Promise.resolve(failure("unauthenticated", "Sign in to continue."));

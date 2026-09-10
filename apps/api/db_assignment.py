@@ -33,6 +33,11 @@ class AssignmentRunRow(AssignmentBase):
     submission_id: Mapped[str] = mapped_column(String(120), primary_key=True)
     scope: Mapped[str] = mapped_column(String(32)); result: Mapped[dict] = mapped_column(JSON); created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
+class AssignmentSettingRow(AssignmentBase):
+    __tablename__ = "assignment_settings"
+    key: Mapped[str] = mapped_column(String(120), primary_key=True)
+    value: Mapped[dict] = mapped_column(JSON)
+
 class AssignmentDatabase:
     def __init__(self, url: str, *, create_schema: bool = True):
         options = {"connect_args": {"check_same_thread": False}, "poolclass": StaticPool} if ":memory:" in url else {}
@@ -78,3 +83,13 @@ class AssignmentDatabase:
         with Session(self.engine) as session:
             row = session.get(AssignmentRunRow, submission_id)
             return row.result if row else None
+
+    def get_setting(self, key: str) -> dict | None:
+        with Session(self.engine) as session:
+            row = session.get(AssignmentSettingRow, key)
+            return row.value if row else None
+
+    def set_setting(self, key: str, value: dict) -> None:
+        with Session(self.engine) as session:
+            row = session.get(AssignmentSettingRow, key) or AssignmentSettingRow(key=key, value=value)
+            row.value = value; session.add(row); session.commit()

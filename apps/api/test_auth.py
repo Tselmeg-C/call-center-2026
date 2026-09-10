@@ -94,6 +94,8 @@ def test_assignment_database_keeps_ordered_rules_and_audit() -> None:
     result = {"submissionId": "s1", "scope": "unassigned", "assigned": 1}
     assert database.save_run(submission_id="s1", scope="unassigned", result=result) == result
     assert database.get_run("s1") == result
+    database.set_setting("fallback_sales", {"ids": ["u1"]})
+    assert database.get_setting("fallback_sales") == {"ids": ["u1"]}
 
 def test_activity_idempotency_replays_and_rejects_payload_reuse() -> None:
     database = ActivityDatabase("sqlite+pysqlite:///:memory:")

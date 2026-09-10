@@ -205,6 +205,8 @@ def current_user(session: Annotated[str | None, Cookie(alias="call_center_sessio
             for item in activity_db.reasons(): repo.reasons[item.id] = {"id": item.id, "label": item.label, "active": item.active}
         if assignment_db is not None:
             repo.rules[:] = [{"id": item.id, "name": item.name, "ownerId": item.owner_id, "active": item.active, "order": item.position} for item in assignment_db.ordered_rules()]
+            fallback = assignment_db.get_setting("fallback_sales")
+            if fallback is not None: repo.fallback_sales = list(fallback.get("ids", []))
         return User(id=row.id, name=row.name, email=row.email, role=row.role, active=row.active)
     if not session or session not in repo.sessions:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Authentication required.")
@@ -637,13 +639,18 @@ def update_assignment_rule(rule_id: str, patch: dict, _: Annotated[User, Depends
 
 @app.get("/admin/assignment-fallback")
 def assignment_fallback(_: Annotated[User, Depends(admin_user)]) -> list[str]:
+    if assignment_db is not None:
+        stored = assignment_db.get_setting("fallback_sales")
+        if stored is not None: repo.fallback_sales = list(stored.get("ids", []))
     return repo.fallback_sales
 
 @app.put("/admin/assignment-fallback")
 def set_assignment_fallback(ids: Annotated[list[str], Body()], _: Annotated[User, Depends(admin_user)]) -> list[str]:
     valid = {item["id"] for item in repo.users.values() if item["role"] == "Sales" and item["active"]}
     if any(item not in valid for item in ids): raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Fallback members must be active Sales users.")
-    repo.fallback_sales = list(dict.fromkeys(ids)); repo.assignment_version += 1; return repo.fallback_sales
+    repo.fallback_sales = list(dict.fromkeys(ids)); repo.assignment_version += 1
+    if assignment_db is not None: assignment_db.set_setting("fallback_sales", {"ids": repo.fallback_sales})
+    return repo.fallback_sales
 
 @app.get("/admin/assignment-version")
 def get_assignment_version(_: Annotated[User, Depends(admin_user)]) -> int:

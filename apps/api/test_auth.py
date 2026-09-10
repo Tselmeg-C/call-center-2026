@@ -39,3 +39,14 @@ def test_memory_unit_of_work_rolls_back_auth_state() -> None:
     except RuntimeError:
         pass
     assert repo.users == {}
+
+
+def test_operator_provision_and_recovery_revoke_session() -> None:
+    repo.reset(); client = TestClient(app, base_url="http://localhost"); headers = {"origin": "http://localhost:3000"}
+    provision = client.post("/operator/provision", json={"name": "Initial Admin", "email": "admin@example.test", "role": "Admin", "password": "correct horse battery staple"}, headers=headers)
+    assert provision.status_code == 200 and "password" not in provision.json()
+    login = client.post("/session/login", json={"email": "admin@example.test", "password": "correct horse battery staple"}); assert login.status_code == 200
+    recovered = client.post(f"/operator/reset-password/{provision.json()['id']}", json={"password": "new correct horse battery staple"}, headers=headers)
+    assert recovered.status_code == 200 and "password" not in recovered.json()
+    assert client.get("/session/me").status_code == 401
+    assert client.post("/operator/provision", json={"name": "Second", "email": "second@example.test", "role": "Admin", "password": "correct horse battery staple"}, headers=headers).status_code == 409

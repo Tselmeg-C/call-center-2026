@@ -9,6 +9,7 @@ from .main import app, password_hash, repo, provision_user
 from .storage import mode
 from .db_auth import AuthDatabase, UserRow, SessionRow, digest
 from .db_customers import CustomerDatabase
+from .db_assignment import AssignmentDatabase
 
 
 def test_login_logout_and_generic_failure() -> None:
@@ -60,6 +61,13 @@ def test_assignment_configuration_and_run_are_admin_only() -> None:
     assert client.put("/admin/assignment-fallback", json=["sales-river"], headers={"origin": "http://localhost:3000"}).json() == ["sales-river"]
     result = client.post("/admin/assignment-runs", json={"scope": "unassigned", "submissionId": "run-1"}, headers={"origin": "http://localhost:3000"})
     assert result.status_code == 200 and result.json()["assigned"] == 1
+
+def test_assignment_database_keeps_ordered_rules_and_audit() -> None:
+    database = AssignmentDatabase("sqlite+pysqlite:///:memory:")
+    database.create_rule(rule_id="r2", name="Second", position=2, actor_id="admin")
+    database.create_rule(rule_id="r1", name="First", position=1, actor_id="admin")
+    assert [row.id for row in database.ordered_rules()] == ["r1", "r2"]
+    events, total = database.audit(); assert total == 2 and len(events) == 2
 
 
 def test_expired_session_is_rejected() -> None:

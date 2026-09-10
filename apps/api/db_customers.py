@@ -5,7 +5,7 @@ from sqlalchemy.pool import StaticPool
 class CustomerBase(DeclarativeBase): pass
 
 class CustomerRow(CustomerBase):
-    __tablename__ = "customer_source"
+    __tablename__ = "customers"
     bcn: Mapped[str] = mapped_column(String(64), primary_key=True)
     name: Mapped[str] = mapped_column(String(255))
     status: Mapped[str] = mapped_column(String(16), default="Open")
@@ -14,9 +14,9 @@ class CustomerRow(CustomerBase):
     version: Mapped[int] = mapped_column(Integer, default=0)
 
 class PhoneRow(CustomerBase):
-    __tablename__ = "customer_source_phones"
+    __tablename__ = "customer_phones"
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    bcn: Mapped[str] = mapped_column(ForeignKey("customer_source.bcn", ondelete="CASCADE"))
+    bcn: Mapped[str] = mapped_column(ForeignKey("customers.bcn", ondelete="CASCADE"))
     phone: Mapped[str] = mapped_column(String(64))
     primary: Mapped[bool] = mapped_column(default=False)
 

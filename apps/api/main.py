@@ -207,6 +207,8 @@ def current_user(session: Annotated[str | None, Cookie(alias="call_center_sessio
             repo.rules[:] = [{"id": item.id, "name": item.name, "ownerId": item.owner_id, "active": item.active, "order": item.position} for item in assignment_db.ordered_rules()]
             fallback = assignment_db.get_setting("fallback_sales")
             if fallback is not None: repo.fallback_sales = list(fallback.get("ids", []))
+            version = assignment_db.get_setting("assignment_version")
+            if version is not None: repo.assignment_version = int(version.get("value", repo.assignment_version))
         return User(id=row.id, name=row.name, email=row.email, role=row.role, active=row.active)
     if not session or session not in repo.sessions:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Authentication required.")
@@ -623,7 +625,9 @@ def create_assignment_rule(body: AssignmentRuleDraft, _: Annotated[User, Depends
     owner = repo.users.get(body.ownerId)
     if not owner or owner["role"] != "Sales" or not owner["active"]: raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Owner must be active Sales.")
     rule = {"id": f"rule-{len(repo.rules)+1}", "name": body.name.strip(), "ownerId": body.ownerId, "active": body.active, "order": len(repo.rules)+1}; repo.rules.append(rule); repo.assignment_version += 1
-    if assignment_db is not None: assignment_db.create_rule(rule_id=rule["id"], name=rule["name"], position=rule["order"], actor_id=_.id, owner_id=rule["ownerId"])
+    if assignment_db is not None:
+        assignment_db.create_rule(rule_id=rule["id"], name=rule["name"], position=rule["order"], actor_id=_.id, owner_id=rule["ownerId"])
+        assignment_db.set_setting("assignment_version", {"value": repo.assignment_version})
     return rule
 
 @app.patch("/admin/assignment-rules/{rule_id}")
@@ -634,7 +638,9 @@ def update_assignment_rule(rule_id: str, patch: dict, _: Annotated[User, Depends
     for key in ("name", "active", "order"):
         if key in patch: rule[key] = patch[key]
     repo.rules.sort(key=lambda item: item["order"]); repo.assignment_version += 1
-    if assignment_db is not None: assignment_db.update_rule(rule_id, {"name": rule["name"], "active": rule["active"], "position": rule["order"], "owner_id": rule["ownerId"]}, _.id)
+    if assignment_db is not None:
+        assignment_db.update_rule(rule_id, {"name": rule["name"], "active": rule["active"], "position": rule["order"], "owner_id": rule["ownerId"]}, _.id)
+        assignment_db.set_setting("assignment_version", {"value": repo.assignment_version})
     return rule
 
 @app.get("/admin/assignment-fallback")
@@ -649,7 +655,9 @@ def set_assignment_fallback(ids: Annotated[list[str], Body()], _: Annotated[User
     valid = {item["id"] for item in repo.users.values() if item["role"] == "Sales" and item["active"]}
     if any(item not in valid for item in ids): raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Fallback members must be active Sales users.")
     repo.fallback_sales = list(dict.fromkeys(ids)); repo.assignment_version += 1
-    if assignment_db is not None: assignment_db.set_setting("fallback_sales", {"ids": repo.fallback_sales})
+    if assignment_db is not None:
+        assignment_db.set_setting("fallback_sales", {"ids": repo.fallback_sales})
+        assignment_db.set_setting("assignment_version", {"value": repo.assignment_version})
     return repo.fallback_sales
 
 @app.get("/admin/assignment-version")

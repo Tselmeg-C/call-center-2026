@@ -13,8 +13,8 @@
     "start": "npm run start --workspace @call-center/web",
     "lint": "npm run lint --workspace @call-center/web",
     "typecheck": "npm run typecheck --workspace @call-center/web",
-    "test": "npm run test --workspace @call-center/web"
-    ,"contract:check": "node packages/shared/validate-openapi.mjs"
+    "test": "npm run test --workspace @call-center/web",
+    "contract:check": "node packages/shared/validate-openapi.mjs"
   },
   "devDependencies": {
     "typescript": "5.8.3"

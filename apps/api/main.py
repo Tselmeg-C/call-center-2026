@@ -188,6 +188,17 @@ def create_note(bcn: str, body: NoteCreate, user: Annotated[User, Depends(curren
     record = {"id": f"note-{len(repo.notes)+1}", "bcn": bcn, "kind": "Standalone note", "text": body.text, "actor": user.name, "actorId": user.id, "timestamp": datetime.now(timezone.utc).isoformat(), "deleted": False}
     repo.notes[key] = record; row["histories"].append(record); return record
 
+@app.delete("/customers/{bcn}/history/{record_id}")
+def delete_history(bcn: str, record_id: str, user: Annotated[User, Depends(current_user)]) -> dict:
+    row = repo.customers.get(bcn)
+    if not row: raise HTTPException(status.HTTP_404_NOT_FOUND, "Customer not found.")
+    record = next((item for item in row["histories"] if item.get("id") == record_id), None)
+    if not record: raise HTTPException(status.HTTP_404_NOT_FOUND, "Record not found.")
+    if user.role != "Admin" and record.get("actorId") != user.id: raise HTTPException(status.HTTP_403_FORBIDDEN, "Record access denied.")
+    if record.get("deleted"): return {"id": record_id, "deleted": True, "deletedBy": record.get("deletedBy"), "deletedAt": record.get("deletedAt")}
+    record.update(deleted=True, deletedBy=user.id, deletedAt=datetime.now(timezone.utc).isoformat())
+    return {"id": record_id, "deleted": True, "deletedBy": user.id, "deletedAt": record["deletedAt"]}
+
 
 @app.post("/admin/assignments/manual/{bcn}", response_model=Customer)
 def assign_customer(bcn: str, body: AssignmentRequest, user: Annotated[User, Depends(current_user)]) -> Customer:

@@ -137,6 +137,9 @@ def persist_activity(record: dict) -> None:
 def persist_followup(record: dict) -> None:
     if activity_db is not None: activity_db.save_followup(record)
 
+def persist_reason(reason: dict) -> None:
+    if activity_db is not None: activity_db.save_reason(reason)
+
 @app.get("/health/live")
 def health_live() -> dict:
     return {"status": "ok"}
@@ -471,7 +474,7 @@ def list_reasons(_: Annotated[User, Depends(admin_user)]) -> list[ClosureReason]
 @app.post("/admin/closure-reasons", response_model=ClosureReason, status_code=201)
 def create_reason(data: ClosureReasonDraft, _: Annotated[User, Depends(admin_user)]) -> ClosureReason:
     if any(item["label"].casefold() == data.label.strip().casefold() for item in repo.reasons.values()): raise HTTPException(status.HTTP_409_CONFLICT, "Reason already exists.")
-    reason = {"id": f"closure-{len(repo.reasons) + 1}", "label": data.label.strip(), "active": True}; repo.reasons[reason["id"]] = reason; return ClosureReason.model_validate(reason)
+    reason = {"id": f"closure-{len(repo.reasons) + 1}", "label": data.label.strip(), "active": True}; repo.reasons[reason["id"]] = reason; persist_reason(reason); return ClosureReason.model_validate(reason)
 
 @app.patch("/admin/closure-reasons/{reason_id}", response_model=ClosureReason)
 def update_reason(reason_id: str, patch: ClosureReasonPatch, _: Annotated[User, Depends(admin_user)]) -> ClosureReason:
@@ -479,7 +482,7 @@ def update_reason(reason_id: str, patch: ClosureReasonPatch, _: Annotated[User, 
     if not reason: raise HTTPException(status.HTTP_404_NOT_FOUND, "Reason not found.")
     label = patch.label.strip() if patch.label else reason["label"]
     if any(item["id"] != reason_id and item["label"].casefold() == label.casefold() for item in repo.reasons.values()): raise HTTPException(status.HTTP_409_CONFLICT, "Reason already exists.")
-    reason.update(label=label, **({"active": patch.active} if patch.active is not None else {})); return ClosureReason.model_validate(reason)
+    reason.update(label=label, **({"active": patch.active} if patch.active is not None else {})); persist_reason(reason); return ClosureReason.model_validate(reason)
 
 @app.post("/admin/imports", status_code=201)
 async def import_customers(file: UploadFile = File(...), submission_id: str = Query(..., min_length=1), user: Annotated[User, Depends(admin_user)] = None) -> dict:

@@ -30,6 +30,12 @@ class IdempotencyRow(ActivityBase):
     actor_id: Mapped[str] = mapped_column(String(120), primary_key=True); operation: Mapped[str] = mapped_column(String(80), primary_key=True); submission_id: Mapped[str] = mapped_column(String(120), primary_key=True)
     fingerprint: Mapped[str] = mapped_column(String(128)); result: Mapped[dict] = mapped_column(JSON); completed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
+class ClosureReasonRow(ActivityBase):
+    __tablename__ = "closure_reasons"
+    id: Mapped[str] = mapped_column(String(120), primary_key=True)
+    label: Mapped[str] = mapped_column(String(120), unique=True)
+    active: Mapped[bool] = mapped_column(default=True)
+
 def fingerprint(payload: str) -> str: return sha256(payload.encode()).hexdigest()
 
 class ActivityDatabase:
@@ -58,3 +64,8 @@ class ActivityDatabase:
         with Session(self.engine) as session:
             row = session.get(FollowUpRow, record["id"]) or FollowUpRow(id=record["id"], bcn=record["bcn"], actor_id=record["actorId"], type=record["type"], status=record["status"], note=record.get("note"), version=0, created_at=datetime.now(timezone.utc), updated_at=datetime.now(timezone.utc))
             row.status = record["status"]; row.note = record.get("note"); row.updated_at = datetime.now(timezone.utc); session.add(row); session.commit()
+
+    def save_reason(self, reason: dict) -> None:
+        with Session(self.engine) as session:
+            row = session.get(ClosureReasonRow, reason["id"]) or ClosureReasonRow(id=reason["id"], label=reason["label"], active=reason["active"])
+            row.label = reason["label"]; row.active = reason["active"]; session.add(row); session.commit()

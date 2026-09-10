@@ -53,6 +53,19 @@ class AuthDatabase:
     def all_users(self) -> list[UserRow]:
         with Session(self.engine) as session: return list(session.scalars(select(UserRow)))
 
+    def update_user(self, user_id: str, changes: dict) -> UserRow | None:
+        with Session(self.engine) as session:
+            row = session.get(UserRow, user_id)
+            if not row: return None
+            for key in ("name", "role", "active"):
+                if key in changes: setattr(row, key, changes[key])
+            session.commit(); session.refresh(row); return row
+
+    def revoke_user_sessions(self, user_id: str) -> None:
+        with Session(self.engine) as session:
+            for token in session.scalars(select(SessionRow).where(SessionRow.user_id == user_id, SessionRow.revoked_at.is_(None))): token.revoked_at = datetime.now(timezone.utc)
+            session.commit()
+
     def issue(self, user_id: str, lifetime: int = 8 * 60 * 60) -> tuple[str, datetime]:
         token = token_urlsafe(32); now = datetime.now(timezone.utc); expires = now + timedelta(seconds=lifetime)
         with Session(self.engine) as session:

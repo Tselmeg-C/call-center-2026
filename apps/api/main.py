@@ -578,6 +578,9 @@ def update_user(user_id: str, patch: UserPatch, actor: Annotated[User, Depends(a
     if changes.get("role") not in {None, "Admin", "Sales"}: raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Invalid role.")
     if changes.get("email"): changes["email"] = safe_email(changes["email"])
     prior_active = record["active"]; record.update(changes)
+    if auth_db is not None:
+        updated = auth_db.update_user(user_id, changes)
+        if updated and prior_active and not updated.active: auth_db.revoke_user_sessions(user_id)
     if prior_active and (record["active"] is False or record["role"] != "Sales"):
         for token, (owner, _) in list(repo.sessions.items()):
             if owner == user_id: repo.sessions.pop(token, None)

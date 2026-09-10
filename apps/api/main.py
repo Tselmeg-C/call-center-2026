@@ -685,6 +685,7 @@ def create_assignment_rule(body: AssignmentRuleDraft, _: Annotated[User, Depends
 def update_assignment_rule(rule_id: str, patch: dict, _: Annotated[User, Depends(admin_user)]) -> dict:
     rule = next((item for item in repo.rules if item["id"] == rule_id), None)
     if not rule: raise HTTPException(status.HTTP_404_NOT_FOUND, "Rule not found.")
+    if "version" in patch and patch["version"] != repo.assignment_version: raise HTTPException(status.HTTP_409_CONFLICT, "Assignment configuration is stale.")
     if "name" in patch and any(item["id"] != rule_id and item["name"].casefold() == str(patch["name"]).strip().casefold() for item in repo.rules): raise HTTPException(status.HTTP_409_CONFLICT, "Rule already exists.")
     for key in ("name", "active", "order"):
         if key in patch: rule[key] = patch[key]

@@ -85,7 +85,7 @@ class ActivityDatabase:
     def save_followup(self, record: dict) -> None:
         with Session(self.engine) as session:
             row = session.get(FollowUpRow, record["id"]) or FollowUpRow(id=record["id"], bcn=record["bcn"], actor_id=record["actorId"], type=record["type"], due=datetime.fromisoformat(record["due"]) if record.get("due") else None, status=record["status"], note=record.get("note"), version=0, created_at=datetime.now(timezone.utc), updated_at=datetime.now(timezone.utc))
-            row.type = record["type"]; row.due = datetime.fromisoformat(record["due"]) if record.get("due") else None; row.status = record["status"]; row.note = record.get("note"); row.updated_at = datetime.now(timezone.utc); session.add(row); session.commit()
+            row.type = record["type"]; row.due = datetime.fromisoformat(record["due"]) if record.get("due") else None; row.status = record["status"]; row.note = record.get("note"); row.version = record.get("version", row.version); row.updated_at = datetime.now(timezone.utc); session.add(row); session.commit()
 
     def complete_followup(self, record: dict, interaction: dict) -> None:
         with Session(self.engine) as session:

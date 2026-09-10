@@ -3,6 +3,7 @@ from copy import deepcopy
 from contextlib import contextmanager
 from secrets import token_urlsafe
 from uuid import uuid4
+import re
 from typing import Annotated
 
 from fastapi import Body, Cookie, Depends, FastAPI, HTTPException, Query, Request, Response, UploadFile, File, status
@@ -156,7 +157,8 @@ async def origin_guard(request: Request, call_next):
         if origin not in {"http://localhost:3000", "http://127.0.0.1:3000"} and not referer.startswith("http://localhost:3000/") and not referer.startswith("http://127.0.0.1:3000/"):
             return Response("Origin not allowed.", status_code=403, media_type="application/json")
     response = await call_next(request)
-    response.headers["x-request-id"] = request.headers.get("x-request-id", str(uuid4()))[:128]
+    candidate = request.headers.get("x-request-id", "")
+    response.headers["x-request-id"] = candidate if re.fullmatch(r"[A-Za-z0-9._-]{1,128}", candidate) else str(uuid4())
     return response
 
 

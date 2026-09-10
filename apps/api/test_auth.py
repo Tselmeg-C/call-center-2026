@@ -35,6 +35,10 @@ def test_login_failure_throttle_is_generic() -> None:
     limited = client.post("/session/login", json={"email": "unknown@example.test", "password": "wrong password"})
     assert limited.status_code == 429 and limited.headers.get("retry-after") == "900" and "unknown@example.test" not in limited.text
 
+def test_request_id_rejects_malformed_client_value() -> None:
+    response = TestClient(app, base_url="http://localhost").get("/health/live", headers={"x-request-id": "bad\nvalue"})
+    assert response.status_code == 200 and "\n" not in response.headers["x-request-id"] and len(response.headers["x-request-id"]) > 10
+
 def test_database_session_lookup_uses_digest_and_revocation() -> None:
     database = AuthDatabase("sqlite+pysqlite:///:memory:")
     from datetime import datetime, timedelta, timezone

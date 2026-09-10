@@ -4,6 +4,8 @@ from contextlib import contextmanager
 from secrets import token_urlsafe
 from uuid import uuid4
 import re
+import logging
+from time import perf_counter
 from typing import Annotated
 
 from fastapi import Body, Cookie, Depends, FastAPI, HTTPException, Query, Request, Response, UploadFile, File, status
@@ -19,6 +21,7 @@ from .db_activity import ActivityDatabase
 from sqlalchemy import inspect
 
 app = FastAPI(title="Call Center API", version="0.1.0")
+logger = logging.getLogger("call-center.api")
 password_hash = PasswordHash.recommended()
 SESSION_SECONDS = 8 * 60 * 60
 
@@ -168,20 +171,24 @@ def readable_rows() -> list[dict]:
 
 @app.middleware("http")
 async def origin_guard(request: Request, call_next):
+    started = perf_counter()
     candidate = request.headers.get("x-request-id", "")
     request_id = candidate if re.fullmatch(r"[A-Za-z0-9._-]{1,128}", candidate) else str(uuid4())
     if request.url.path == "/admin/imports":
         try: content_length = int(request.headers.get("content-length", "0"))
         except ValueError: content_length = 0
         if content_length > 11 * 1024 * 1024:
+            logger.warning("request id=%s method=%s route=%s status=413 duration_ms=%.3f error=upload_limit", request_id, request.method, request.url.path, (perf_counter() - started) * 1000)
             return Response("Upload is too large.", status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, headers={"x-request-id": request_id}, media_type="application/json")
     if request.method in {"POST", "PATCH", "PUT", "DELETE"} and request.url.path != "/session/login":
         origin = request.headers.get("origin")
         referer = request.headers.get("referer", "")
         if origin not in {"http://localhost:3000", "http://127.0.0.1:3000"} and not referer.startswith("http://localhost:3000/") and not referer.startswith("http://127.0.0.1:3000/"):
+            logger.warning("request id=%s method=%s route=%s status=403 duration_ms=%.3f error=origin", request_id, request.method, request.url.path, (perf_counter() - started) * 1000)
             return Response("Origin not allowed.", status_code=403, headers={"x-request-id": request_id}, media_type="application/json")
     response = await call_next(request)
     response.headers["x-request-id"] = request_id
+    logger.info("request id=%s method=%s route=%s status=%s duration_ms=%.3f error=%s", request_id, request.method, request.url.path, response.status_code, (perf_counter() - started) * 1000, "none" if response.status_code < 400 else "http_error")
     return response
 
 

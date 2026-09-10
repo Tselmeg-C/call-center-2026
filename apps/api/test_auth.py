@@ -92,6 +92,9 @@ def test_activity_idempotency_replays_and_rejects_payload_reuse() -> None:
     try: database.save_idempotent(actor_id="u1", operation="note", submission_id="s1", payload="different", result={})
     except ValueError as exc: assert "already used" in str(exc)
     else: assert False
+    database.save_activity(record_id="a1", bcn="000123", actor_id="u1", kind="Interaction", outcome="Attempt", text="x")
+    assert database.soft_delete("a1", "u1") is True
+    assert database.history("000123")[0][0].deleted_by == "u1"
 
 def test_real_http_admin_sales_journey() -> None:
     repo.reset()

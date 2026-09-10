@@ -308,7 +308,9 @@ def delete_history(bcn: str, record_id: str, user: Annotated[User, Depends(curre
     if not record: raise HTTPException(status.HTTP_404_NOT_FOUND, "Record not found.")
     if user.role != "Admin" and record.get("actorId") != user.id: raise HTTPException(status.HTTP_403_FORBIDDEN, "Record access denied.")
     if record.get("deleted"): return {"id": record_id, "deleted": True, "deletedBy": record.get("deletedBy"), "deletedAt": record.get("deletedAt")}
-    record.update(deleted=True, deletedBy=user.id, deletedAt=datetime.now(timezone.utc).isoformat()); append_audit(user.id, "History deleted", bcn, {"recordId": record_id})
+    record.update(deleted=True, deletedBy=user.id, deletedAt=datetime.now(timezone.utc).isoformat())
+    if activity_db is not None: activity_db.soft_delete(record_id, user.id)
+    append_audit(user.id, "History deleted", bcn, {"recordId": record_id})
     return {"id": record_id, "deleted": True, "deletedBy": user.id, "deletedAt": record["deletedAt"]}
 
 @app.post("/customers/{bcn}/follow-ups")

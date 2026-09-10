@@ -63,6 +63,12 @@ class ActivityDatabase:
         with Session(self.engine) as session:
             query = select(ActivityRow).where(ActivityRow.bcn == bcn).order_by(ActivityRow.created_at, ActivityRow.id); total = session.query(ActivityRow).filter(ActivityRow.bcn == bcn).count(); return list(session.scalars(query.offset((page - 1) * page_size).limit(page_size))), total
 
+    def soft_delete(self, record_id: str, actor_id: str) -> bool:
+        with Session(self.engine) as session:
+            row = session.get(ActivityRow, record_id)
+            if not row: return False
+            row.deleted_at = datetime.now(timezone.utc); row.deleted_by = actor_id; session.commit(); return True
+
     def save_activity(self, *, record_id: str, bcn: str, actor_id: str, kind: str, outcome: str | None, text: str | None) -> None:
         with Session(self.engine) as session:
             session.add(ActivityRow(id=record_id, bcn=bcn, actor_id=actor_id, kind=kind, outcome=outcome, text=text, created_at=datetime.now(timezone.utc))); session.commit()

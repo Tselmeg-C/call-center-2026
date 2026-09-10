@@ -10,7 +10,7 @@ const body = (value: unknown): RequestInit => ({ method: "POST", body: JSON.stri
 const customer = (bcn: string) => encodeURIComponent(bcn);
 
 export function createHttpAdapter(): { services: Services; controls: MockControls } {
-  let listener = (_user: User | null) => {};
+  let listener: (user: User | null) => void = () => {};
   const services: Services = {
     signIn: (email, password) => request<User>("/session/login", body({ email, password })), signOut: () => request<null>("/session/logout", body(null)), currentUser: () => request<User>("/session/me"), sampleRecords: () => request<{ id: string; label: string }[]>("/sample-records"),
     listCustomers: async () => { const result = await request<{ items: Customer[] }>("/customers"); return result.ok ? { ok: true, data: result.data.items } : result; }, workload: () => request<WorkloadData>("/sales/workload"), getCustomer: (bcn) => request<CustomerDetail>(`/customers/${customer(bcn)}`),

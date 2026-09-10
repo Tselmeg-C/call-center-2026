@@ -54,6 +54,7 @@ class Customer(BaseModel):
     source: dict[str, str | int | float | bool | None] = Field(default_factory=dict)
     version: int = 0
     histories: list[dict] = Field(default_factory=list)
+    followUps: list[dict] = Field(default_factory=list)
 
 
 class CustomerPage(BaseModel):
@@ -136,6 +137,9 @@ auth_db = AuthDatabase(__import__("os").environ["DATABASE_URL"], create_schema=F
 customer_db = CustomerDatabase(__import__("os").environ["DATABASE_URL"], create_schema=False) if storage_mode == "postgres" else None
 assignment_db = AssignmentDatabase(__import__("os").environ["DATABASE_URL"], create_schema=False) if storage_mode == "postgres" else None
 activity_db = ActivityDatabase(__import__("os").environ["DATABASE_URL"], create_schema=False) if storage_mode == "postgres" else None
+if storage_mode == "postgres":
+    # Persistent mode must never let the demonstration fixture shadow database state after restart.
+    repo.customers.clear(); repo.followups.clear(); repo.interactions.clear(); repo.notes.clear(); repo.imports.clear(); repo.rules.clear(); repo.assignment_runs.clear()
 
 def append_audit(actor_id: str | None, action: str, target: str, details: dict) -> None:
     if assignment_db is not None: assignment_db.append_audit(actor_id=actor_id, action=action, target=target, details=details)
@@ -270,6 +274,13 @@ def sample_records(_: Annotated[User, Depends(current_user)]) -> list[dict]:
 
 @app.get("/customers", response_model=CustomerPage)
 def list_customers(user: Annotated[User, Depends(current_user)], page: int = Query(1, ge=1), page_size: int = Query(25, ge=1, le=100), mine: bool = False, q: str = "", status_filter: str | None = Query(None, alias="status"), owner: str | None = None) -> CustomerPage:
+    if customer_db is not None:
+        owner_id = user.id if mine else (None if not owner or owner == "unassigned" else owner)
+        if owner == "unassigned":
+            rows = customer_db.search(page=page, page_size=page_size, unassigned=True, status=status_filter, query=q)
+        else: rows = customer_db.search(page=page, page_size=page_size, owner_id=owner_id, status=status_filter, query=q)
+        items = [{"bcn": row.bcn, "name": row.name, "ownerId": row.owner_id, "ownerName": repo.users.get(row.owner_id or "", {}).get("name"), "status": row.status, "phones": phones, "source": row.source, "version": row.version, "histories": []} for row, phones in rows[0]]
+        return CustomerPage(items=[Customer.model_validate(row) for row in items], page=page, page_size=page_size, total=rows[1])
     rows = readable_rows()
     if mine: rows = [row for row in rows if row["ownerId"] == user.id]
     if q: rows = [row for row in rows if q.casefold() in f"{row['bcn']} {row['name']} {' '.join(row.get('phones', []))}".casefold()]
@@ -282,7 +293,14 @@ def list_customers(user: Annotated[User, Depends(current_user)], page: int = Que
 @app.get("/customers/{bcn}", response_model=Customer)
 def get_customer(bcn: str, user: Annotated[User, Depends(current_user)]) -> Customer:
     db_row = customer_db.get(bcn) if customer_db is not None else None
-    row = {"bcn": db_row.bcn, "name": db_row.name, "ownerId": db_row.owner_id, "ownerName": repo.users.get(db_row.owner_id or "", {}).get("name"), "status": db_row.status, "phones": customer_db.phones(bcn) if customer_db is not None else [], "source": db_row.source, "version": db_row.version, "histories": []} if db_row else repo.customers.get(bcn)
+    if db_row:
+        histories = []
+        followups = []
+        if activity_db is not None:
+            histories = [{"id": item.id, "bcn": item.bcn, "kind": item.kind, "outcome": item.outcome, "text": None if item.deleted_at else item.text, "actorId": item.actor_id, "timestamp": item.created_at.isoformat(), "deleted": item.deleted_at is not None} for item in activity_db.history(bcn, 1, 10000)[0]]
+            followups = [{"id": item.id, "bcn": item.bcn, "type": item.type, "due": item.due.isoformat() if item.due else None, "note": item.note, "status": item.status, "actorId": item.actor_id, "createdAt": item.created_at.isoformat(), "updatedAt": item.updated_at.isoformat()} for item in activity_db.followups(bcn)]
+        row = {"bcn": db_row.bcn, "name": db_row.name, "ownerId": db_row.owner_id, "ownerName": repo.users.get(db_row.owner_id or "", {}).get("name"), "status": db_row.status, "phones": customer_db.phones(bcn) if customer_db is not None else [], "source": db_row.source, "version": db_row.version, "histories": histories, "followUps": followups}
+    else: row = repo.customers.get(bcn)
     if not row: raise HTTPException(status.HTTP_404_NOT_FOUND, "Customer not found.")
     return Customer.model_validate(row)
 
@@ -354,10 +372,15 @@ def create_note(bcn: str, body: NoteCreate, user: Annotated[User, Depends(curren
 @app.delete("/customers/{bcn}/history/{record_id}")
 def delete_history(bcn: str, record_id: str, user: Annotated[User, Depends(current_user)]) -> dict:
     row = repo.customers.get(bcn)
+    if row is None and customer_db is not None:
+        stored = customer_db.get(bcn)
+        if stored:
+            events = [{"id": item.id, "bcn": item.bcn, "kind": item.kind, "outcome": item.outcome, "text": item.text, "actorId": item.actor_id, "timestamp": item.created_at.isoformat(), "deleted": item.deleted_at is not None} for item in (activity_db.history(bcn, 1, 10000)[0] if activity_db is not None else [])]
+            row = {"bcn": stored.bcn, "name": stored.name, "ownerId": stored.owner_id, "ownerName": repo.users.get(stored.owner_id or "", {}).get("name"), "status": stored.status, "phones": customer_db.phones(bcn), "source": stored.source, "version": stored.version, "histories": events}; repo.customers[bcn] = row
     if not row: raise HTTPException(status.HTTP_404_NOT_FOUND, "Customer not found.")
     record = next((item for item in row["histories"] if item.get("id") == record_id), None)
     if not record: raise HTTPException(status.HTTP_404_NOT_FOUND, "Record not found.")
-    if user.role != "Admin" and record.get("actorId") != user.id: raise HTTPException(status.HTTP_403_FORBIDDEN, "Record access denied.")
+    if user.role != "Admin" and row.get("ownerId") != user.id: raise HTTPException(status.HTTP_403_FORBIDDEN, "Record access denied.")
     if record.get("deleted"): return {"id": record_id, "deleted": True, "deletedBy": record.get("deletedBy"), "deletedAt": record.get("deletedAt")}
     record.update(deleted=True, deletedBy=user.id, deletedAt=datetime.now(timezone.utc).isoformat())
     if activity_db is not None: activity_db.soft_delete(record_id, user.id)
@@ -405,6 +428,9 @@ def close_customer(bcn: str, body: LifecycleRequest, user: Annotated[User, Depen
 @app.post("/customers/{bcn}/reopen")
 def reopen_customer(bcn: str, body: LifecycleRequest, user: Annotated[User, Depends(current_user)]) -> Customer:
     row = repo.customers.get(bcn)
+    if row is None and customer_db is not None:
+        stored = customer_db.get(bcn)
+        if stored: row = {"bcn": stored.bcn, "name": stored.name, "ownerId": stored.owner_id, "ownerName": repo.users.get(stored.owner_id or "", {}).get("name"), "status": stored.status, "phones": customer_db.phones(bcn), "source": stored.source, "version": stored.version, "histories": []}; repo.customers[bcn] = row
     if not row: raise HTTPException(status.HTTP_404_NOT_FOUND, "Customer not found.")
     if user.role != "Admin" and row["ownerId"] != user.id: raise HTTPException(status.HTTP_403_FORBIDDEN, "Customer access denied.")
     payload = f"{bcn}|reopen"
@@ -752,18 +778,42 @@ def run_assignment_contract(body: AssignmentRunRequest, user: Annotated[User, De
 @app.get("/sales/workload")
 def sales_workload(user: Annotated[User, Depends(current_user)]) -> dict:
     if user.role != "Sales": raise HTTPException(status.HTTP_403_FORBIDDEN, "Sales access required.")
+    if customer_db is not None and activity_db is not None:
+        owned = customer_db.open_owned(user.id); bcns = [row.bcn for row, _ in owned]; followups = activity_db.followup_summary(bcns, datetime.now(timezone.utc).date().isoformat()); interactions = activity_db.interaction_counts(bcns)
+        return {"ownerId": user.id, "totalOpen": len(owned), "neverContacted": sum(1 for bcn in bcns if not interactions.get(bcn)), "pendingFollowUps": sum(item["open"] for item in followups.values())}
     owned = [row for row in readable_rows() if row["ownerId"] == user.id and row["status"] == "Open"]
     followups = readable_followups(); return {"ownerId": user.id, "totalOpen": len(owned), "neverContacted": sum(1 for row in owned if not any(item.get("kind") == "Interaction" and not item.get("deleted") for item in row["histories"])), "pendingFollowUps": sum(1 for item in followups if item["bcn"] in {row["bcn"] for row in owned} and item["status"] == "Open")}
 
 @app.get("/workload")
 def workload_contract(user: Annotated[User, Depends(current_user)]) -> dict:
     if user.role != "Sales": raise HTTPException(status.HTTP_403_FORBIDDEN, "Sales access required.")
+    if customer_db is not None and activity_db is not None:
+        today = datetime.now(timezone.utc).date().isoformat(); owned = customer_db.open_owned(user.id); bcns = [row.bcn for row, _ in owned]; followups = activity_db.followup_summary(bcns, today); interactions = activity_db.interaction_counts(bcns)
+        counts = {bucket: 0 for bucket in ("overdue", "today", "undated", "never-contacted", "other")}; customers = []
+        for row, phones in owned:
+            summary = followups[row.bcn]; bucket = "overdue" if summary["overdue"] else "today" if summary["today"] else "undated" if summary["undated"] else "never-contacted" if not interactions.get(row.bcn) else "other"; counts[bucket] += 1; customers.append(Customer.model_validate({"bcn": row.bcn, "name": row.name, "ownerId": row.owner_id, "ownerName": repo.users.get(row.owner_id or "", {}).get("name"), "status": row.status, "phones": phones, "source": row.source, "version": row.version, "histories": []}).model_dump() | {"workloadBucket": bucket, "relevantDue": None})
+        return {"asOf": datetime.now(timezone.utc).isoformat(), "today": today, "counts": counts, "customers": customers}
     owned = [row for row in readable_rows() if row["ownerId"] == user.id and row["status"] == "Open"]
     return {"asOf": datetime.now(timezone.utc).isoformat(), "today": datetime.now(timezone.utc).date().isoformat(), "counts": {"overdue": 0, "today": 0, "undated": 0, "never-contacted": sum(1 for row in owned if not any(event.get("kind") == "Interaction" and not event.get("deleted") for event in row["histories"])), "other": 0}, "customers": [Customer.model_validate(row).model_dump() | {"workloadBucket": None, "relevantDue": None} for row in owned]}
 
 @app.get("/admin/reports")
 def admin_reports(start: str | None = None, end: str | None = None, _: Annotated[User, Depends(admin_user)] = None) -> dict:
     if start and end and start > end: raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Start date must not be after end date.")
+    if customer_db is not None and activity_db is not None:
+        metrics, daily = activity_db.report_interactions(start, end); owners: dict[str, dict] = {}; customer_rows = customer_db.all()
+        for owner_id, status_value, count in customer_db.owner_counts():
+            key = owner_id or "unassigned"; row = owners.setdefault(key, {"ownerId": owner_id, "owner": repo.users.get(key, {}).get("name", "Unassigned"), "open": 0, "closed": 0, "neverContacted": 0, "attempts": 0, "contacts": 0, "pendingFollowUps": 0}); row["open" if status_value == "Open" else "closed"] += count
+        all_counts, _ = activity_db.report_interactions(); pending = {item.bcn: item for item in activity_db.all_followups() if item.status == "Open"}
+        for owner_id, row in ((key, value) for key, value in owners.items()):
+            bcns = [item.bcn for item in customer_rows if (item.owner_id or "unassigned") == owner_id]
+            row["neverContacted"] = sum(1 for bcn in bcns if bcn not in all_counts); row["attempts"] = sum(all_counts.get(bcn, {}).get("attempts", 0) for bcn in bcns); row["contacts"] = sum(all_counts.get(bcn, {}).get("contacts", 0) for bcn in bcns); row["pendingFollowUps"] = sum(1 for item in pending.values() if item.bcn in bcns); row["contactRate"] = row["contacts"] / row["attempts"] * 100 if row["attempts"] else None
+        all_followups = activity_db.all_followups(); followups = {"overdue": 0, "today": 0, "undated": 0, "completed": sum(1 for item in all_followups if item.status == "Completed")}; today = datetime.now(timezone.utc).date()
+        for item in all_followups:
+            if item.status != "Open": continue
+            if item.due is None: followups["undated"] += 1
+            elif item.due.date() < today: followups["overdue"] += 1
+            elif item.due.date() == today: followups["today"] += 1
+        return {"owners": list(owners.values()), "daily": sorted(daily.values(), key=lambda item: item["date"]), "closureReasons": list(repo.reasons.values()), "followUps": followups}
     owners: dict[str, dict] = {}; daily: dict[str, dict] = {}; all_followups = readable_followups()
     for row in readable_rows():
         key = row["ownerId"] or "unassigned"; bucket = owners.setdefault(key, {"ownerId": row["ownerId"], "owner": repo.users.get(key, {}).get("name", "Unassigned"), "open": 0, "closed": 0, "neverContacted": 0, "attempts": 0, "contacts": 0, "pendingFollowUps": 0})

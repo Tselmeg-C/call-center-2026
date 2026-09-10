@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 from hashlib import sha256
-from sqlalchemy import DateTime, ForeignKey, Integer, JSON, String, Text, create_engine, select
+from sqlalchemy import DateTime, ForeignKey, Integer, JSON, String, Text, create_engine, select, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
 from sqlalchemy.pool import StaticPool
 
@@ -100,6 +100,36 @@ class ActivityDatabase:
 
     def all_followups(self) -> list[FollowUpRow]:
         with Session(self.engine) as session: return list(session.scalars(select(FollowUpRow).order_by(FollowUpRow.created_at, FollowUpRow.id)))
+
+    def followup_summary(self, bcns: list[str], today: str) -> dict[str, dict[str, int]]:
+        if not bcns: return {}
+        with Session(self.engine) as session:
+            rows = session.execute(select(FollowUpRow.bcn, FollowUpRow.due, FollowUpRow.status, func.count(FollowUpRow.id)).where(FollowUpRow.bcn.in_(bcns)).group_by(FollowUpRow.bcn, FollowUpRow.due, FollowUpRow.status)).all()
+        result = {bcn: {"overdue": 0, "today": 0, "undated": 0, "open": 0} for bcn in bcns}
+        for bcn, due, status, count in rows:
+            if status != "Open": continue
+            result[bcn]["open"] += count
+            if due is None: result[bcn]["undated"] += count
+            elif due.date().isoformat() < today: result[bcn]["overdue"] += count
+            elif due.date().isoformat() == today: result[bcn]["today"] += count
+        return result
+
+    def interaction_counts(self, bcns: list[str]) -> dict[str, int]:
+        if not bcns: return {}
+        with Session(self.engine) as session:
+            rows = session.execute(select(ActivityRow.bcn, func.count(ActivityRow.id)).where(ActivityRow.bcn.in_(bcns), ActivityRow.kind == "Interaction", ActivityRow.deleted_at.is_(None)).group_by(ActivityRow.bcn)).all()
+            return dict(rows)
+
+    def report_interactions(self, start: str | None = None, end: str | None = None) -> tuple[dict[str, dict[str, int]], dict[str, dict[str, int]]]:
+        with Session(self.engine) as session:
+            query = select(ActivityRow.bcn, ActivityRow.outcome, func.date(ActivityRow.created_at), func.count(ActivityRow.id)).where(ActivityRow.kind == "Interaction", ActivityRow.deleted_at.is_(None))
+            if start: query = query.where(func.date(ActivityRow.created_at) >= start)
+            if end: query = query.where(func.date(ActivityRow.created_at) <= end)
+            rows = session.execute(query.group_by(ActivityRow.bcn, ActivityRow.outcome, func.date(ActivityRow.created_at))).all()
+        by_customer: dict[str, dict[str, int]] = {}; daily: dict[str, dict[str, int]] = {}
+        for bcn, outcome, date, count in rows:
+            key = "attempts" if outcome == "Attempt" else "contacts"; by_customer.setdefault(bcn, {"attempts": 0, "contacts": 0})[key] += count; daily.setdefault(str(date), {"date": str(date), "attempts": 0, "contacts": 0})[key] += count
+        return by_customer, daily
 
     def save_reason(self, reason: dict) -> None:
         with Session(self.engine) as session:

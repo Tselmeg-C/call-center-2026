@@ -1,4 +1,4 @@
-from sqlalchemy import JSON, ForeignKey, Integer, String, create_engine, select
+from sqlalchemy import JSON, ForeignKey, Integer, String, create_engine, select, func, or_
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
 from sqlalchemy.pool import StaticPool
 
@@ -63,6 +63,37 @@ class CustomerDatabase:
             phones = {}
             for row in session.scalars(select(PhoneRow).order_by(PhoneRow.id)): phones.setdefault(row.bcn, []).append(row.phone)
             return [(row, phones.get(row.bcn, [])) for row in rows]
+
+    def search(self, *, page: int, page_size: int, owner_id: str | None = None, unassigned: bool = False, status: str | None = None, query: str = "") -> tuple[list[tuple[CustomerRow, list[str]]], int]:
+        with Session(self.engine) as session:
+            statement = select(CustomerRow)
+            count = select(func.count()).select_from(CustomerRow)
+            conditions = []
+            if owner_id is not None: conditions.append(CustomerRow.owner_id == owner_id)
+            if unassigned: conditions.append(CustomerRow.owner_id.is_(None))
+            if status is not None: conditions.append(CustomerRow.status == status)
+            if query:
+                needle = f"%{query.casefold()}%"
+                phone_match = select(PhoneRow.bcn).where(PhoneRow.phone.ilike(needle))
+                conditions.append(or_(func.lower(CustomerRow.bcn).like(needle), func.lower(CustomerRow.name).like(needle), CustomerRow.bcn.in_(phone_match)))
+            if conditions:
+                statement = statement.where(*conditions); count = count.where(*conditions)
+            total = session.scalar(count) or 0
+            rows = list(session.scalars(statement.order_by(CustomerRow.bcn).offset((page - 1) * page_size).limit(page_size)))
+            phones = {}
+            for row in session.scalars(select(PhoneRow).where(PhoneRow.bcn.in_([item.bcn for item in rows])).order_by(PhoneRow.id)): phones.setdefault(row.bcn, []).append(row.phone)
+            return [(row, phones.get(row.bcn, [])) for row in rows], total
+
+    def open_owned(self, owner_id: str) -> list[tuple[CustomerRow, list[str]]]:
+        with Session(self.engine) as session:
+            rows = list(session.scalars(select(CustomerRow).where(CustomerRow.owner_id == owner_id, CustomerRow.status == "Open").order_by(CustomerRow.bcn)))
+            phones = {}
+            for phone in session.scalars(select(PhoneRow).where(PhoneRow.bcn.in_([row.bcn for row in rows])).order_by(PhoneRow.id)): phones.setdefault(phone.bcn, []).append(phone.phone)
+            return [(row, phones.get(row.bcn, [])) for row in rows]
+
+    def owner_counts(self) -> list[tuple[str | None, str, int]]:
+        with Session(self.engine) as session:
+            return list(session.execute(select(CustomerRow.owner_id, CustomerRow.status, func.count(CustomerRow.bcn)).group_by(CustomerRow.owner_id, CustomerRow.status)))
 
     def get(self, bcn: str) -> CustomerRow | None:
         with Session(self.engine) as session: return session.get(CustomerRow, bcn)

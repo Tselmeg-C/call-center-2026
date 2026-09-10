@@ -100,6 +100,12 @@ def test_real_http_admin_sales_journey() -> None:
     assert client.post(f"/customers/009990/follow-ups/{followup.json()['id']}/complete", json={"outcome": "Attempt", "submissionId": "journey-complete"}, headers=origin).status_code == 200
     assert client.post("/customers/000125/interactions", json={"outcome": "Attempt", "submissionId": "foreign"}, headers=origin).status_code == 403
 
+def test_mutation_routes_bind_json_bodies() -> None:
+    paths = {route.path: {field.name for field in route.dependant.body_params} for route in app.routes if getattr(route, "dependant", None)}
+    assert paths["/customers/{bcn}/interactions"] == {"body"}
+    assert paths["/admin/users"] == {"data"}
+    assert paths["/admin/assignment-fallback"] == {"ids"}
+
 
 def test_expired_session_is_rejected() -> None:
     repo.reset()

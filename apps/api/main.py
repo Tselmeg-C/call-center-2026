@@ -5,7 +5,7 @@ from secrets import token_urlsafe
 from uuid import uuid4
 from typing import Annotated
 
-from fastapi import Cookie, Depends, FastAPI, HTTPException, Query, Request, Response, UploadFile, File, status
+from fastapi import Body, Cookie, Depends, FastAPI, HTTPException, Query, Request, Response, UploadFile, File, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
@@ -528,7 +528,7 @@ def assignment_fallback(_: Annotated[User, Depends(admin_user)]) -> list[str]:
     return repo.fallback_sales
 
 @app.put("/admin/assignment-fallback")
-def set_assignment_fallback(ids: list[str], _: Annotated[User, Depends(admin_user)]) -> list[str]:
+def set_assignment_fallback(ids: Annotated[list[str], Body()], _: Annotated[User, Depends(admin_user)]) -> list[str]:
     valid = {item["id"] for item in repo.users.values() if item["role"] == "Sales" and item["active"]}
     if any(item not in valid for item in ids): raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Fallback members must be active Sales users.")
     repo.fallback_sales = list(dict.fromkeys(ids)); repo.assignment_version += 1; return repo.fallback_sales

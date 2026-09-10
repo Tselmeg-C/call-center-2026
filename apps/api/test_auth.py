@@ -77,6 +77,13 @@ def test_database_session_lookup_uses_digest_and_revocation() -> None:
     database.revoke("opaque-token"); assert database.user_for_session("opaque-token") is None
     assert "opaque-token" not in {row.digest for row in Session(database.engine).query(SessionRow).all()}
 
+def test_database_duplicate_identity_is_safe_conflict() -> None:
+    database = AuthDatabase("sqlite+pysqlite:///:memory:")
+    database.create_user(user_id="u1", name="One", email="same@example.test", role="Admin", password_hash="hash")
+    try: database.create_user(user_id="u2", name="Two", email="same@example.test", role="Admin", password_hash="hash")
+    except ValueError as exc: assert "already exists" in str(exc)
+    else: assert False
+
 def test_database_customer_upsert_preserves_operational_owner() -> None:
     database = CustomerDatabase("sqlite+pysqlite:///:memory:")
     first = database.upsert_source(bcn="000123", name="Original", source={"score": 1}, primary_phone="555")

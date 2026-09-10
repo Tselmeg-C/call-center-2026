@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 from sqlalchemy import Boolean, DateTime, ForeignKey, String, create_engine, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
 from secrets import token_urlsafe
 
@@ -40,7 +41,11 @@ class AuthDatabase:
     def create_user(self, *, user_id: str, name: str, email: str, role: str, password_hash: str) -> UserRow:
         with Session(self.engine) as session:
             row = UserRow(id=user_id, name=name, email=email, role=role, active=True, password_hash=password_hash)
-            session.add(row); session.commit(); session.refresh(row); return row
+            session.add(row)
+            try: session.commit()
+            except IntegrityError as exc:
+                session.rollback(); raise ValueError("normalized identity already exists") from exc
+            session.refresh(row); return row
 
     def user_by_email(self, email: str) -> UserRow | None:
         with Session(self.engine) as session: return session.scalar(select(UserRow).where(UserRow.email == email))

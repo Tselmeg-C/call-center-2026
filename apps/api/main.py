@@ -656,14 +656,18 @@ def run_assignment(body: AssignmentRunRequest, _: Annotated[User, Depends(admin_
         if persisted: return persisted
     if body.submissionId in repo.assignment_runs: return repo.assignment_runs[body.submissionId]
     if body.scope not in {"unassigned", "all-open"}: raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Invalid assignment scope.")
-    candidates = [row for row in repo.customers.values() if row["status"] == "Open" and (body.scope == "all-open" or row["ownerId"] is None)]
-    counts = {item["id"]: sum(1 for row in repo.customers.values() if row["ownerId"] == item["id"] and row["status"] == "Open") for item in repo.users.values() if item["role"] == "Sales" and item["active"]}
+    source_rows = readable_rows()
+    candidates = [row for row in source_rows if row["status"] == "Open" and (body.scope == "all-open" or row["ownerId"] is None)]
+    counts = {item["id"]: sum(1 for row in source_rows if row["ownerId"] == item["id"] and row["status"] == "Open") for item in repo.users.values() if item["role"] == "Sales" and item["active"]}
     assigned = 0
     for row in sorted(candidates, key=lambda item: item["bcn"]):
         eligible = [rule for rule in sorted(repo.rules, key=lambda item: item["order"]) if rule["active"] and rule["ownerId"] in counts]
         if not eligible: continue
         owner = min((rule["ownerId"] for rule in eligible), key=lambda user_id: (counts[user_id], user_id))
-        row.update(ownerId=owner, ownerName=repo.users[owner]["name"], version=row["version"] + 1); counts[owner] += 1; assigned += 1
+        old_owner = row["ownerId"]; row.update(ownerId=owner, ownerName=repo.users[owner]["name"], version=row["version"] + 1); counts[owner] += 1; assigned += 1
+        if customer_db is not None:
+            customer_db.save_operational(bcn=row["bcn"], owner_id=owner, status=row["status"], version=row["version"])
+            if assignment_db is not None: assignment_db.append_assignment(bcn=row["bcn"], actor_id=_.id, old_owner_id=old_owner, new_owner_id=owner, reason="Bulk assignment")
     result = {"submissionId": body.submissionId, "scope": body.scope, "candidates": len(candidates), "assigned": assigned, "skipped": len(candidates) - assigned}
     repo.assignment_runs[body.submissionId] = result
     if assignment_db is not None: assignment_db.save_run(submission_id=body.submissionId, scope=body.scope, result=result)

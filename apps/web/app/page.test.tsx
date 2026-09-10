@@ -131,3 +131,12 @@ test("customer list exposes retry for the mock request error", async () => {
   fireEvent.click(screen.getByRole("button", { name: "Retry" }));
   expect(await screen.findByText("3 customers")).toBeVisible();
 });
+
+test("detail navigation and history pagination retain ordered records", async () => {
+  const go = setup(); await signIn("admin-demo"); go("/customers/000124");
+  expect(await screen.findByRole("heading", { name: "Acme North" })).toBeVisible();
+  expect(screen.getByText("30 records")).toBeVisible();
+  fireEvent.click(screen.getByRole("button", { name: "Next history" }));
+  expect(screen.getByText("Page 2 of 3")).toBeVisible();
+  expect(screen.getAllByText(/Reopen/).length).toBeGreaterThan(0);
+});

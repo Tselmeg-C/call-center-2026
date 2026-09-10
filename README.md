@@ -19,7 +19,7 @@ Open http://localhost:3000. The app sends you to `/login`.
 
 ## Mock prototype
 
-Select Alex Admin (Admin), River Sales (Sales), or Sky Sales (Sales), then Sign in. No password is requested. Admin lands on All Customers; Sales lands on Dashboard. Navigation destinations are explicitly labeled placeholders. Sales opening an Admin URL sees Access denied. The service-status panel shows synthetic demonstration records only, not customer data or workload calculations.
+Select Alex Admin (Admin), River Sales (Sales), or Sky Sales (Sales), then Sign in. No password is requested. Admin lands on All Customers; Sales lands on Dashboard. Navigation destinations are explicitly labeled placeholders. Sales opening an Admin URL sees Access denied. The service-status panel shows synthetic demonstration records only; workload data is documented separately.
 
 Mock controls are available on sign-in and application pages:
 
@@ -35,6 +35,7 @@ Session and fixture state live only in memory, survive navigation, and reset on 
 Typed asynchronous application services live in `apps/web/services/types.ts`. The resettable mock adapter is `apps/web/services/mock.ts`; select or replace the adapter at the single composition point in `apps/web/services/provider.tsx`. UI components consume service interfaces, while scenario/reset controls use a separate mock-only interface. Full business screens and production authentication follow in later backlog tasks.
 
 Customer browsing decisions and display rules are documented in [`_docs/customer-browsing.md`](_docs/customer-browsing.md).
+Sales workload bucket definitions, UTC behavior, and the boundary fixture table are documented in [`_docs/workload.md`](_docs/workload.md).
 Interaction and note permissions, validation, idempotency, and soft deletion are documented in [`_docs/interactions.md`](_docs/interactions.md).
 Follow-up validation, lifecycle transitions, UTC semantics, and next-action rules are documented in [`_docs/follow-ups-lifecycle.md`](_docs/follow-ups-lifecycle.md).
 

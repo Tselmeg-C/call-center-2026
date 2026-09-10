@@ -2,7 +2,7 @@ export type User = { id: string; name: string; role: "Admin" | "Sales" };
 export type SampleRecord = { id: string; label: string };
 export type Customer = {
   bcn: string; mbcn: string; name: string; ownerId: string | null; ownerName: string | null;
-  status: "Open" | "Closed"; previouslyContacted: boolean; recent: boolean;
+  status: "Open" | "Closed"; previouslyContacted: boolean | null; recent: boolean;
   propensityTier: string | null; propensityRank: number | null; propensityScore: number | null;
   phones: string[]; nextFollowUp: string | null; contactStatus: "Contact" | "Attempt" | "No recorded interaction";
 };
@@ -32,6 +32,10 @@ export type FollowUpInput = { bcn: string; type: FollowUpType; due?: string | nu
 export type UpdateFollowUpInput = { bcn: string; followUpId: string; type: FollowUpType; due?: string | null; dueKind?: "date" | "datetime" | "none"; note?: string | null; expectedUpdatedAt?: string; submissionId?: string };
 export type CompleteFollowUpInput = { bcn: string; followUpId: string; outcome: InteractionOutcome; note?: string | null; submissionId?: string };
 export type LifecycleInput = { bcn: string; reasonId?: string; expectedStatus?: "Open" | "Closed"; submissionId?: string };
+export const workloadBuckets = ["overdue", "today", "undated", "never-contacted", "other"] as const;
+export type WorkloadBucket = typeof workloadBuckets[number];
+export type WorkloadCustomer = Customer & { workloadBucket: WorkloadBucket | null; relevantDue: string | null };
+export type WorkloadData = { asOf: string; today: string; customers: WorkloadCustomer[]; counts: Record<WorkloadBucket, number> };
 
 export interface Services {
   signIn(personaId: string): Promise<Result<User>>;
@@ -39,6 +43,7 @@ export interface Services {
   currentUser(): Promise<Result<User>>;
   sampleRecords(): Promise<Result<SampleRecord[]>>;
   listCustomers(): Promise<Result<Customer[]>>;
+  workload(): Promise<Result<WorkloadData>>;
   getCustomer(bcn: string): Promise<Result<CustomerDetail>>;
   createInteraction(input: CreateInteractionInput): Promise<Result<HistoryRecord>>;
   createNote(input: CreateNoteInput): Promise<Result<HistoryRecord>>;

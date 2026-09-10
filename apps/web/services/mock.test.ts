@@ -1,5 +1,30 @@
 import { expect, test } from "vitest";
 import { createMockAdapter } from "./mock";
+import { calculateWorkload } from "./workload";
+import type { CustomerDetail, User } from "./types";
+
+const workloadFixture = (bcn: string, followUps: CustomerDetail["followUps"], history: CustomerDetail["histories"] = [], extra: Partial<CustomerDetail> = {}): CustomerDetail => ({ bcn, mbcn: bcn, name: bcn, ownerId: "sales-river", ownerName: "River Sales", status: "Open", previouslyContacted: false, recent: false, propensityTier: null, propensityRank: 1, propensityScore: 0.5, phones: [], nextFollowUp: null, contactStatus: "No recorded interaction", source: {}, histories: history, followUps, ...extra });
+const followUp = (bcn: string, id: string, due: string | null, dueKind: "date" | "datetime" | "none", status: "Open" | "Completed" | "Cancelled" = "Open") => ({ id, bcn, type: "Reminder" as const, due, dueKind, note: null, status, actor: "River Sales", actorId: "sales-river", createdAt: "2026-09-01T00:00:00Z", updatedAt: "2026-09-01T00:00:00Z" });
+
+test("workload uses UTC precedence, ignores finished work, and keeps counts/list rows in parity", () => {
+  const user: User = { id: "sales-river", name: "River Sales", role: "Sales" };
+  const rows = [
+    workloadFixture("yesterday-2359", [followUp("yesterday-2359", "y", "2026-09-09T23:59:00Z", "datetime")]),
+    workloadFixture("today-midnight", [followUp("today-midnight", "m", "2026-09-10T00:00:00Z", "datetime")]),
+    workloadFixture("today-2359", [followUp("today-2359", "l", "2026-09-10T23:59:00Z", "datetime")]),
+    workloadFixture("undated", [followUp("undated", "u", null, "none")]),
+    workloadFixture("tomorrow-midnight", [followUp("tomorrow-midnight", "t", "2026-09-11T00:00:00Z", "datetime")]),
+    workloadFixture("overlap", [followUp("overlap", "o1", "2026-09-09T23:59:00Z", "datetime"), followUp("overlap", "o2", "2026-09-10", "date")]),
+    workloadFixture("completed-cancelled", [followUp("completed-cancelled", "c1", "2026-09-09", "date", "Completed"), followUp("completed-cancelled", "c2", "2026-09-10", "date", "Cancelled")]),
+    workloadFixture("attempt-only", [], [{ kind: "Interaction", id: "a", actor: "River Sales", actorId: "sales-river", timestamp: "2026-09-10T10:00:00Z", text: null, outcome: "Attempt" }]),
+    workloadFixture("imported-contact", [], [], { previouslyContacted: true }),
+    workloadFixture("closed", [followUp("closed", "x", "2026-09-09", "date")], [], { status: "Closed" }),
+  ];
+  const data = calculateWorkload(rows, user, "2026-09-10T12:00:00Z");
+  expect(Object.fromEntries(data.customers.filter(row => row.workloadBucket).map(row => [row.bcn, row.workloadBucket]))).toEqual({ "yesterday-2359": "overdue", "overlap": "overdue", "today-midnight": "today", "today-2359": "today", undated: "undated", "tomorrow-midnight": "never-contacted", "completed-cancelled": "never-contacted", "attempt-only": "never-contacted", "imported-contact": "other" });
+  expect(data.counts).toEqual({ overdue: 2, today: 2, undated: 1, "never-contacted": 3, other: 1 });
+  expect(data.customers.filter(row => row.workloadBucket).map(row => row.bcn)).toHaveLength(9);
+});
 
 test("personas have deterministic records and typed auth failures; adapters are independent", async () => {
   const { services, controls } = createMockAdapter();

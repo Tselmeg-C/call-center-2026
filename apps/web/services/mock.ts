@@ -1,4 +1,5 @@
 import type { ClosureReason, CreateInteractionInput, CreateNoteInput, Customer, CustomerDetail, FollowUp, FollowUpInput, HistoryRecord, MockControls, MockSnapshot, Result, SampleRecord, Services, User, UpdateFollowUpInput, CompleteFollowUpInput, LifecycleInput } from "./types";
+import { calculateWorkload } from "./workload";
 
 const personas: readonly User[] = [
   { id: "admin-demo", name: "Alex Admin", role: "Admin" },
@@ -64,6 +65,10 @@ export function createMockAdapter(options: { now?: () => string } = {}): { servi
     listCustomers: () => {
       if (!user) return Promise.resolve(failure("unauthenticated", "Sign in to continue."));
       return request(() => ({ ok: true, data: customers.map(({ histories, source, ...customer }) => { void histories; void source; return { ...customer }; }) }));
+    },
+    workload: () => {
+      if (!user) return Promise.resolve(failure("unauthenticated", "Sign in to continue."));
+      return request(() => ({ ok: true, data: calculateWorkload(customers, user!, now()) }));
     },
     getCustomer: bcn => {
       if (!user) return Promise.resolve(failure("unauthenticated", "Sign in to continue."));

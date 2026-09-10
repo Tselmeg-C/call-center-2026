@@ -18,3 +18,5 @@ button { cursor: pointer; }
 button:disabled { cursor: wait; }
 :focus-visible { outline: 3px solid #0958d9; outline-offset: 3px; }
 fieldset { padding: 16px; margin-bottom: 24px; border: 1px solid #777; }
+.workload { display: grid; grid-template-columns: repeat(5, minmax(120px, 1fr)); gap: 12px; margin: 24px 0; }
+.workload a { display: grid; gap: 8px; padding: 16px; border: 1px solid #777; background: white; color: inherit; }

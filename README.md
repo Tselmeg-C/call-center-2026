@@ -42,6 +42,7 @@ Administration and authentication policies are documented in [`_docs/administrat
 Import, assignment, and reporting/audit definitions are documented in [`_docs/excel-import.md`](_docs/excel-import.md), [`_docs/assignment.md`](_docs/assignment.md), and [`_docs/reporting-audit.md`](_docs/reporting-audit.md).
 The Sales OpenAPI contract and service mapping are documented in [`_docs/api-contract.md`](_docs/api-contract.md), [`packages/shared/openapi.yaml`](packages/shared/openapi.yaml), and [`packages/shared/service-map.md`](packages/shared/service-map.md).
 The local FastAPI authentication service is documented in [`apps/api/README.md`](apps/api/README.md); install its requirements and run `uvicorn main:app --app-dir apps/api --reload` for the single-process in-memory API.
+PostgreSQL setup, adapter selection, migrations, and the synthetic benchmark are documented in [`_docs/persistence.md`](_docs/persistence.md). Runtime health, deployment topology, and migration-before-traffic rules are documented in [`_docs/deployment.md`](_docs/deployment.md).
 
 ## Checks
 

@@ -358,6 +358,11 @@ def assign_customer(bcn: str, body: AssignmentRequest, user: Annotated[User, Dep
     row = repo.customers.get(bcn)
     if not row: raise HTTPException(status.HTTP_404_NOT_FOUND, "Customer not found.")
     if body.ownerId and not any(item["id"] == body.ownerId and item["role"] == "Sales" and item["active"] for item in repo.users.values()): raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Owner must be an active Sales user.")
+    payload = f"{bcn}|{body.ownerId}|{body.expectedVersion}"
+    if activity_db is not None:
+        try: persisted = activity_db.get_idempotent(actor_id=user.id, operation="assignment", submission_id=body.submissionId, payload=payload)
+        except ValueError as exc: raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+        if persisted: return Customer.model_validate(row)
     key = (bcn, body.submissionId)
     prior = repo.submissions.get(key)
     if prior:
@@ -368,6 +373,7 @@ def assign_customer(bcn: str, body: AssignmentRequest, user: Annotated[User, Dep
         raise HTTPException(status.HTTP_409_CONFLICT, "Customer version is stale.")
     if row["ownerId"] == body.ownerId:
         repo.submissions[key] = {"ownerId": body.ownerId, "expectedVersion": body.expectedVersion}
+        if activity_db is not None: activity_db.save_idempotent(actor_id=user.id, operation="assignment", submission_id=body.submissionId, payload=payload, result=Customer.model_validate(row).model_dump())
         return Customer.model_validate(row)
     with repo.transaction():
         old = row["ownerId"]; owner = repo.users.get(body.ownerId) if body.ownerId else None
@@ -377,7 +383,9 @@ def assign_customer(bcn: str, body: AssignmentRequest, user: Annotated[User, Dep
         if assignment_db is not None: assignment_db.append_assignment(bcn=bcn, actor_id=user.id, old_owner_id=old, new_owner_id=body.ownerId, reason="Manual assignment")
         append_audit(user.id, "Customer assigned", bcn, {"oldOwner": old, "newOwner": body.ownerId})
         repo.submissions[key] = {"ownerId": body.ownerId, "expectedVersion": body.expectedVersion}
-    return Customer.model_validate(row)
+    result = Customer.model_validate(row)
+    if activity_db is not None: activity_db.save_idempotent(actor_id=user.id, operation="assignment", submission_id=body.submissionId, payload=payload, result=result.model_dump())
+    return result
 
 
 class Provision(BaseModel):

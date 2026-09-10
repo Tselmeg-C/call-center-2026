@@ -38,6 +38,8 @@ Customer browsing decisions and display rules are documented in [`_docs/customer
 Sales workload bucket definitions, UTC behavior, and the boundary fixture table are documented in [`_docs/workload.md`](_docs/workload.md).
 Interaction and note permissions, validation, idempotency, and soft deletion are documented in [`_docs/interactions.md`](_docs/interactions.md).
 Follow-up validation, lifecycle transitions, UTC semantics, and next-action rules are documented in [`_docs/follow-ups-lifecycle.md`](_docs/follow-ups-lifecycle.md).
+Administration and authentication policies are documented in [`_docs/administration.md`](_docs/administration.md) and [`_docs/authentication.md`](_docs/authentication.md).
+Import, assignment, and reporting/audit definitions are documented in [`_docs/excel-import.md`](_docs/excel-import.md), [`_docs/assignment.md`](_docs/assignment.md), and [`_docs/reporting-audit.md`](_docs/reporting-audit.md).
 
 ## Checks
 

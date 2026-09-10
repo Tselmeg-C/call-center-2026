@@ -45,6 +45,9 @@ class AuthDatabase:
     def user_by_email(self, email: str) -> UserRow | None:
         with Session(self.engine) as session: return session.scalar(select(UserRow).where(UserRow.email == email))
 
+    def all_users(self) -> list[UserRow]:
+        with Session(self.engine) as session: return list(session.scalars(select(UserRow)))
+
     def issue(self, user_id: str, lifetime: int = 8 * 60 * 60) -> tuple[str, datetime]:
         token = token_urlsafe(32); now = datetime.now(timezone.utc); expires = now + timedelta(seconds=lifetime)
         with Session(self.engine) as session:

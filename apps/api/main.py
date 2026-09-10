@@ -312,6 +312,11 @@ def writable_customer(bcn: str, user: User) -> dict:
 @app.post("/customers/{bcn}/interactions")
 def create_interaction(bcn: str, body: InteractionCreate, user: Annotated[User, Depends(current_user)], *, persist: bool = True) -> dict:
     row = writable_customer(bcn, user); key = f"{user.id}:{bcn}:interaction:{body.submissionId}"
+    payload = f"{bcn}|{body.outcome}|{body.note or ''}"
+    if persist and activity_db is not None:
+        try: persisted = activity_db.get_idempotent(actor_id=user.id, operation="interaction", submission_id=body.submissionId, payload=payload)
+        except ValueError as exc: raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+        if persisted: return persisted
     prior = repo.interactions.get(key)
     if prior:
         if prior["outcome"] != body.outcome or prior.get("note") != body.note: raise HTTPException(status.HTTP_409_CONFLICT, "Submission already used.")
@@ -319,18 +324,27 @@ def create_interaction(bcn: str, body: InteractionCreate, user: Annotated[User, 
     if body.outcome not in {"Attempt", "Contact"}: raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Invalid outcome.")
     record = {"id": f"interaction-{len(repo.interactions)+1}", "bcn": bcn, "kind": "Interaction", "outcome": body.outcome, "note": body.note, "actor": user.name, "actorId": user.id, "timestamp": datetime.now(timezone.utc).isoformat(), "deleted": False}
     repo.interactions[key] = record; row["histories"].append(record)
-    if persist: persist_activity(record)
+    if persist:
+        persist_activity(record)
+        if activity_db is not None: activity_db.save_idempotent(actor_id=user.id, operation="interaction", submission_id=body.submissionId, payload=payload, result=record)
     append_audit(user.id, "Interaction created", bcn, {"outcome": body.outcome}); return record
 
 @app.post("/customers/{bcn}/notes")
 def create_note(bcn: str, body: NoteCreate, user: Annotated[User, Depends(current_user)]) -> dict:
     row = writable_customer(bcn, user); key = f"{user.id}:{bcn}:note:{body.submissionId}"
+    payload = f"{bcn}|{body.text}"
+    if activity_db is not None:
+        try: persisted = activity_db.get_idempotent(actor_id=user.id, operation="note", submission_id=body.submissionId, payload=payload)
+        except ValueError as exc: raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+        if persisted: return persisted
     prior = repo.notes.get(key)
     if prior:
         if prior["text"] != body.text: raise HTTPException(status.HTTP_409_CONFLICT, "Submission already used.")
         return prior
     record = {"id": f"note-{len(repo.notes)+1}", "bcn": bcn, "kind": "Standalone note", "text": body.text, "actor": user.name, "actorId": user.id, "timestamp": datetime.now(timezone.utc).isoformat(), "deleted": False}
-    repo.notes[key] = record; row["histories"].append(record); persist_activity(record); append_audit(user.id, "Note created", bcn, {}); return record
+    repo.notes[key] = record; row["histories"].append(record); persist_activity(record)
+    if activity_db is not None: activity_db.save_idempotent(actor_id=user.id, operation="note", submission_id=body.submissionId, payload=payload, result=record)
+    append_audit(user.id, "Note created", bcn, {}); return record
 
 @app.delete("/customers/{bcn}/history/{record_id}")
 def delete_history(bcn: str, record_id: str, user: Annotated[User, Depends(current_user)]) -> dict:

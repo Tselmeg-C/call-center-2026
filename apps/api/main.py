@@ -308,7 +308,7 @@ def writable_customer(bcn: str, user: User) -> dict:
     return row
 
 @app.post("/customers/{bcn}/interactions")
-def create_interaction(bcn: str, body: InteractionCreate, user: Annotated[User, Depends(current_user)]) -> dict:
+def create_interaction(bcn: str, body: InteractionCreate, user: Annotated[User, Depends(current_user)], *, persist: bool = True) -> dict:
     row = writable_customer(bcn, user); key = f"{user.id}:{bcn}:interaction:{body.submissionId}"
     prior = repo.interactions.get(key)
     if prior:
@@ -316,7 +316,9 @@ def create_interaction(bcn: str, body: InteractionCreate, user: Annotated[User, 
         return prior
     if body.outcome not in {"Attempt", "Contact"}: raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Invalid outcome.")
     record = {"id": f"interaction-{len(repo.interactions)+1}", "bcn": bcn, "kind": "Interaction", "outcome": body.outcome, "note": body.note, "actor": user.name, "actorId": user.id, "timestamp": datetime.now(timezone.utc).isoformat(), "deleted": False}
-    repo.interactions[key] = record; row["histories"].append(record); persist_activity(record); append_audit(user.id, "Interaction created", bcn, {"outcome": body.outcome}); return record
+    repo.interactions[key] = record; row["histories"].append(record)
+    if persist: persist_activity(record)
+    append_audit(user.id, "Interaction created", bcn, {"outcome": body.outcome}); return record
 
 @app.post("/customers/{bcn}/notes")
 def create_note(bcn: str, body: NoteCreate, user: Annotated[User, Depends(current_user)]) -> dict:
@@ -414,7 +416,10 @@ def complete_followup(bcn: str, followup_id: str, body: InteractionCreate, user:
     item = find_followup(bcn, followup_id, user)
     if item["status"] == "Completed": return item
     if item["status"] != "Open": raise HTTPException(status.HTTP_409_CONFLICT, "Follow-up is not open.")
-    interaction = create_interaction(bcn, body, user); item["status"] = "Completed"; item["interactionId"] = interaction["id"]; item["updatedAt"] = datetime.now(timezone.utc).isoformat(); persist_followup(item); return item
+    interaction = create_interaction(bcn, body, user, persist=activity_db is None); item["status"] = "Completed"; item["interactionId"] = interaction["id"]; item["updatedAt"] = datetime.now(timezone.utc).isoformat()
+    if activity_db is not None: activity_db.complete_followup(item, interaction)
+    else: persist_followup(item)
+    return item
 
 
 @app.post("/admin/assignments/manual/{bcn}", response_model=Customer)

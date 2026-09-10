@@ -87,6 +87,14 @@ class ActivityDatabase:
             row = session.get(FollowUpRow, record["id"]) or FollowUpRow(id=record["id"], bcn=record["bcn"], actor_id=record["actorId"], type=record["type"], due=datetime.fromisoformat(record["due"]) if record.get("due") else None, status=record["status"], note=record.get("note"), version=0, created_at=datetime.now(timezone.utc), updated_at=datetime.now(timezone.utc))
             row.type = record["type"]; row.due = datetime.fromisoformat(record["due"]) if record.get("due") else None; row.status = record["status"]; row.note = record.get("note"); row.updated_at = datetime.now(timezone.utc); session.add(row); session.commit()
 
+    def complete_followup(self, record: dict, interaction: dict) -> None:
+        with Session(self.engine) as session:
+            row = session.get(FollowUpRow, record["id"])
+            if not row: raise ValueError("follow-up not found")
+            row.status = "Completed"; row.updated_at = datetime.now(timezone.utc)
+            session.add(ActivityRow(id=interaction["id"], bcn=interaction["bcn"], actor_id=interaction["actorId"], kind="Interaction", outcome=interaction.get("outcome"), text=interaction.get("note"), created_at=datetime.now(timezone.utc)))
+            session.add(row); session.commit()
+
     def followups(self, bcn: str) -> list[FollowUpRow]:
         with Session(self.engine) as session: return list(session.scalars(select(FollowUpRow).where(FollowUpRow.bcn == bcn).order_by(FollowUpRow.created_at, FollowUpRow.id)))
 

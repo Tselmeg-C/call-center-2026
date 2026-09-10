@@ -5,6 +5,7 @@ from openpyxl import Workbook
 from fastapi.testclient import TestClient
 
 from .main import app, password_hash, repo, provision_user
+from .storage import mode
 
 
 def test_login_logout_and_generic_failure() -> None:
@@ -17,6 +18,11 @@ def test_login_logout_and_generic_failure() -> None:
     assert client.get("/session/me").status_code == 200
     assert client.post("/session/logout", headers={"origin": "http://localhost:3000"}).status_code == 204
     assert client.get("/session/me").status_code == 401
+
+def test_storage_selection_is_explicit(monkeypatch) -> None:
+    monkeypatch.setenv("CALL_CENTER_STORAGE", "postgres"); monkeypatch.delenv("DATABASE_URL", raising=False)
+    try: mode(); assert False
+    except RuntimeError as exc: assert "DATABASE_URL" in str(exc)
 
 
 def test_expired_session_is_rejected() -> None:

@@ -465,10 +465,12 @@ async def import_customers(file: UploadFile = File(...), submission_id: str = Qu
         bcn_index = next(index for index, value in enumerate(headers) if value.casefold() == "bcn")
         name_index = next((index for index, value in enumerate(headers) if value.casefold() in {"customer_name", "name"}), None)
         phone_index = next((index for index, value in enumerate(headers) if value.casefold() == "phone"), None)
-        errors = []; created = updated = 0
+        errors = []; created = updated = 0; nonblank_rows = 0
         with repo.transaction():
             for row_number, values in enumerate(rows, 2):
                 if not any(value not in (None, "") for value in values): continue
+                nonblank_rows += 1
+                if nonblank_rows > 10_000: raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, "Workbook has too many rows.")
                 raw = values[bcn_index] if bcn_index < len(values) else None
                 bcn = str(raw).strip() if raw is not None else ""
                 if not bcn or not bcn.isdigit(): errors.append({"row": row_number, "field": "bcn", "reason": "Invalid bcn"}); continue

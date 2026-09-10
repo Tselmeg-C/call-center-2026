@@ -8,7 +8,7 @@ from .main import app, repo, provision_user
 def test_login_logout_and_generic_failure() -> None:
     repo.reset()
     provision_user(type("P", (), {"name": "Admin", "email": "admin@example.test", "role": "Admin", "password": "correct horse battery staple"})())
-    client = TestClient(app)
+    client = TestClient(app, base_url="http://localhost")
     assert client.post("/session/login", json={"email": "unknown@example.test", "password": "wrong"}).status_code == 401
     login = client.post("/session/login", json={"email": " ADMIN@example.test ", "password": "correct horse battery staple"})
     assert login.status_code == 200 and login.json()["role"] == "Admin"

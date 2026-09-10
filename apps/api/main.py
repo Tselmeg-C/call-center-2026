@@ -73,12 +73,12 @@ def current_user(session: Annotated[str | None, Cookie(alias="call_center_sessio
 
 
 @app.post("/session/login", response_model=User)
-def login(body: Login, response: Response) -> User:
+def login(body: Login, request: Request, response: Response) -> User:
     record = next((u for u in repo.users.values() if u["email"] == safe_email(body.email)), None)
     if not record or not record["active"] or not password_hash.verify(body.password, record["password"]):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Unable to sign in.")
     token = token_urlsafe(32); repo.sessions[token] = (record["id"], datetime.now(timezone.utc) + timedelta(seconds=SESSION_SECONDS))
-    response.set_cookie("call_center_session", token, httponly=True, samesite="lax", secure=False, path="/", max_age=SESSION_SECONDS)
+    response.set_cookie("call_center_session", token, httponly=True, samesite="lax", secure=request.url.hostname not in {"localhost", "127.0.0.1"}, path="/", max_age=SESSION_SECONDS)
     return User.model_validate(record)
 
 

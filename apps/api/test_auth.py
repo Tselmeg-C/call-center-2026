@@ -78,6 +78,28 @@ def test_activity_idempotency_replays_and_rejects_payload_reuse() -> None:
     except ValueError as exc: assert "already used" in str(exc)
     else: assert False
 
+def test_real_http_admin_sales_journey() -> None:
+    repo.reset()
+    admin = provision_user(type("P", (), {"name": "Admin", "email": "admin@example.test", "role": "Admin", "password": "correct horse battery staple"})())
+    sales = provision_user(type("P", (), {"name": "River", "email": "river@example.test", "role": "Sales", "password": "correct horse battery staple"})())
+    repo.customers["000123"]["ownerId"] = sales.id; repo.customers["000123"]["ownerName"] = sales.name
+    client = TestClient(app, base_url="http://localhost"); origin = {"origin": "http://localhost:3000"}
+    assert client.post("/session/login", json={"email": admin.email, "password": "correct horse battery staple"}).status_code == 200
+    workbook = Workbook(); workbook.active.append(["bcn", "customer_name"]); workbook.active.append(["009990", "Journey Co"]); payload = BytesIO(); workbook.save(payload)
+    imported = client.post("/admin/imports?submission_id=journey-import", files={"file": ("journey.xlsx", payload.getvalue(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")}, headers=origin)
+    assert imported.status_code == 201 and imported.json()["created"] == 1
+    assigned = client.post("/admin/assignments/manual/009990", json={"ownerId": sales.id, "submissionId": "journey-assign"}, headers=origin)
+    assert assigned.status_code == 200
+    client.post("/session/logout", headers=origin)
+    assert client.post("/session/login", json={"email": sales.email, "password": "correct horse battery staple"}).status_code == 200
+    assert client.get("/customers", params={"mine": "true"}).json()["total"] == 2
+    interaction = client.post("/customers/009990/interactions", json={"outcome": "Contact", "note": "Journey", "submissionId": "journey-contact"}, headers=origin)
+    assert interaction.status_code == 200, interaction.text
+    followup = client.post("/customers/009990/follow-ups", json={"type": "Reminder", "due": "2026-09-20", "note": "Next", "submissionId": "journey-followup"}, headers=origin)
+    assert followup.status_code == 200
+    assert client.post(f"/customers/009990/follow-ups/{followup.json()['id']}/complete", json={"outcome": "Attempt", "submissionId": "journey-complete"}, headers=origin).status_code == 200
+    assert client.post("/customers/000125/interactions", json={"outcome": "Attempt", "submissionId": "foreign"}, headers=origin).status_code == 403
+
 
 def test_expired_session_is_rejected() -> None:
     repo.reset()

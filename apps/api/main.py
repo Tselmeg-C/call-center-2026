@@ -60,6 +60,25 @@ class Login(BaseModel):
     email: str
     password: str = Field(min_length=12, max_length=128)
 
+class InteractionCreate(BaseModel):
+    outcome: str
+    note: str | None = Field(default=None, max_length=4000)
+    submissionId: str = Field(min_length=1)
+
+class NoteCreate(BaseModel):
+    text: str = Field(min_length=1, max_length=4000)
+    submissionId: str = Field(min_length=1)
+
+class FollowUpCreate(BaseModel):
+    type: str
+    due: str | None = None
+    note: str = Field(min_length=1, max_length=4000)
+    submissionId: str = Field(min_length=1)
+
+class LifecycleRequest(BaseModel):
+    reasonId: str | None = None
+    submissionId: str = Field(min_length=1)
+
 
 class MemoryRepo:
     def __init__(self) -> None:

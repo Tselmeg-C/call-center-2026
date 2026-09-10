@@ -65,10 +65,12 @@ class MemoryRepo:
         self.customers: dict[str, dict] = {}
         self.submissions: dict[tuple[str, str], dict] = {}
         self.reasons: dict[str, dict] = {}
+        self.interactions: dict[str, dict] = {}
+        self.notes: dict[str, dict] = {}
         self.reset()
 
     def reset(self) -> None:
-        self.users.clear(); self.sessions.clear(); self.submissions.clear(); self.reasons = {"closure-1": {"id": "closure-1", "label": "Won", "active": True}}
+        self.users.clear(); self.sessions.clear(); self.submissions.clear(); self.interactions.clear(); self.notes.clear(); self.reasons = {"closure-1": {"id": "closure-1", "label": "Won", "active": True}}
         self.customers = {
             "000123": {"bcn": "000123", "name": "Acme North", "ownerId": "sales-river", "ownerName": "River Sales", "status": "Open", "phones": ["(555) 010-0101"], "source": {"propensity_score": 0.98}, "version": 0, "histories": []},
             "000124": {"bcn": "000124", "name": "Acme North", "ownerId": "sales-sky", "ownerName": "Sky Sales", "status": "Closed", "phones": ["555 010 0103"], "source": {"propensity_score": 0.7}, "version": 0, "histories": []},
@@ -77,11 +79,11 @@ class MemoryRepo:
 
     @contextmanager
     def transaction(self):
-        snapshot = (deepcopy(self.users), deepcopy(self.sessions), deepcopy(self.customers), deepcopy(self.submissions))
+        snapshot = (deepcopy(self.users), deepcopy(self.sessions), deepcopy(self.customers), deepcopy(self.submissions), deepcopy(self.interactions), deepcopy(self.notes))
         try:
             yield self
         except Exception:
-            self.users, self.sessions, self.customers, self.submissions = snapshot
+            self.users, self.sessions, self.customers, self.submissions, self.interactions, self.notes = snapshot
             raise
 
 
@@ -158,6 +160,34 @@ def customer_history(bcn: str, user: Annotated[User, Depends(current_user)], pag
     events = row["histories"]; start = (page - 1) * page_size
     return {"items": events[start:start + page_size], "page": page, "page_size": page_size, "total": len(events)}
 
+def writable_customer(bcn: str, user: User) -> dict:
+    row = repo.customers.get(bcn)
+    if not row: raise HTTPException(status.HTTP_404_NOT_FOUND, "Customer not found.")
+    if row["status"] == "Closed": raise HTTPException(status.HTTP_409_CONFLICT, "Customer is closed.")
+    if user.role != "Admin" and row["ownerId"] != user.id: raise HTTPException(status.HTTP_403_FORBIDDEN, "Customer access denied.")
+    return row
+
+@app.post("/customers/{bcn}/interactions")
+def create_interaction(bcn: str, body: InteractionCreate, user: Annotated[User, Depends(current_user)]) -> dict:
+    row = writable_customer(bcn, user); key = f"{user.id}:{bcn}:interaction:{body.submissionId}"
+    prior = repo.interactions.get(key)
+    if prior:
+        if prior["outcome"] != body.outcome or prior.get("note") != body.note: raise HTTPException(status.HTTP_409_CONFLICT, "Submission already used.")
+        return prior
+    if body.outcome not in {"Attempt", "Contact"}: raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Invalid outcome.")
+    record = {"id": f"interaction-{len(repo.interactions)+1}", "bcn": bcn, "kind": "Interaction", "outcome": body.outcome, "note": body.note, "actor": user.name, "actorId": user.id, "timestamp": datetime.now(timezone.utc).isoformat(), "deleted": False}
+    repo.interactions[key] = record; row["histories"].append(record); return record
+
+@app.post("/customers/{bcn}/notes")
+def create_note(bcn: str, body: NoteCreate, user: Annotated[User, Depends(current_user)]) -> dict:
+    row = writable_customer(bcn, user); key = f"{user.id}:{bcn}:note:{body.submissionId}"
+    prior = repo.notes.get(key)
+    if prior:
+        if prior["text"] != body.text: raise HTTPException(status.HTTP_409_CONFLICT, "Submission already used.")
+        return prior
+    record = {"id": f"note-{len(repo.notes)+1}", "bcn": bcn, "kind": "Standalone note", "text": body.text, "actor": user.name, "actorId": user.id, "timestamp": datetime.now(timezone.utc).isoformat(), "deleted": False}
+    repo.notes[key] = record; row["histories"].append(record); return record
+
 
 @app.post("/admin/assignments/manual/{bcn}", response_model=Customer)
 def assign_customer(bcn: str, body: AssignmentRequest, user: Annotated[User, Depends(current_user)]) -> Customer:
@@ -217,6 +247,15 @@ class ClosureReasonDraft(BaseModel):
 class ClosureReasonPatch(BaseModel):
     label: str | None = Field(default=None, min_length=1, max_length=120)
     active: bool | None = None
+
+class InteractionCreate(BaseModel):
+    outcome: str
+    note: str | None = Field(default=None, max_length=4000)
+    submissionId: str = Field(min_length=1)
+
+class NoteCreate(BaseModel):
+    text: str = Field(min_length=1, max_length=4000)
+    submissionId: str = Field(min_length=1)
 
 
 def provision_user(data: Provision) -> User:

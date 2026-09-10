@@ -4,6 +4,9 @@ export type ImportInput = { name: string; size: number; submissionId?: string };
 export type ImportError = { row: number; field: string; reason: string };
 export type ImportResult = { jobId: string; filename: string; completedAt: string; status: "Completed" | "Partial" | "Rejected"; processed: number; created: number; updated: number; errorRows: number; errors: ImportError[] };
 export type AssignmentResult = { bcn: string; oldOwner: string | null; newOwner: string | null; reason: string };
+export type AssignmentRule = { id: string; name: string; active: boolean; position: number; field: "propensityTier" | "recent" | "previouslyContacted"; operator: "=" | "!="; value: string; eligibleSalesIds: string[] };
+export type AssignmentRunInput = { scope: "unassigned" | "all"; submissionId?: string };
+export type AssignmentRunResult = { scanned: number; assigned: number; reassigned: number; unchanged: number; skipped: number; results: AssignmentResult[] };
 export type SampleRecord = { id: string; label: string };
 export type Customer = {
   bcn: string; mbcn: string; name: string; ownerId: string | null; ownerName: string | null;
@@ -66,6 +69,9 @@ export interface Services {
   updateClosureReason(id: string, patch: Partial<Pick<ClosureReason, "label" | "active">>): Promise<Result<ClosureReason>>;
   importWorkbook(input: ImportInput): Promise<Result<ImportResult>>;
   assignCustomer(bcn: string, ownerId: string | null, submissionId?: string): Promise<Result<AssignmentResult>>;
+  assignmentRules(): Promise<Result<AssignmentRule[]>>;
+  createAssignmentRule(input: Omit<AssignmentRule, "id" | "position">): Promise<Result<AssignmentRule>>;
+  runAssignments(input: AssignmentRunInput): Promise<Result<AssignmentRunResult>>;
   deleteHistory(bcn: string, recordId: string): Promise<Result<HistoryRecord>>;
   subscribeSession(listener: (user: User | null) => void): () => void;
 }

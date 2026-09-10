@@ -12,6 +12,7 @@ class RuleRow(AssignmentBase):
     position: Mapped[int] = mapped_column(Integer)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     version: Mapped[int] = mapped_column(Integer, default=0)
+    owner_id: Mapped[str | None] = mapped_column(String(120), nullable=True)
 
 class AuditRow(AssignmentBase):
     __tablename__ = "audit_events"
@@ -38,15 +39,15 @@ class AssignmentDatabase:
         self.engine = create_engine(url, **options)
         if create_schema: AssignmentBase.metadata.create_all(self.engine)
 
-    def create_rule(self, *, rule_id: str, name: str, position: int, actor_id: str) -> RuleRow:
+    def create_rule(self, *, rule_id: str, name: str, position: int, actor_id: str, owner_id: str | None = None) -> RuleRow:
         with Session(self.engine) as session:
-            row = RuleRow(id=rule_id, name=name, position=position, active=True, version=0); session.add(row); session.add(AuditRow(actor_id=actor_id, action="Assignment rule created", target=rule_id, details={"name": name}, created_at=datetime.now(timezone.utc))); session.commit(); session.refresh(row); return row
+            row = RuleRow(id=rule_id, name=name, position=position, active=True, version=0, owner_id=owner_id); session.add(row); session.add(AuditRow(actor_id=actor_id, action="Assignment rule created", target=rule_id, details={"name": name, "ownerId": owner_id}, created_at=datetime.now(timezone.utc))); session.commit(); session.refresh(row); return row
 
     def update_rule(self, rule_id: str, patch: dict, actor_id: str) -> RuleRow | None:
         with Session(self.engine) as session:
             row = session.get(RuleRow, rule_id)
             if not row: return None
-            for key in ("name", "position", "active"):
+            for key in ("name", "position", "active", "owner_id"):
                 if key in patch: setattr(row, key, patch[key])
             row.version += 1; session.add(AuditRow(actor_id=actor_id, action="Assignment rule changed", target=rule_id, details={key: patch[key] for key in patch if key in {"name", "position", "active"}}, created_at=datetime.now(timezone.utc))); session.commit(); session.refresh(row); return row
 

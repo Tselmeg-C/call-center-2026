@@ -184,6 +184,8 @@ def current_user(session: Annotated[str | None, Cookie(alias="call_center_sessio
         for item in auth_db.all_users(): repo.users[item.id] = {"id": item.id, "name": item.name, "email": item.email, "role": item.role, "active": item.active, "password": ""}
         if activity_db is not None:
             for item in activity_db.reasons(): repo.reasons[item.id] = {"id": item.id, "label": item.label, "active": item.active}
+        if assignment_db is not None:
+            repo.rules[:] = [{"id": item.id, "name": item.name, "ownerId": item.owner_id, "active": item.active, "order": item.position} for item in assignment_db.ordered_rules()]
         return User(id=row.id, name=row.name, email=row.email, role=row.role, active=row.active)
     if not session or session not in repo.sessions:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Authentication required.")
@@ -571,7 +573,7 @@ def create_assignment_rule(body: AssignmentRuleDraft, _: Annotated[User, Depends
     owner = repo.users.get(body.ownerId)
     if not owner or owner["role"] != "Sales" or not owner["active"]: raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Owner must be active Sales.")
     rule = {"id": f"rule-{len(repo.rules)+1}", "name": body.name.strip(), "ownerId": body.ownerId, "active": body.active, "order": len(repo.rules)+1}; repo.rules.append(rule); repo.assignment_version += 1
-    if assignment_db is not None: assignment_db.create_rule(rule_id=rule["id"], name=rule["name"], position=rule["order"], actor_id=_.id)
+    if assignment_db is not None: assignment_db.create_rule(rule_id=rule["id"], name=rule["name"], position=rule["order"], actor_id=_.id, owner_id=rule["ownerId"])
     return rule
 
 @app.patch("/admin/assignment-rules/{rule_id}")
@@ -582,7 +584,7 @@ def update_assignment_rule(rule_id: str, patch: dict, _: Annotated[User, Depends
     for key in ("name", "active", "order"):
         if key in patch: rule[key] = patch[key]
     repo.rules.sort(key=lambda item: item["order"]); repo.assignment_version += 1
-    if assignment_db is not None: assignment_db.update_rule(rule_id, {"name": rule["name"], "active": rule["active"], "position": rule["order"]}, _.id)
+    if assignment_db is not None: assignment_db.update_rule(rule_id, {"name": rule["name"], "active": rule["active"], "position": rule["order"], "owner_id": rule["ownerId"]}, _.id)
     return rule
 
 @app.get("/admin/assignment-fallback")

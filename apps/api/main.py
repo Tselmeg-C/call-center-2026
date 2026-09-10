@@ -68,11 +68,13 @@ class MemoryRepo:
         self.interactions: dict[str, dict] = {}
         self.notes: dict[str, dict] = {}
         self.followups: dict[str, dict] = {}
+        self.rules: list[dict] = []
+        self.assignment_runs: dict[str, dict] = {}
         self.imports: dict[str, dict] = {}
         self.reset()
 
     def reset(self) -> None:
-        self.users.clear(); self.sessions.clear(); self.submissions.clear(); self.interactions.clear(); self.notes.clear(); self.followups.clear(); self.imports.clear(); self.reasons = {"closure-1": {"id": "closure-1", "label": "Won", "active": True}}
+        self.users.clear(); self.sessions.clear(); self.submissions.clear(); self.interactions.clear(); self.notes.clear(); self.followups.clear(); self.imports.clear(); self.rules.clear(); self.assignment_runs.clear(); self.reasons = {"closure-1": {"id": "closure-1", "label": "Won", "active": True}}
         self.customers = {
             "000123": {"bcn": "000123", "name": "Acme North", "ownerId": "sales-river", "ownerName": "River Sales", "status": "Open", "phones": ["(555) 010-0101"], "source": {"propensity_score": 0.98}, "version": 0, "histories": []},
             "000124": {"bcn": "000124", "name": "Acme North", "ownerId": "sales-sky", "ownerName": "Sky Sales", "status": "Closed", "phones": ["555 010 0103"], "source": {"propensity_score": 0.7}, "version": 0, "histories": []},
@@ -304,6 +306,15 @@ class LifecycleRequest(BaseModel):
     reasonId: str | None = None
     submissionId: str = Field(min_length=1)
 
+class AssignmentRuleDraft(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    ownerId: str
+    active: bool = True
+
+class AssignmentRunRequest(BaseModel):
+    scope: str = "unassigned"
+    submissionId: str = Field(min_length=1)
+
 
 def provision_user(data: Provision) -> User:
     email = safe_email(data.email)
@@ -399,6 +410,32 @@ async def import_customers(file: UploadFile = File(...), submission_id: str = Qu
         raise
     except Exception as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Workbook could not be processed.") from exc
+
+@app.get("/admin/assignment-rules")
+def list_assignment_rules(_: Annotated[User, Depends(admin_user)]) -> list[dict]:
+    return repo.rules
+
+@app.post("/admin/assignment-rules", status_code=201)
+def create_assignment_rule(body: AssignmentRuleDraft, _: Annotated[User, Depends(admin_user)]) -> dict:
+    if any(item["name"].casefold() == body.name.strip().casefold() for item in repo.rules): raise HTTPException(status.HTTP_409_CONFLICT, "Rule already exists.")
+    owner = repo.users.get(body.ownerId)
+    if not owner or owner["role"] != "Sales" or not owner["active"]: raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Owner must be active Sales.")
+    rule = {"id": f"rule-{len(repo.rules)+1}", "name": body.name.strip(), "ownerId": body.ownerId, "active": body.active, "order": len(repo.rules)+1}; repo.rules.append(rule); return rule
+
+@app.post("/admin/assignment-runs")
+def run_assignment(body: AssignmentRunRequest, _: Annotated[User, Depends(admin_user)]) -> dict:
+    if body.submissionId in repo.assignment_runs: return repo.assignment_runs[body.submissionId]
+    if body.scope not in {"unassigned", "all-open"}: raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Invalid assignment scope.")
+    candidates = [row for row in repo.customers.values() if row["status"] == "Open" and (body.scope == "all-open" or row["ownerId"] is None)]
+    counts = {item["id"]: sum(1 for row in repo.customers.values() if row["ownerId"] == item["id"] and row["status"] == "Open") for item in repo.users.values() if item["role"] == "Sales" and item["active"]}
+    assigned = 0
+    for row in sorted(candidates, key=lambda item: item["bcn"]):
+        eligible = [rule for rule in sorted(repo.rules, key=lambda item: item["order"]) if rule["active"] and rule["ownerId"] in counts]
+        if not eligible: continue
+        owner = min((rule["ownerId"] for rule in eligible), key=lambda user_id: (counts[user_id], user_id))
+        row.update(ownerId=owner, ownerName=repo.users[owner]["name"], version=row["version"] + 1); counts[owner] += 1; assigned += 1
+    result = {"submissionId": body.submissionId, "scope": body.scope, "candidates": len(candidates), "assigned": assigned, "skipped": len(candidates) - assigned}
+    repo.assignment_runs[body.submissionId] = result; return result
 
 
 @app.post("/operator/provision", response_model=User, include_in_schema=False)

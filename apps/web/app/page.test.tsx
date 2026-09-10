@@ -121,4 +121,13 @@ test("All Customers combines owner and imported filters and writes URL state", a
   expect(await screen.findByText("000125")).toBeVisible();
   expect(screen.queryByText("000123")).not.toBeInTheDocument();
   expect(window.location.search).toContain("owner=unassigned");
+  window.history.back(); window.dispatchEvent(new PopStateEvent("popstate"));
+  await waitFor(() => expect(screen.getByLabelText("Owner")).toHaveValue("all"));
+});
+
+test("customer list exposes retry for the mock request error", async () => {
+  const go = setup(); await signIn("admin-demo"); go("/customers"); scenario("Error");
+  expect(await screen.findByRole("alert")).toHaveTextContent("mock request failed");
+  fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+  expect(await screen.findByText("3 customers")).toBeVisible();
 });

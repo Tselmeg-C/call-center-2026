@@ -111,7 +111,7 @@ test("customer lists filter assignments and detail preserves distinct BCN histor
   expect(screen.queryByText("000124")).not.toBeInTheDocument();
   fireEvent.change(screen.getByPlaceholderText("Name, BCN, MBCN, phone"), { target: { value: " 010-0101 " } });
   expect(screen.getByText("000123")).toBeVisible();
-  expect(screen.getByRole("link", { name: "Acme North" })).toHaveAttribute("href", "/customers/000123");
+  expect(screen.getByRole("link", { name: "Acme North" })).toHaveAttribute("href", "/customers/000123?status=open");
 });
 
 test("All Customers combines owner and imported filters and writes URL state", async () => {
@@ -130,6 +130,13 @@ test("customer list exposes retry for the mock request error", async () => {
   expect(await screen.findByRole("alert")).toHaveTextContent("mock request failed");
   fireEvent.click(screen.getByRole("button", { name: "Retry" }));
   expect(await screen.findByText("3 customers")).toBeVisible();
+});
+
+test("Sales dashboard exposes workload buckets and My Customers defaults open", async () => {
+  const go = setup(); await signIn("sales-river"); go("/dashboard");
+  expect(await screen.findByRole("region", { name: "Sales workload" })).toBeVisible();
+  expect(screen.getByRole("link", { name: /Overdue/ })).toHaveAttribute("href", "/customers/mine?status=open&bucket=overdue");
+  go("/customers/mine"); expect(await screen.findByLabelText("Status")).toHaveValue("open");
 });
 
 test("detail navigation and history pagination retain ordered records", async () => {

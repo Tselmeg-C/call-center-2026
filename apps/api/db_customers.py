@@ -44,10 +44,12 @@ class CustomerDatabase:
                 if row is None: row = CustomerRow(bcn=record["bcn"], name=record["name"] or record["bcn"], status="Open", source={}); session.add(row)
                 row.name = record["name"] or row.name; row.source = record["source"]
                 phone = record.get("primary_phone")
+                existing = session.scalars(select(PhoneRow).where(PhoneRow.bcn == record["bcn"], PhoneRow.primary.is_(True))).first()
                 if phone:
-                    existing = session.scalars(select(PhoneRow).where(PhoneRow.bcn == record["bcn"], PhoneRow.primary.is_(True))).first()
                     if existing: existing.phone = phone
                     else: session.add(PhoneRow(bcn=record["bcn"], phone=phone, primary=True))
+                elif existing:
+                    session.delete(existing)
             session.commit()
 
     def all(self) -> list[CustomerRow]:

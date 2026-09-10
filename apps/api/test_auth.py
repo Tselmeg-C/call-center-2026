@@ -63,6 +63,8 @@ def test_database_customer_upsert_preserves_operational_owner() -> None:
         stored = session.get(type(first), "000123"); stored.owner_id = "sales-river"; stored.status = "Closed"; session.commit()
     second = database.upsert_source(bcn="000123", name="Imported", source={"score": 2}, primary_phone="777")
     assert second.name == "Imported" and second.owner_id == "sales-river" and second.status == "Closed"
+    database.upsert_sources([{"bcn": "000123", "name": "Imported", "source": {}, "primary_phone": None}])
+    assert database.phones("000123") == []
 
 def test_assignment_configuration_and_run_are_admin_only() -> None:
     repo.reset(); admin = provision_user(type("P", (), {"name": "Admin", "email": "admin@example.test", "role": "Admin", "password": "correct horse battery staple"})()); repo.users["sales-river"] = {"id": "sales-river", "name": "River Sales", "email": "river@example.test", "role": "Sales", "active": True, "password": "unused"}

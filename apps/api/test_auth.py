@@ -58,3 +58,12 @@ def test_password_bounds_and_inactive_users_have_safe_failures() -> None:
     assert client.post("/session/login", json={"email": "inactive@example.test", "password": "correct horse battery staple"}).status_code == 401
     short = client.post("/session/login", json={"email": "inactive@example.test", "password": "short"})
     assert short.status_code == 422 and "short" not in short.text
+
+
+def test_customer_reads_and_admin_assignment() -> None:
+    repo.reset(); admin = provision_user(type("P", (), {"name": "Admin", "email": "admin@example.test", "role": "Admin", "password": "correct horse battery staple"})()); repo.users["sales-river"] = {"id": "sales-river", "name": "River Sales", "email": "river@example.test", "role": "Sales", "active": True, "password": "unused"}
+    client = TestClient(app, base_url="http://localhost"); client.post("/session/login", json={"email": admin.email, "password": "correct horse battery staple"})
+    assert client.get("/customers/000123").status_code == 200
+    changed = client.post("/admin/assignments/manual/000125", json={"ownerId": "sales-river", "submissionId": "assign-1"}, headers={"origin": "http://localhost:3000"})
+    assert changed.status_code == 200 and changed.json()["ownerId"] == "sales-river"
+    assert client.get("/customers/missing").status_code == 404

@@ -28,6 +28,21 @@ class User(BaseModel):
     active: bool = True
 
 
+class Customer(BaseModel):
+    bcn: str
+    name: str
+    ownerId: str | None
+    ownerName: str | None
+    status: str
+    histories: list[dict] = []
+
+
+class AssignmentRequest(BaseModel):
+    ownerId: str | None
+    submissionId: str = Field(min_length=1)
+    expectedVersion: int | None = None
+
+
 class Login(BaseModel):
     email: str
     password: str = Field(min_length=12, max_length=128)
@@ -37,6 +52,11 @@ class MemoryRepo:
     def __init__(self) -> None:
         self.users: dict[str, dict] = {}
         self.sessions: dict[str, tuple[str, datetime]] = {}
+        self.customers: dict[str, dict] = {
+            "000123": {"bcn": "000123", "name": "Acme North", "ownerId": "sales-river", "ownerName": "River Sales", "status": "Open", "histories": []},
+            "000124": {"bcn": "000124", "name": "Acme North", "ownerId": "sales-sky", "ownerName": "Sky Sales", "status": "Closed", "histories": []},
+            "000125": {"bcn": "000125", "name": "Beta Works", "ownerId": None, "ownerName": None, "status": "Open", "histories": []},
+        }
         self.reset()
 
     def reset(self) -> None:
@@ -98,6 +118,31 @@ def logout(response: Response, session: Annotated[str | None, Cookie(alias="call
 @app.get("/session/me", response_model=User)
 def me(user: Annotated[User, Depends(current_user)]) -> User:
     return user
+
+
+@app.get("/customers", response_model=list[Customer])
+def list_customers(user: Annotated[User, Depends(current_user)]) -> list[Customer]:
+    return [Customer.model_validate(row) for row in repo.customers.values()]
+
+
+@app.get("/customers/{bcn}", response_model=Customer)
+def get_customer(bcn: str, user: Annotated[User, Depends(current_user)]) -> Customer:
+    row = repo.customers.get(bcn)
+    if not row: raise HTTPException(status.HTTP_404_NOT_FOUND, "Customer not found.")
+    return Customer.model_validate(row)
+
+
+@app.post("/admin/assignments/manual/{bcn}", response_model=Customer)
+def assign_customer(bcn: str, body: AssignmentRequest, user: Annotated[User, Depends(current_user)]) -> Customer:
+    if user.role != "Admin": raise HTTPException(status.HTTP_403_FORBIDDEN, "Admin access required.")
+    row = repo.customers.get(bcn)
+    if not row: raise HTTPException(status.HTTP_404_NOT_FOUND, "Customer not found.")
+    if body.ownerId and not any(item["id"] == body.ownerId and item["role"] == "Sales" and item["active"] for item in repo.users.values()): raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Owner must be an active Sales user.")
+    if row["ownerId"] == body.ownerId: return Customer.model_validate(row)
+    old = row["ownerId"]; owner = repo.users.get(body.ownerId) if body.ownerId else None
+    row["ownerId"] = body.ownerId; row["ownerName"] = owner["name"] if owner else None
+    row["histories"].append({"kind": "Assignment", "actor": user.name, "actorId": user.id, "oldOwner": old, "newOwner": body.ownerId, "reason": "Manual assignment", "timestamp": datetime.now(timezone.utc).isoformat()})
+    return Customer.model_validate(row)
 
 
 class Provision(BaseModel):

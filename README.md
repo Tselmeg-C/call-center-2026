@@ -41,6 +41,7 @@ Follow-up validation, lifecycle transitions, UTC semantics, and next-action rule
 Administration and authentication policies are documented in [`_docs/administration.md`](_docs/administration.md) and [`_docs/authentication.md`](_docs/authentication.md).
 Import, assignment, and reporting/audit definitions are documented in [`_docs/excel-import.md`](_docs/excel-import.md), [`_docs/assignment.md`](_docs/assignment.md), and [`_docs/reporting-audit.md`](_docs/reporting-audit.md).
 The Sales OpenAPI contract and service mapping are documented in [`_docs/api-contract.md`](_docs/api-contract.md), [`packages/shared/openapi.yaml`](packages/shared/openapi.yaml), and [`packages/shared/service-map.md`](packages/shared/service-map.md).
+The local FastAPI authentication service is documented in [`apps/api/README.md`](apps/api/README.md); install its requirements and run `uvicorn main:app --app-dir apps/api --reload` for the single-process in-memory API.
 
 ## Checks
 

@@ -1,0 +1,1 @@
+1. dont ever print/log/expose/send any kind of credentials like tokens/API keys/passwords

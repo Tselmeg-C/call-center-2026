@@ -503,7 +503,7 @@ async def import_customers(file: UploadFile = File(...), submission_id: str = Qu
         bcn_index = next(index for index, value in enumerate(headers) if value.casefold() == "bcn")
         name_index = next((index for index, value in enumerate(headers) if value.casefold() in {"customer_name", "name"}), None)
         phone_index = next((index for index, value in enumerate(headers) if value.casefold() == "phone"), None)
-        errors = []; created = updated = 0; nonblank_rows = 0; source_rows = []
+        errors = []; created = updated = 0; nonblank_rows = 0; source_rows = []; seen_bcns: set[str] = set()
         with repo.transaction():
             for row_number, values in enumerate(rows, 2):
                 if not any(value not in (None, "") for value in values): continue
@@ -514,6 +514,8 @@ async def import_customers(file: UploadFile = File(...), submission_id: str = Qu
                 if not bcn or not bcn.isdigit(): errors.append({"row": row_number, "field": "bcn", "reason": "Invalid bcn"}); continue
                 bcn = bcn.zfill(6); name = str(values[name_index]).strip() if name_index is not None and name_index < len(values) and values[name_index] is not None else ""
                 phone = str(values[phone_index]).strip() if phone_index is not None and phone_index < len(values) and values[phone_index] is not None else None
+                if bcn in seen_bcns: errors.append({"row": row_number, "field": "bcn", "reason": "Duplicate bcn"}); continue
+                seen_bcns.add(bcn)
                 source_rows.append({"bcn": bcn, "name": name, "source": {"customer_name": name or bcn}, "primary_phone": phone})
                 if bcn in repo.customers:
                     record = repo.customers[bcn]; record["name"] = name or record["name"]; record["phones"] = [phone] if phone else []; record.setdefault("source", {})["customer_name"] = record["name"]; updated += 1

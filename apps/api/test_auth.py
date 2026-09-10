@@ -35,6 +35,12 @@ def test_login_failure_throttle_is_generic() -> None:
     limited = client.post("/session/login", json={"email": "unknown@example.test", "password": "wrong password"})
     assert limited.status_code == 429 and limited.headers.get("retry-after") == "900" and "unknown@example.test" not in limited.text
 
+def test_login_failure_ip_throttle_limits_identity_spraying() -> None:
+    repo.reset(); client = TestClient(app, base_url="http://localhost")
+    for index in range(50): assert client.post("/session/login", json={"email": f"unknown-{index}@example.test", "password": "wrong password"}).status_code == 401
+    limited = client.post("/session/login", json={"email": "unknown-final@example.test", "password": "wrong password"})
+    assert limited.status_code == 429 and limited.headers.get("retry-after") == "900"
+
 def test_request_id_rejects_malformed_client_value() -> None:
     response = TestClient(app, base_url="http://localhost").get("/health/live", headers={"x-request-id": "bad\nvalue"})
     assert response.status_code == 200 and "\n" not in response.headers["x-request-id"] and len(response.headers["x-request-id"]) > 10

@@ -100,11 +100,12 @@ class MemoryRepo:
         self.fallback_sales: list[str] = []
         self.assignment_version: int = 1
         self.login_failures: dict[tuple[str, str], list[datetime]] = {}
+        self.login_failures_by_ip: dict[str, list[datetime]] = {}
         self.imports: dict[str, dict] = {}
         self.reset()
 
     def reset(self) -> None:
-        self.users.clear(); self.sessions.clear(); self.submissions.clear(); self.interactions.clear(); self.notes.clear(); self.followups.clear(); self.imports.clear(); self.rules.clear(); self.assignment_runs.clear(); self.fallback_sales.clear(); self.assignment_version = 1; self.login_failures.clear(); self.reasons = {"closure-1": {"id": "closure-1", "label": "Won", "active": True}}
+        self.users.clear(); self.sessions.clear(); self.submissions.clear(); self.interactions.clear(); self.notes.clear(); self.followups.clear(); self.imports.clear(); self.rules.clear(); self.assignment_runs.clear(); self.fallback_sales.clear(); self.assignment_version = 1; self.login_failures.clear(); self.login_failures_by_ip.clear(); self.reasons = {"closure-1": {"id": "closure-1", "label": "Won", "active": True}}
         self.customers = {
             "000123": {"bcn": "000123", "name": "Acme North", "ownerId": "sales-river", "ownerName": "River Sales", "status": "Open", "phones": ["(555) 010-0101"], "source": {"propensity_score": 0.98}, "version": 0, "histories": []},
             "000124": {"bcn": "000124", "name": "Acme North", "ownerId": "sales-sky", "ownerName": "Sky Sales", "status": "Closed", "phones": ["555 010 0103"], "source": {"propensity_score": 0.7}, "version": 0, "histories": []},
@@ -204,11 +205,15 @@ def login(body: Login, request: Request, response: Response) -> User:
         token, expires = auth_db.issue(record.id, SESSION_SECONDS); response.set_cookie("call_center_session", token, httponly=True, samesite="lax", secure=request.url.hostname not in {"localhost", "127.0.0.1"}, path="/", max_age=SESSION_SECONDS); return User(id=record.id, name=record.name, email=record.email, role=record.role, active=record.active)
     now = datetime.now(timezone.utc); ip = request.client.host if request.client else "unknown"; key = (safe_email(body.email), ip)
     recent = [stamp for stamp in repo.login_failures.get(key, []) if now - stamp < timedelta(minutes=15)]
+    ip_recent = [stamp for stamp in repo.login_failures_by_ip.get(ip, []) if now - stamp < timedelta(minutes=15)]
+    if len(ip_recent) >= 50:
+        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "Too many sign-in attempts.", headers={"Retry-After": "900"})
     if len(recent) >= 5:
         raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "Too many sign-in attempts.", headers={"Retry-After": "900"})
     record = next((u for u in repo.users.values() if u["email"] == safe_email(body.email)), None)
     if not record or not record["active"] or not password_hash.verify(body.password, record["password"]):
         repo.login_failures[key] = recent + [now]
+        repo.login_failures_by_ip[ip] = ip_recent + [now]
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Unable to sign in.")
     repo.login_failures.pop(key, None)
     token = token_urlsafe(32); repo.sessions[token] = (record["id"], datetime.now(timezone.utc) + timedelta(seconds=SESSION_SECONDS))

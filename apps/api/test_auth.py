@@ -9,7 +9,7 @@ def test_login_logout_and_generic_failure() -> None:
     repo.reset()
     provision_user(type("P", (), {"name": "Admin", "email": "admin@example.test", "role": "Admin", "password": "correct horse battery staple"})())
     client = TestClient(app, base_url="http://localhost")
-    assert client.post("/session/login", json={"email": "unknown@example.test", "password": "wrong"}).status_code == 401
+    assert client.post("/session/login", json={"email": "unknown@example.test", "password": "wrong password"}).status_code == 401
     login = client.post("/session/login", json={"email": " ADMIN@example.test ", "password": "correct horse battery staple"})
     assert login.status_code == 200 and login.json()["role"] == "Admin"
     assert client.get("/session/me").status_code == 200
@@ -50,3 +50,11 @@ def test_operator_provision_and_recovery_revoke_session() -> None:
     assert recovered.status_code == 200 and "password" not in recovered.json()
     assert client.get("/session/me").status_code == 401
     assert client.post("/operator/provision", json={"name": "Second", "email": "second@example.test", "role": "Admin", "password": "correct horse battery staple"}, headers=headers).status_code == 409
+
+
+def test_password_bounds_and_inactive_users_have_safe_failures() -> None:
+    repo.reset(); provision_user(type("P", (), {"name": "Inactive", "email": "inactive@example.test", "role": "Sales", "password": "correct horse battery staple"})()); repo.users["user-1"]["active"] = False
+    client = TestClient(app, base_url="http://localhost")
+    assert client.post("/session/login", json={"email": "inactive@example.test", "password": "correct horse battery staple"}).status_code == 401
+    short = client.post("/session/login", json={"email": "inactive@example.test", "password": "short"})
+    assert short.status_code == 422 and "short" not in short.text

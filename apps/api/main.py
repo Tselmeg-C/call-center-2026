@@ -5,12 +5,19 @@ from secrets import token_urlsafe
 from typing import Annotated
 
 from fastapi import Cookie, Depends, FastAPI, HTTPException, Request, Response, status
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from pwdlib import PasswordHash
 
 app = FastAPI(title="Call Center API", version="0.1.0")
 password_hash = PasswordHash.recommended()
 SESSION_SECONDS = 8 * 60 * 60
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_error(_: Request, __: RequestValidationError) -> JSONResponse:
+    return JSONResponse({"detail": "Invalid request."}, status_code=422)
 
 
 class User(BaseModel):
@@ -23,7 +30,7 @@ class User(BaseModel):
 
 class Login(BaseModel):
     email: str
-    password: str
+    password: str = Field(min_length=12, max_length=128)
 
 
 class MemoryRepo:

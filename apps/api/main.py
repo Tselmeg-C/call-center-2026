@@ -34,6 +34,8 @@ class Customer(BaseModel):
     ownerId: str | None
     ownerName: str | None
     status: str
+    phones: list[str] = Field(default_factory=list)
+    source: dict[str, str | int | float | bool | None] = Field(default_factory=dict)
     version: int = 0
     histories: list[dict] = Field(default_factory=list)
 
@@ -67,9 +69,9 @@ class MemoryRepo:
     def reset(self) -> None:
         self.users.clear(); self.sessions.clear(); self.submissions.clear()
         self.customers = {
-            "000123": {"bcn": "000123", "name": "Acme North", "ownerId": "sales-river", "ownerName": "River Sales", "status": "Open", "version": 0, "histories": []},
-            "000124": {"bcn": "000124", "name": "Acme North", "ownerId": "sales-sky", "ownerName": "Sky Sales", "status": "Closed", "version": 0, "histories": []},
-            "000125": {"bcn": "000125", "name": "Beta Works", "ownerId": None, "ownerName": None, "status": "Open", "version": 0, "histories": []},
+            "000123": {"bcn": "000123", "name": "Acme North", "ownerId": "sales-river", "ownerName": "River Sales", "status": "Open", "phones": ["(555) 010-0101"], "source": {"propensity_score": 0.98}, "version": 0, "histories": []},
+            "000124": {"bcn": "000124", "name": "Acme North", "ownerId": "sales-sky", "ownerName": "Sky Sales", "status": "Closed", "phones": ["555 010 0103"], "source": {"propensity_score": 0.7}, "version": 0, "histories": []},
+            "000125": {"bcn": "000125", "name": "Beta Works", "ownerId": None, "ownerName": None, "status": "Open", "phones": [], "source": {}, "version": 0, "histories": []},
         }
 
     @contextmanager
@@ -134,7 +136,7 @@ def me(user: Annotated[User, Depends(current_user)]) -> User:
 def list_customers(user: Annotated[User, Depends(current_user)], page: int = Query(1, ge=1), page_size: int = Query(25, ge=1, le=100), mine: bool = False, q: str = "", status_filter: str | None = Query(None, alias="status"), owner: str | None = None) -> CustomerPage:
     rows = list(repo.customers.values())
     if mine: rows = [row for row in rows if row["ownerId"] == user.id]
-    if q: rows = [row for row in rows if q.casefold() in f"{row['bcn']} {row['name']}".casefold()]
+    if q: rows = [row for row in rows if q.casefold() in f"{row['bcn']} {row['name']} {' '.join(row.get('phones', []))}".casefold()]
     if status_filter: rows = [row for row in rows if row["status"] == status_filter]
     if owner: rows = [row for row in rows if (row["ownerId"] or "unassigned") == owner]
     rows.sort(key=lambda row: row["bcn"]); total = len(rows); start = (page - 1) * page_size
@@ -146,6 +148,14 @@ def get_customer(bcn: str, user: Annotated[User, Depends(current_user)]) -> Cust
     row = repo.customers.get(bcn)
     if not row: raise HTTPException(status.HTTP_404_NOT_FOUND, "Customer not found.")
     return Customer.model_validate(row)
+
+
+@app.get("/customers/{bcn}/history")
+def customer_history(bcn: str, user: Annotated[User, Depends(current_user)], page: int = Query(1, ge=1), page_size: int = Query(25, ge=1, le=100)) -> dict:
+    row = repo.customers.get(bcn)
+    if not row: raise HTTPException(status.HTTP_404_NOT_FOUND, "Customer not found.")
+    events = row["histories"]; start = (page - 1) * page_size
+    return {"items": events[start:start + page_size], "page": page, "page_size": page_size, "total": len(events)}
 
 
 @app.post("/admin/assignments/manual/{bcn}", response_model=Customer)

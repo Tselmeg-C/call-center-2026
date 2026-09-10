@@ -235,6 +235,32 @@ def reopen_customer(bcn: str, body: LifecycleRequest, user: Annotated[User, Depe
     if user.role != "Admin" and row["ownerId"] != user.id: raise HTTPException(status.HTTP_403_FORBIDDEN, "Customer access denied.")
     row["status"] = "Open"; row["version"] += 1; row["histories"].append({"kind": "Reopen", "actor": user.name, "timestamp": datetime.now(timezone.utc).isoformat()}); return Customer.model_validate(row)
 
+def find_followup(bcn: str, followup_id: str, user: User) -> dict:
+    row = writable_customer(bcn, user)
+    item = next((value for value in repo.followups.values() if value["bcn"] == bcn and value["id"] == followup_id), None)
+    if not item: raise HTTPException(status.HTTP_404_NOT_FOUND, "Follow-up not found.")
+    return item
+
+@app.patch("/customers/{bcn}/follow-ups/{followup_id}")
+def update_followup(bcn: str, followup_id: str, body: FollowUpCreate, user: Annotated[User, Depends(current_user)]) -> dict:
+    item = find_followup(bcn, followup_id, user)
+    if item["status"] != "Open": raise HTTPException(status.HTTP_409_CONFLICT, "Follow-up is no longer open.")
+    item.update(type=body.type, due=body.due, note=body.note, updatedAt=datetime.now(timezone.utc).isoformat()); return item
+
+@app.post("/customers/{bcn}/follow-ups/{followup_id}/cancel")
+def cancel_followup(bcn: str, followup_id: str, user: Annotated[User, Depends(current_user)]) -> dict:
+    item = find_followup(bcn, followup_id, user)
+    if item["status"] == "Cancelled": return item
+    if item["status"] == "Completed": raise HTTPException(status.HTTP_409_CONFLICT, "Follow-up is completed.")
+    item["status"] = "Cancelled"; item["updatedAt"] = datetime.now(timezone.utc).isoformat(); return item
+
+@app.post("/customers/{bcn}/follow-ups/{followup_id}/complete")
+def complete_followup(bcn: str, followup_id: str, body: InteractionCreate, user: Annotated[User, Depends(current_user)]) -> dict:
+    item = find_followup(bcn, followup_id, user)
+    if item["status"] == "Completed": return item
+    if item["status"] != "Open": raise HTTPException(status.HTTP_409_CONFLICT, "Follow-up is not open.")
+    interaction = create_interaction(bcn, body, user); item["status"] = "Completed"; item["interactionId"] = interaction["id"]; item["updatedAt"] = datetime.now(timezone.utc).isoformat(); return item
+
 
 @app.post("/admin/assignments/manual/{bcn}", response_model=Customer)
 def assign_customer(bcn: str, body: AssignmentRequest, user: Annotated[User, Depends(current_user)]) -> Customer:

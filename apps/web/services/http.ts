@@ -1,25 +1,26 @@
-import type { MockControls, Result, Services, User } from "./types";
+import type { MockControls, Result, Services, User, Customer, CustomerDetail, HistoryRecord, FollowUp, ClosureReason, ReportData, AuditEvent, WorkloadData, AssignmentRule, AssignmentRunResult, AssignmentRunInput, CreateInteractionInput, CreateNoteInput, FollowUpInput, UpdateFollowUpInput, CompleteFollowUpInput, LifecycleInput, UserDraft, ImportInput, ImportResult, AssignmentResult } from "./types";
 
 const base = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
-const fail = <T>(message = "Request failed."): Result<T> => ({ ok: false, error: { code: "request-failure", message } });
+const failure = <T>(message = "Request failed."): Result<T> => ({ ok: false, error: { code: "request-failure", message } });
+const mapError = (status: number) => status === 401 ? "Authentication required." : status === 403 ? "Access denied." : status === 404 ? "Not found." : status === 409 ? "Conflict. Refresh and retry." : status === 422 ? "Invalid request." : "Request failed.";
 async function request<T>(path: string, init?: RequestInit): Promise<Result<T>> {
-  try {
-    const response = await fetch(`${base}${path}`, { credentials: "include", ...init, headers: { "content-type": "application/json", ...init?.headers } });
-    if (!response.ok) return fail(response.status === 401 ? "Authentication required." : response.status === 403 ? "Admin access required." : response.status === 404 ? "Not found." : response.status === 409 ? "Conflict. Refresh and retry." : "Request failed.");
-    return { ok: true, data: await response.json() as T };
-  } catch { return fail("Network request failed."); }
+  try { const response = await fetch(`${base}${path}`, { credentials: "include", ...init, headers: { ...(init?.body instanceof FormData ? {} : { "content-type": "application/json" }), ...init?.headers } }); if (!response.ok) return failure(mapError(response.status)); return { ok: true, data: await response.json() as T }; } catch { return failure("Network request failed."); }
 }
+const body = (value: unknown): RequestInit => ({ method: "POST", body: JSON.stringify(value) });
+const customer = (bcn: string) => encodeURIComponent(bcn);
 
 export function createHttpAdapter(): { services: Services; controls: MockControls } {
   let listener = (_user: User | null) => {};
-  const services = {
-    signIn: (email: string, password?: string) => request<User>("/session/login", { method: "POST", body: JSON.stringify({ email, password }) }),
-    signOut: () => request<null>("/session/logout", { method: "POST" }),
-    currentUser: () => request<User>("/session/me"),
-    listCustomers: async () => { const result = await request<{ items: any[] }>("/customers"); return result.ok ? { ok: true, data: result.data.items } : result; },
-    getCustomer: (bcn: string) => request<any>(`/customers/${encodeURIComponent(bcn)}`),
-    subscribeSession: (callback: (user: User | null) => void) => { listener = callback; void services.currentUser().then(result => listener(result.ok ? result.data : null)); return () => { listener = () => {}; }; },
-  } as unknown as Services;
-  const controls = { personas: [], getSnapshot: () => ({ scenario: "Normal" as const, revision: 0, reset: 0, notice: "" }), subscribe: () => () => {}, setScenario: () => {}, reset: () => {} } as MockControls;
+  const services: Services = {
+    signIn: (email, password) => request<User>("/session/login", body({ email, password })), signOut: () => request<null>("/session/logout", body(null)), currentUser: () => request<User>("/session/me"), sampleRecords: async () => ({ ok: true, data: [] }),
+    listCustomers: async () => { const result = await request<{ items: Customer[] }>("/customers"); return result.ok ? { ok: true, data: result.data.items } : result; }, workload: () => request<WorkloadData>("/sales/workload"), getCustomer: (bcn) => request<CustomerDetail>(`/customers/${customer(bcn)}`),
+    createInteraction: (input: CreateInteractionInput) => request<HistoryRecord>(`/customers/${customer(input.bcn)}/interactions`, body({ outcome: input.outcome, note: input.note, submissionId: input.submissionId ?? crypto.randomUUID() })), createNote: (input: CreateNoteInput) => request<HistoryRecord>(`/customers/${customer(input.bcn)}/notes`, body({ text: input.text, submissionId: input.submissionId ?? crypto.randomUUID() })), createFollowUp: (input: FollowUpInput) => request<FollowUp>(`/customers/${customer(input.bcn)}/follow-ups`, body({ type: input.type, due: input.due, note: input.note ?? "", submissionId: input.submissionId ?? crypto.randomUUID() })),
+    updateFollowUp: (input: UpdateFollowUpInput) => request<FollowUp>(`/customers/${customer(input.bcn)}/follow-ups/${encodeURIComponent(input.followUpId)}`, { method: "PATCH", body: JSON.stringify({ type: input.type, due: input.due, note: input.note ?? "", submissionId: input.submissionId ?? crypto.randomUUID() }) }), cancelFollowUp: (bcn, followUpId, submissionId) => request<FollowUp>(`/customers/${customer(bcn)}/follow-ups/${encodeURIComponent(followUpId)}/cancel`, body({ submissionId: submissionId ?? crypto.randomUUID() })), completeFollowUp: (input: CompleteFollowUpInput) => request<FollowUp>(`/customers/${customer(input.bcn)}/follow-ups/${encodeURIComponent(input.followUpId)}/complete`, body({ outcome: input.outcome, note: input.note, submissionId: input.submissionId ?? crypto.randomUUID() })), closeCustomer: (input: LifecycleInput) => request<Customer>(`/customers/${customer(input.bcn)}/close`, body({ reasonId: input.reasonId, submissionId: input.submissionId ?? crypto.randomUUID() })), reopenCustomer: (input: LifecycleInput) => request<Customer>(`/customers/${customer(input.bcn)}/reopen`, body({ submissionId: input.submissionId ?? crypto.randomUUID() })),
+    closureReasons: () => request<ClosureReason[]>("/admin/closure-reasons"), listUsers: () => request<User[]>("/admin/users"), createUser: (input: UserDraft) => request<User>("/admin/users", body({ ...input, password: "" })), updateUser: (id, patch) => request<User>(`/admin/users/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(patch) }), createClosureReason: (label) => request<ClosureReason>("/admin/closure-reasons", body({ label })), updateClosureReason: (id, patch) => request<ClosureReason>(`/admin/closure-reasons/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(patch) }),
+    importWorkbook: async (_input: ImportInput) => failure<ImportResult>("Choose a file upload in HTTP mode."), assignCustomer: (bcn, ownerId, submissionId) => request<AssignmentResult>(`/admin/assignments/manual/${customer(bcn)}`, body({ ownerId, submissionId: submissionId ?? crypto.randomUUID() })), assignmentRules: () => request<AssignmentRule[]>("/admin/assignment-rules"), createAssignmentRule: (input) => request<AssignmentRule>("/admin/assignment-rules", body(input)), updateAssignmentRule: async () => failure("Assignment rule editing is not available yet."), assignmentFallback: async () => ({ ok: true, data: [] }), setAssignmentFallback: async (ids) => ({ ok: true, data: ids }), assignmentVersion: async () => ({ ok: true, data: 0 }),
+    reports: () => request<ReportData>("/admin/reports"), audit: () => request<AuditEvent[]>("/admin/audit"), runAssignments: (input: AssignmentRunInput) => request<AssignmentRunResult>("/admin/assignment-runs", body({ scope: input.scope === "all" ? "all-open" : input.scope, submissionId: input.submissionId ?? crypto.randomUUID() })), deleteHistory: (bcn, recordId) => request<HistoryRecord>(`/customers/${customer(bcn)}/history/${encodeURIComponent(recordId)}`, { method: "DELETE" }),
+    subscribeSession: (callback) => { listener = callback; void services.currentUser().then(result => listener(result.ok ? result.data : null)); return () => { listener = () => {}; }; },
+  };
+  const controls: MockControls = { personas: [], getSnapshot: () => ({ scenario: "Normal", revision: 0, reset: 0, notice: "" }), subscribe: () => () => {}, setScenario: () => {}, reset: () => {} };
   return { services, controls };
 }

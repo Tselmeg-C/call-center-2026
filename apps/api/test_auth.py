@@ -23,3 +23,8 @@ def test_expired_session_is_rejected() -> None:
     repo.sessions["expired"] = (user.id, datetime.now(timezone.utc) - timedelta(seconds=1))
     client = TestClient(app); client.cookies.set("call_center_session", "expired")
     assert client.get("/session/me").status_code == 401
+
+
+def test_foreign_origin_is_rejected_before_mutation() -> None:
+    repo.reset(); client = TestClient(app)
+    assert client.post("/session/logout", headers={"origin": "https://foreign.example"}).status_code == 403

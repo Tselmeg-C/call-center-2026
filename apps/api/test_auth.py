@@ -24,6 +24,12 @@ def test_storage_selection_is_explicit(monkeypatch) -> None:
     try: mode(); assert False
     except RuntimeError as exc: assert "DATABASE_URL" in str(exc)
 
+def test_login_failure_throttle_is_generic() -> None:
+    repo.reset(); client = TestClient(app, base_url="http://localhost")
+    for _ in range(5): assert client.post("/session/login", json={"email": "unknown@example.test", "password": "wrong password"}).status_code == 401
+    limited = client.post("/session/login", json={"email": "unknown@example.test", "password": "wrong password"})
+    assert limited.status_code == 429 and limited.headers.get("retry-after") == "900" and "unknown@example.test" not in limited.text
+
 
 def test_expired_session_is_rejected() -> None:
     repo.reset()

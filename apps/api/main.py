@@ -135,8 +135,7 @@ def login(body: Login, request: Request, response: Response) -> User:
     now = datetime.now(timezone.utc); ip = request.client.host if request.client else "unknown"; key = (safe_email(body.email), ip)
     recent = [stamp for stamp in repo.login_failures.get(key, []) if now - stamp < timedelta(minutes=15)]
     if len(recent) >= 5:
-        response.headers["retry-after"] = "900"
-        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "Too many sign-in attempts.")
+        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "Too many sign-in attempts.", headers={"Retry-After": "900"})
     record = next((u for u in repo.users.values() if u["email"] == safe_email(body.email)), None)
     if not record or not record["active"] or not password_hash.verify(body.password, record["password"]):
         repo.login_failures[key] = recent + [now]

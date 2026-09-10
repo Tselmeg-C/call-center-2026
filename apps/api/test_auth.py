@@ -3,10 +3,12 @@ from io import BytesIO
 from openpyxl import Workbook
 
 from fastapi.testclient import TestClient
+from sqlalchemy.orm import Session
 
 from .main import app, password_hash, repo, provision_user
 from .storage import mode
 from .db_auth import AuthDatabase, UserRow, SessionRow, digest
+from .db_customers import CustomerDatabase
 
 
 def test_login_logout_and_generic_failure() -> None:
@@ -33,7 +35,6 @@ def test_login_failure_throttle_is_generic() -> None:
 
 def test_database_session_lookup_uses_digest_and_revocation() -> None:
     database = AuthDatabase("sqlite+pysqlite:///:memory:")
-    from sqlalchemy.orm import Session
     from datetime import datetime, timedelta, timezone
     with Session(database.engine) as session:
         session.add(UserRow(id="u1", name="Admin", email="admin@example.test", role="Admin", active=True, password_hash="hash"))
@@ -42,6 +43,14 @@ def test_database_session_lookup_uses_digest_and_revocation() -> None:
     assert database.user_for_session("opaque-token").id == "u1"
     database.revoke("opaque-token"); assert database.user_for_session("opaque-token") is None
     assert "opaque-token" not in {row.digest for row in Session(database.engine).query(SessionRow).all()}
+
+def test_database_customer_upsert_preserves_operational_owner() -> None:
+    database = CustomerDatabase("sqlite+pysqlite:///:memory:")
+    first = database.upsert_source(bcn="000123", name="Original", source={"score": 1}, primary_phone="555")
+    with Session(database.engine) as session:
+        stored = session.get(type(first), "000123"); stored.owner_id = "sales-river"; stored.status = "Closed"; session.commit()
+    second = database.upsert_source(bcn="000123", name="Imported", source={"score": 2}, primary_phone="777")
+    assert second.name == "Imported" and second.owner_id == "sales-river" and second.status == "Closed"
 
 
 def test_expired_session_is_rejected() -> None:

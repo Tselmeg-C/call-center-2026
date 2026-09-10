@@ -158,7 +158,8 @@ def health_ready() -> dict:
 
 def readable_rows() -> list[dict]:
     if customer_db is None: return list(repo.customers.values())
-    return [{"bcn": item.bcn, "name": item.name, "ownerId": item.owner_id, "ownerName": repo.users.get(item.owner_id or "", {}).get("name"), "status": item.status, "phones": phones, "source": item.source, "version": item.version, "histories": []} for item, phones in customer_db.all_with_phones()]
+    pairs = customer_db.all_with_phones(); histories = activity_db.history_map([item.bcn for item, _ in pairs]) if activity_db is not None else {}
+    return [{"bcn": item.bcn, "name": item.name, "ownerId": item.owner_id, "ownerName": repo.users.get(item.owner_id or "", {}).get("name"), "status": item.status, "phones": phones, "source": item.source, "version": item.version, "histories": histories.get(item.bcn, [])} for item, phones in pairs]
 
 
 @app.middleware("http")

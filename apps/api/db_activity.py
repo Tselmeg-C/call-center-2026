@@ -63,6 +63,15 @@ class ActivityDatabase:
         with Session(self.engine) as session:
             query = select(ActivityRow).where(ActivityRow.bcn == bcn).order_by(ActivityRow.created_at, ActivityRow.id); total = session.query(ActivityRow).filter(ActivityRow.bcn == bcn).count(); return list(session.scalars(query.offset((page - 1) * page_size).limit(page_size))), total
 
+    def history_map(self, bcns: list[str]) -> dict[str, list[dict]]:
+        if not bcns: return {}
+        with Session(self.engine) as session:
+            rows = session.scalars(select(ActivityRow).where(ActivityRow.bcn.in_(bcns)).order_by(ActivityRow.created_at, ActivityRow.id))
+            result = {}
+            for item in rows:
+                result.setdefault(item.bcn, []).append({"id": item.id, "bcn": item.bcn, "kind": item.kind, "outcome": item.outcome, "note": None if item.deleted_at else item.text, "actorId": item.actor_id, "timestamp": item.created_at.isoformat(), "deleted": item.deleted_at is not None})
+            return result
+
     def soft_delete(self, record_id: str, actor_id: str) -> bool:
         with Session(self.engine) as session:
             row = session.get(ActivityRow, record_id)

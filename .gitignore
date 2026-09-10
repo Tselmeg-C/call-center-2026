@@ -2,3 +2,15 @@ data/
 _docs/
 .env
 venv/
+
+# Frontend dependencies and generated output
+node_modules/
+.next/
+out/
+coverage/
+*.tsbuildinfo
+next-env.d.ts
+
+# Local environment files
+.env*
+*.log

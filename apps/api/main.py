@@ -73,12 +73,14 @@ class MemoryRepo:
         self.followups: dict[str, dict] = {}
         self.rules: list[dict] = []
         self.assignment_runs: dict[str, dict] = {}
+        self.fallback_sales: list[str] = []
+        self.assignment_version: int = 1
         self.login_failures: dict[tuple[str, str], list[datetime]] = {}
         self.imports: dict[str, dict] = {}
         self.reset()
 
     def reset(self) -> None:
-        self.users.clear(); self.sessions.clear(); self.submissions.clear(); self.interactions.clear(); self.notes.clear(); self.followups.clear(); self.imports.clear(); self.rules.clear(); self.assignment_runs.clear(); self.login_failures.clear(); self.reasons = {"closure-1": {"id": "closure-1", "label": "Won", "active": True}}
+        self.users.clear(); self.sessions.clear(); self.submissions.clear(); self.interactions.clear(); self.notes.clear(); self.followups.clear(); self.imports.clear(); self.rules.clear(); self.assignment_runs.clear(); self.fallback_sales.clear(); self.assignment_version = 1; self.login_failures.clear(); self.reasons = {"closure-1": {"id": "closure-1", "label": "Won", "active": True}}
         self.customers = {
             "000123": {"bcn": "000123", "name": "Acme North", "ownerId": "sales-river", "ownerName": "River Sales", "status": "Open", "phones": ["(555) 010-0101"], "source": {"propensity_score": 0.98}, "version": 0, "histories": []},
             "000124": {"bcn": "000124", "name": "Acme North", "ownerId": "sales-sky", "ownerName": "Sky Sales", "status": "Closed", "phones": ["555 010 0103"], "source": {"propensity_score": 0.7}, "version": 0, "histories": []},
@@ -488,7 +490,30 @@ def create_assignment_rule(body: AssignmentRuleDraft, _: Annotated[User, Depends
     if any(item["name"].casefold() == body.name.strip().casefold() for item in repo.rules): raise HTTPException(status.HTTP_409_CONFLICT, "Rule already exists.")
     owner = repo.users.get(body.ownerId)
     if not owner or owner["role"] != "Sales" or not owner["active"]: raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Owner must be active Sales.")
-    rule = {"id": f"rule-{len(repo.rules)+1}", "name": body.name.strip(), "ownerId": body.ownerId, "active": body.active, "order": len(repo.rules)+1}; repo.rules.append(rule); return rule
+    rule = {"id": f"rule-{len(repo.rules)+1}", "name": body.name.strip(), "ownerId": body.ownerId, "active": body.active, "order": len(repo.rules)+1}; repo.rules.append(rule); repo.assignment_version += 1; return rule
+
+@app.patch("/admin/assignment-rules/{rule_id}")
+def update_assignment_rule(rule_id: str, patch: dict, _: Annotated[User, Depends(admin_user)]) -> dict:
+    rule = next((item for item in repo.rules if item["id"] == rule_id), None)
+    if not rule: raise HTTPException(status.HTTP_404_NOT_FOUND, "Rule not found.")
+    if "name" in patch and any(item["id"] != rule_id and item["name"].casefold() == str(patch["name"]).strip().casefold() for item in repo.rules): raise HTTPException(status.HTTP_409_CONFLICT, "Rule already exists.")
+    for key in ("name", "active", "order"):
+        if key in patch: rule[key] = patch[key]
+    repo.rules.sort(key=lambda item: item["order"]); repo.assignment_version += 1; return rule
+
+@app.get("/admin/assignment-fallback")
+def assignment_fallback(_: Annotated[User, Depends(admin_user)]) -> list[str]:
+    return repo.fallback_sales
+
+@app.put("/admin/assignment-fallback")
+def set_assignment_fallback(ids: list[str], _: Annotated[User, Depends(admin_user)]) -> list[str]:
+    valid = {item["id"] for item in repo.users.values() if item["role"] == "Sales" and item["active"]}
+    if any(item not in valid for item in ids): raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Fallback members must be active Sales users.")
+    repo.fallback_sales = list(dict.fromkeys(ids)); repo.assignment_version += 1; return repo.fallback_sales
+
+@app.get("/admin/assignment-version")
+def get_assignment_version(_: Annotated[User, Depends(admin_user)]) -> int:
+    return repo.assignment_version
 
 @app.post("/admin/assignment-runs")
 def run_assignment(body: AssignmentRunRequest, _: Annotated[User, Depends(admin_user)]) -> dict:

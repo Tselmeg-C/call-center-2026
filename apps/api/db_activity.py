@@ -36,7 +36,7 @@ class ClosureReasonRow(ActivityBase):
     label: Mapped[str] = mapped_column(String(120), unique=True)
     active: Mapped[bool] = mapped_column(default=True)
 
-def fingerprint(payload: str) -> str: return sha256(payload.encode()).hexdigest()
+def fingerprint(payload: str | bytes) -> str: return sha256(payload if isinstance(payload, bytes) else payload.encode()).hexdigest()
 
 class ActivityDatabase:
     def __init__(self, url: str, *, create_schema: bool = True):
@@ -44,13 +44,20 @@ class ActivityDatabase:
         self.engine = create_engine(url, **options)
         if create_schema: ActivityBase.metadata.create_all(self.engine)
 
-    def save_idempotent(self, *, actor_id: str, operation: str, submission_id: str, payload: str, result: dict) -> dict:
+    def save_idempotent(self, *, actor_id: str, operation: str, submission_id: str, payload: str | bytes, result: dict) -> dict:
         with Session(self.engine) as session:
             row = session.get(IdempotencyRow, (actor_id, operation, submission_id))
             if row:
                 if row.fingerprint != fingerprint(payload): raise ValueError("submission already used")
                 return row.result
             session.add(IdempotencyRow(actor_id=actor_id, operation=operation, submission_id=submission_id, fingerprint=fingerprint(payload), result=result, completed_at=datetime.now(timezone.utc))); session.commit(); return result
+
+    def get_idempotent(self, *, actor_id: str, operation: str, submission_id: str, payload: str | bytes) -> dict | None:
+        with Session(self.engine) as session:
+            row = session.get(IdempotencyRow, (actor_id, operation, submission_id))
+            if not row: return None
+            if row.fingerprint != fingerprint(payload): raise ValueError("submission already used")
+            return row.result
 
     def history(self, bcn: str, page: int = 1, page_size: int = 25) -> tuple[list[ActivityRow], int]:
         with Session(self.engine) as session:

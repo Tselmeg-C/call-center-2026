@@ -492,6 +492,12 @@ async def import_customers(file: UploadFile = File(...), submission_id: str = Qu
     if submission_id in repo.imports: return repo.imports[submission_id]
     payload = await file.read()
     if len(payload) > 10 * 1024 * 1024: raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, "Workbook is too large.")
+    if activity_db is not None:
+        try:
+            persisted = activity_db.get_idempotent(actor_id=user.id, operation="import", submission_id=submission_id, payload=payload)
+        except ValueError as exc:
+            raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+        if persisted: return persisted
     try:
         from io import BytesIO
         from openpyxl import load_workbook
@@ -523,7 +529,9 @@ async def import_customers(file: UploadFile = File(...), submission_id: str = Qu
                     repo.customers[bcn] = {"bcn": bcn, "name": name or bcn, "ownerId": None, "ownerName": None, "status": "Open", "phones": [phone] if phone else [], "source": {"customer_name": name or bcn}, "version": 0, "histories": []}; created += 1
         if customer_db is not None: customer_db.upsert_sources(source_rows)
         result = {"jobId": f"import-{len(repo.imports)+1}", "submissionId": submission_id, "filename": file.filename, "created": created, "updated": updated, "errors": errors, "processed": created + updated + len(errors), "actorId": user.id}
-        repo.imports[submission_id] = result; append_audit(user.id, "Import completed", result["jobId"], {"created": created, "updated": updated, "errors": len(errors)}); return result
+        repo.imports[submission_id] = result
+        if activity_db is not None: activity_db.save_idempotent(actor_id=user.id, operation="import", submission_id=submission_id, payload=payload, result=result)
+        append_audit(user.id, "Import completed", result["jobId"], {"created": created, "updated": updated, "errors": len(errors)}); return result
     except HTTPException:
         raise
     except Exception as exc:

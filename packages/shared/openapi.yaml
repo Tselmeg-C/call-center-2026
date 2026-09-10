@@ -5,6 +5,8 @@ info:
   description: Sales/session contract derived from the in-memory service adapter.
 servers:
   - url: https://example.invalid
+security:
+  - sessionCookie: []
 paths:
   /session/login:
     post:
@@ -83,6 +85,8 @@ paths:
       requestBody: { required: false, content: { application/json: { schema: { $ref: '#/components/schemas/MutationMeta' } } } }
       responses: { '200': { description: Reopened }, '401': { $ref: '#/components/responses/Unauthenticated' }, '409': { $ref: '#/components/responses/Conflict' } }
 components:
+  securitySchemes:
+    sessionCookie: { type: apiKey, in: cookie, name: call_center_session, description: Opaque HttpOnly SameSite=Lax cookie; Secure outside localhost; absolute eight-hour expiry. }
   parameters:
     Bcn: { name: bcn, in: path, required: true, schema: { type: string, pattern: '^[0-9]{6,}$' } }
     Page: { name: page, in: query, schema: { type: integer, minimum: 1, default: 1 } }

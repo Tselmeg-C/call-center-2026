@@ -639,7 +639,7 @@ def admin_audit(actor: str | None = None, action: str | None = None, bcn: str | 
 
 @app.post("/operator/provision", response_model=User, include_in_schema=False)
 def operator_provision(data: Provision) -> User:
-    if repo.users:
+    if repo.users or (auth_db is not None and auth_db.all_users()):
         raise HTTPException(status.HTTP_409_CONFLICT, "Initial Admin already provisioned.")
     try:
         return provision_user(data)

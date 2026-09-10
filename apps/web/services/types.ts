@@ -1,5 +1,5 @@
 export type User = { id: string; name: string; role: "Admin" | "Sales"; email?: string; active?: boolean };
-export type UserDraft = { name: string; email: string; role: "Admin" | "Sales" };
+export type UserDraft = { name: string; email: string; role: "Admin" | "Sales"; password?: string };
 export type ImportInput = { name: string; size: number; file?: File; submissionId?: string };
 export type ImportError = { row: number; field: string; reason: string };
 export type ImportResult = { jobId: string; filename: string; completedAt: string; status: "Completed" | "Partial" | "Rejected"; processed: number; created: number; updated: number; errorRows: number; errors: ImportError[] };

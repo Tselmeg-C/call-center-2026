@@ -177,6 +177,10 @@ def logout(response: Response, session: Annotated[str | None, Cookie(alias="call
 def me(user: Annotated[User, Depends(current_user)]) -> User:
     return user
 
+@app.get("/sample-records")
+def sample_records(_: Annotated[User, Depends(current_user)]) -> list[dict]:
+    return []
+
 
 @app.get("/customers", response_model=CustomerPage)
 def list_customers(user: Annotated[User, Depends(current_user)], page: int = Query(1, ge=1), page_size: int = Query(25, ge=1, le=100), mine: bool = False, q: str = "", status_filter: str | None = Query(None, alias="status"), owner: str | None = None) -> CustomerPage:

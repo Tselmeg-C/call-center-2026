@@ -138,3 +138,11 @@ test("stale follow-up and lifecycle versions reject without partial mutation", a
   const before = await services.getCustomer("000123"); expect((before as { ok: true; data: { followUps: { id: string; due: string | null }[] } }).data.followUps.find(value => value.id === item.id)?.due).toBe("2026-09-11");
   expect(await services.closeCustomer({ bcn: "000123", reasonId: "closure-1", expectedStatus: "Closed" })).toMatchObject({ ok: false, error: { code: "conflict" } });
 });
+
+test("lifecycle duplicate submissions return the original result and tie ordering is stable", async () => {
+  const { services } = createMockAdapter({ now: () => "2026-09-10T12:00:00.000Z" }); await services.signIn("sales-river");
+  const first = await services.closeCustomer({ bcn: "000123", reasonId: "closure-1", submissionId: "close-once" }); const again = await services.closeCustomer({ bcn: "000123", reasonId: "closure-2", submissionId: "close-once" }); expect(again).toEqual(first);
+  const reopened = await services.reopenCustomer({ bcn: "000123", submissionId: "reopen-once" }); const reopenedAgain = await services.reopenCustomer({ bcn: "000123", submissionId: "reopen-once" }); expect(reopenedAgain).toEqual(reopened);
+  const one = await services.createFollowUp({ bcn: "000123", type: "Reminder", dueKind: "date", due: "2026-09-15", note: "first" }); const two = await services.createFollowUp({ bcn: "000123", type: "Reminder", dueKind: "date", due: "2026-09-15", note: "second" }); expect(one).toMatchObject({ ok: true }); expect(two).toMatchObject({ ok: true });
+  const detail = await services.getCustomer("000123"); const data = (detail as { ok: true; data: { followUps: { id: string; note: string | null }[]; nextFollowUp: string | null } }).data; expect(data.nextFollowUp).toBe("2026-09-15"); expect(data.followUps.filter(item => item.note === "first" || item.note === "second").map(item => item.note)).toEqual(["first", "second"]);
+});

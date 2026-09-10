@@ -51,7 +51,7 @@ export type WorkloadCustomer = Customer & { workloadBucket: WorkloadBucket | nul
 export type WorkloadData = { asOf: string; today: string; customers: WorkloadCustomer[]; counts: Record<WorkloadBucket, number> };
 
 export interface Services {
-  signIn(personaId: string): Promise<Result<User>>;
+  signIn(personaId: string, password?: string): Promise<Result<User>>;
   signOut(): Promise<Result<null>>;
   currentUser(): Promise<Result<User>>;
   sampleRecords(): Promise<Result<SampleRecord[]>>;

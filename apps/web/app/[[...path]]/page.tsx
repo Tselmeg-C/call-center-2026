@@ -42,28 +42,25 @@ function MockPanel() {
 function SignIn() {
   const { services, controls } = useServices();
   const [persona, setPersona] = useState("");
+  const [password, setPassword] = useState("");
   const [pending, setPending] = useState(false);
   const [error, setError] = useState("");
   const [retry, setRetry] = useState(false);
   // Unmounting on reset or session changes prevents late sign-in UI updates.
   async function submit() {
     if (pending) return;
-    if (!persona) { setError("Select a persona to sign in."); return; }
+    if (!persona) { setError(process.env.NEXT_PUBLIC_SERVICE_MODE === "http" ? "Enter your email." : "Select a persona to sign in."); return; }
     setPending(true); setError(""); setRetry(false);
-    const result = await services.signIn(persona);
+    const result = await services.signIn(persona, process.env.NEXT_PUBLIC_SERVICE_MODE === "http" ? password : undefined);
     setPending(false);
     if (!result.ok) { setError(result.error.message); setRetry(result.error.code === "request-failure"); }
   }
   return <>
     <Typography.Title level={1}>Call Center</Typography.Title>
     <h2>Sign in</h2>
-    <p>Mock prototype — choose a synthetic persona. No real account is needed.</p>
+    <p>{process.env.NEXT_PUBLIC_SERVICE_MODE === "http" ? "Sign in with your account." : "Mock prototype — choose a synthetic persona. No real account is needed."}</p>
     <form onSubmit={event => { event.preventDefault(); void submit(); }}>
-      <label htmlFor="persona">Persona</label>{" "}
-      <select id="persona" value={persona} disabled={pending} aria-describedby={error ? "signin-error" : undefined} onChange={event => setPersona(event.target.value)}>
-        <option value="">Select a persona</option>
-        {controls.personas.map(persona => <option key={persona.id} value={persona.id}>{persona.name} ({persona.role})</option>)}
-      </select>{" "}
+      {process.env.NEXT_PUBLIC_SERVICE_MODE === "http" ? <><label htmlFor="persona">Email</label>{" "}<input id="persona" type="email" value={persona} disabled={pending} onChange={event => setPersona(event.target.value)} /><label htmlFor="password">Password</label>{" "}<input id="password" type="password" value={password} disabled={pending} onChange={event => setPassword(event.target.value)} /></> : <><label htmlFor="persona">Persona</label>{" "}<select id="persona" value={persona} disabled={pending} aria-describedby={error ? "signin-error" : undefined} onChange={event => setPersona(event.target.value)}><option value="">Select a persona</option>{controls.personas.map(persona => <option key={persona.id} value={persona.id}>{persona.name} ({persona.role})</option>)}</select></>}{" "}
       <button disabled={pending} type="submit">Sign in</button>
       {pending && <p role="status">Signing in…</p>}
       {error && <p id="signin-error" role="alert">{error}</p>}

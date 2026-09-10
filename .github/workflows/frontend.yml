@@ -25,4 +25,5 @@ jobs:
       - name: Backend auth checks
         run: |
           python -m pip install -r apps/api/requirements.txt
+          python -m compileall -q apps/api
           python -m pytest apps/api/test_auth.py

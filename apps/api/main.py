@@ -341,6 +341,10 @@ def reopen_customer(bcn: str, body: LifecycleRequest, user: Annotated[User, Depe
 def find_followup(bcn: str, followup_id: str, user: User) -> dict:
     row = writable_customer(bcn, user)
     item = next((value for value in repo.followups.values() if value["bcn"] == bcn and value["id"] == followup_id), None)
+    if item is None and activity_db is not None:
+        stored = next((value for value in activity_db.followups(bcn) if value.id == followup_id), None)
+        if stored:
+            item = {"id": stored.id, "bcn": stored.bcn, "type": stored.type, "due": stored.due.isoformat() if stored.due else None, "note": stored.note, "status": stored.status, "actorId": stored.actor_id, "createdAt": stored.created_at.isoformat()}; repo.followups[f"{user.id}:{bcn}:followup:{followup_id}"] = item
     if not item: raise HTTPException(status.HTTP_404_NOT_FOUND, "Follow-up not found.")
     return item
 

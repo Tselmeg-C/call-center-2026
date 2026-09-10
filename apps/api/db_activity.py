@@ -22,7 +22,7 @@ class FollowUpRow(ActivityBase):
     __tablename__ = "follow_ups"
     id: Mapped[str] = mapped_column(String(120), primary_key=True)
     bcn: Mapped[str] = mapped_column(String(64)); actor_id: Mapped[str] = mapped_column(String(120))
-    type: Mapped[str] = mapped_column(String(32)); status: Mapped[str] = mapped_column(String(16)); note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    type: Mapped[str] = mapped_column(String(32)); due: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True); status: Mapped[str] = mapped_column(String(16)); note: Mapped[str | None] = mapped_column(Text, nullable=True)
     version: Mapped[int] = mapped_column(Integer, default=0); created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True)); updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 class IdempotencyRow(ActivityBase):
@@ -69,8 +69,11 @@ class ActivityDatabase:
 
     def save_followup(self, record: dict) -> None:
         with Session(self.engine) as session:
-            row = session.get(FollowUpRow, record["id"]) or FollowUpRow(id=record["id"], bcn=record["bcn"], actor_id=record["actorId"], type=record["type"], status=record["status"], note=record.get("note"), version=0, created_at=datetime.now(timezone.utc), updated_at=datetime.now(timezone.utc))
-            row.status = record["status"]; row.note = record.get("note"); row.updated_at = datetime.now(timezone.utc); session.add(row); session.commit()
+            row = session.get(FollowUpRow, record["id"]) or FollowUpRow(id=record["id"], bcn=record["bcn"], actor_id=record["actorId"], type=record["type"], due=datetime.fromisoformat(record["due"]) if record.get("due") else None, status=record["status"], note=record.get("note"), version=0, created_at=datetime.now(timezone.utc), updated_at=datetime.now(timezone.utc))
+            row.type = record["type"]; row.due = datetime.fromisoformat(record["due"]) if record.get("due") else None; row.status = record["status"]; row.note = record.get("note"); row.updated_at = datetime.now(timezone.utc); session.add(row); session.commit()
+
+    def followups(self, bcn: str) -> list[FollowUpRow]:
+        with Session(self.engine) as session: return list(session.scalars(select(FollowUpRow).where(FollowUpRow.bcn == bcn).order_by(FollowUpRow.created_at, FollowUpRow.id)))
 
     def save_reason(self, reason: dict) -> None:
         with Session(self.engine) as session:

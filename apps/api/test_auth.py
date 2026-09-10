@@ -2,7 +2,7 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi.testclient import TestClient
 
-from .main import app, repo, provision_user
+from .main import app, password_hash, repo, provision_user
 
 
 def test_login_logout_and_generic_failure() -> None:
@@ -66,4 +66,16 @@ def test_customer_reads_and_admin_assignment() -> None:
     assert client.get("/customers/000123").status_code == 200
     changed = client.post("/admin/assignments/manual/000125", json={"ownerId": "sales-river", "submissionId": "assign-1"}, headers={"origin": "http://localhost:3000"})
     assert changed.status_code == 200 and changed.json()["ownerId"] == "sales-river"
+    assert client.post("/admin/assignments/manual/000125", json={"ownerId": "sales-river", "submissionId": "assign-1"}, headers={"origin": "http://localhost:3000"}).status_code == 200
+    assert client.post("/admin/assignments/manual/000125", json={"ownerId": None, "submissionId": "assign-1"}, headers={"origin": "http://localhost:3000"}).status_code == 409
+    assert client.post("/admin/assignments/manual/000125", json={"ownerId": None, "submissionId": "assign-2", "expectedVersion": 0}, headers={"origin": "http://localhost:3000"}).status_code == 409
+    assert client.post("/admin/assignments/manual/000125", json={"ownerId": "missing", "submissionId": "assign-3"}, headers={"origin": "http://localhost:3000"}).status_code == 422
     assert client.get("/customers/missing").status_code == 404
+
+
+def test_sales_my_scope_cannot_be_widened_and_reads_are_paginated() -> None:
+    repo.reset(); provision_user(type("P", (), {"name": "Admin", "email": "admin@example.test", "role": "Admin", "password": "correct horse battery staple"})()); repo.users["sales-river"] = {"id": "sales-river", "name": "River Sales", "email": "river@example.test", "role": "Sales", "active": True, "password": password_hash.hash("correct horse battery staple")}
+    client = TestClient(app, base_url="http://localhost"); client.post("/session/login", json={"email": "river@example.test", "password": "correct horse battery staple"})
+    scoped = client.get("/customers", params={"mine": "true", "page_size": 1}); assert scoped.status_code == 200 and scoped.json()["total"] == 1 and scoped.json()["items"][0]["bcn"] == "000123"
+    assert client.get("/customers", params={"mine": "true", "owner": "sales-sky"}).json()["total"] == 0
+    assert client.get("/customers", params={"page": 0}).status_code == 422

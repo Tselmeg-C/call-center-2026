@@ -4,7 +4,7 @@ from contextlib import contextmanager
 from secrets import token_urlsafe
 from typing import Annotated
 
-from fastapi import Cookie, Depends, FastAPI, HTTPException, Request, Response, status
+from fastapi import Cookie, Depends, FastAPI, HTTPException, Query, Request, Response, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
@@ -34,7 +34,15 @@ class Customer(BaseModel):
     ownerId: str | None
     ownerName: str | None
     status: str
-    histories: list[dict] = []
+    version: int = 0
+    histories: list[dict] = Field(default_factory=list)
+
+
+class CustomerPage(BaseModel):
+    items: list[Customer]
+    page: int
+    page_size: int
+    total: int
 
 
 class AssignmentRequest(BaseModel):
@@ -52,23 +60,25 @@ class MemoryRepo:
     def __init__(self) -> None:
         self.users: dict[str, dict] = {}
         self.sessions: dict[str, tuple[str, datetime]] = {}
-        self.customers: dict[str, dict] = {
-            "000123": {"bcn": "000123", "name": "Acme North", "ownerId": "sales-river", "ownerName": "River Sales", "status": "Open", "histories": []},
-            "000124": {"bcn": "000124", "name": "Acme North", "ownerId": "sales-sky", "ownerName": "Sky Sales", "status": "Closed", "histories": []},
-            "000125": {"bcn": "000125", "name": "Beta Works", "ownerId": None, "ownerName": None, "status": "Open", "histories": []},
-        }
+        self.customers: dict[str, dict] = {}
+        self.submissions: dict[tuple[str, str], dict] = {}
         self.reset()
 
     def reset(self) -> None:
-        self.users.clear(); self.sessions.clear()
+        self.users.clear(); self.sessions.clear(); self.submissions.clear()
+        self.customers = {
+            "000123": {"bcn": "000123", "name": "Acme North", "ownerId": "sales-river", "ownerName": "River Sales", "status": "Open", "version": 0, "histories": []},
+            "000124": {"bcn": "000124", "name": "Acme North", "ownerId": "sales-sky", "ownerName": "Sky Sales", "status": "Closed", "version": 0, "histories": []},
+            "000125": {"bcn": "000125", "name": "Beta Works", "ownerId": None, "ownerName": None, "status": "Open", "version": 0, "histories": []},
+        }
 
     @contextmanager
     def transaction(self):
-        snapshot = (deepcopy(self.users), deepcopy(self.sessions))
+        snapshot = (deepcopy(self.users), deepcopy(self.sessions), deepcopy(self.customers), deepcopy(self.submissions))
         try:
             yield self
         except Exception:
-            self.users, self.sessions = snapshot
+            self.users, self.sessions, self.customers, self.submissions = snapshot
             raise
 
 
@@ -120,9 +130,15 @@ def me(user: Annotated[User, Depends(current_user)]) -> User:
     return user
 
 
-@app.get("/customers", response_model=list[Customer])
-def list_customers(user: Annotated[User, Depends(current_user)]) -> list[Customer]:
-    return [Customer.model_validate(row) for row in repo.customers.values()]
+@app.get("/customers", response_model=CustomerPage)
+def list_customers(user: Annotated[User, Depends(current_user)], page: int = Query(1, ge=1), page_size: int = Query(25, ge=1, le=100), mine: bool = False, q: str = "", status_filter: str | None = Query(None, alias="status"), owner: str | None = None) -> CustomerPage:
+    rows = list(repo.customers.values())
+    if mine: rows = [row for row in rows if row["ownerId"] == user.id]
+    if q: rows = [row for row in rows if q.casefold() in f"{row['bcn']} {row['name']}".casefold()]
+    if status_filter: rows = [row for row in rows if row["status"] == status_filter]
+    if owner: rows = [row for row in rows if (row["ownerId"] or "unassigned") == owner]
+    rows.sort(key=lambda row: row["bcn"]); total = len(rows); start = (page - 1) * page_size
+    return CustomerPage(items=[Customer.model_validate(row) for row in rows[start:start + page_size]], page=page, page_size=page_size, total=total)
 
 
 @app.get("/customers/{bcn}", response_model=Customer)
@@ -138,10 +154,23 @@ def assign_customer(bcn: str, body: AssignmentRequest, user: Annotated[User, Dep
     row = repo.customers.get(bcn)
     if not row: raise HTTPException(status.HTTP_404_NOT_FOUND, "Customer not found.")
     if body.ownerId and not any(item["id"] == body.ownerId and item["role"] == "Sales" and item["active"] for item in repo.users.values()): raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Owner must be an active Sales user.")
-    if row["ownerId"] == body.ownerId: return Customer.model_validate(row)
-    old = row["ownerId"]; owner = repo.users.get(body.ownerId) if body.ownerId else None
-    row["ownerId"] = body.ownerId; row["ownerName"] = owner["name"] if owner else None
-    row["histories"].append({"kind": "Assignment", "actor": user.name, "actorId": user.id, "oldOwner": old, "newOwner": body.ownerId, "reason": "Manual assignment", "timestamp": datetime.now(timezone.utc).isoformat()})
+    key = (bcn, body.submissionId)
+    prior = repo.submissions.get(key)
+    if prior:
+        if prior["ownerId"] != body.ownerId or prior["expectedVersion"] != body.expectedVersion:
+            raise HTTPException(status.HTTP_409_CONFLICT, "Submission already used.")
+        return Customer.model_validate(row)
+    if body.expectedVersion is not None and body.expectedVersion != row["version"]:
+        raise HTTPException(status.HTTP_409_CONFLICT, "Customer version is stale.")
+    if row["ownerId"] == body.ownerId:
+        repo.submissions[key] = {"ownerId": body.ownerId, "expectedVersion": body.expectedVersion}
+        return Customer.model_validate(row)
+    with repo.transaction():
+        old = row["ownerId"]; owner = repo.users.get(body.ownerId) if body.ownerId else None
+        row["ownerId"] = body.ownerId; row["ownerName"] = owner["name"] if owner else None
+        row["version"] += 1
+        row["histories"].append({"kind": "Assignment", "actor": user.name, "actorId": user.id, "oldOwner": old, "newOwner": body.ownerId, "reason": "Manual assignment", "timestamp": datetime.now(timezone.utc).isoformat()})
+        repo.submissions[key] = {"ownerId": body.ownerId, "expectedVersion": body.expectedVersion}
     return Customer.model_validate(row)
 
 

@@ -134,6 +134,9 @@ def append_audit(actor_id: str | None, action: str, target: str, details: dict) 
 def persist_activity(record: dict) -> None:
     if activity_db is not None: activity_db.save_activity(record_id=record["id"], bcn=record["bcn"], actor_id=record["actorId"], kind=record["kind"], outcome=record.get("outcome"), text=record.get("text") or record.get("note"))
 
+def persist_followup(record: dict) -> None:
+    if activity_db is not None: activity_db.save_followup(record)
+
 @app.get("/health/live")
 def health_live() -> dict:
     return {"status": "ok"}
@@ -297,7 +300,7 @@ def create_followup(bcn: str, body: FollowUpCreate, user: Annotated[User, Depend
     if key in repo.followups: return repo.followups[key]
     if body.type not in {"Appointment", "Reminder"}: raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Invalid follow-up type.")
     record = {"id": f"followup-{len(repo.followups)+1}", "bcn": bcn, "type": body.type, "due": body.due, "note": body.note, "status": "Open", "actor": user.name, "actorId": user.id, "createdAt": datetime.now(timezone.utc).isoformat()}
-    repo.followups[key] = record; row["histories"].append({**record, "kind": "Follow-up"}); return record
+    repo.followups[key] = record; row["histories"].append({**record, "kind": "Follow-up"}); persist_followup(record); return record
 
 @app.post("/customers/{bcn}/close")
 def close_customer(bcn: str, body: LifecycleRequest, user: Annotated[User, Depends(current_user)]) -> Customer:
@@ -325,14 +328,14 @@ def find_followup(bcn: str, followup_id: str, user: User) -> dict:
 def update_followup(bcn: str, followup_id: str, body: FollowUpCreate, user: Annotated[User, Depends(current_user)]) -> dict:
     item = find_followup(bcn, followup_id, user)
     if item["status"] != "Open": raise HTTPException(status.HTTP_409_CONFLICT, "Follow-up is no longer open.")
-    item.update(type=body.type, due=body.due, note=body.note, updatedAt=datetime.now(timezone.utc).isoformat()); return item
+    item.update(type=body.type, due=body.due, note=body.note, updatedAt=datetime.now(timezone.utc).isoformat()); persist_followup(item); return item
 
 @app.post("/customers/{bcn}/follow-ups/{followup_id}/cancel")
 def cancel_followup(bcn: str, followup_id: str, user: Annotated[User, Depends(current_user)]) -> dict:
     item = find_followup(bcn, followup_id, user)
     if item["status"] == "Cancelled": return item
     if item["status"] == "Completed": raise HTTPException(status.HTTP_409_CONFLICT, "Follow-up is completed.")
-    item["status"] = "Cancelled"; item["updatedAt"] = datetime.now(timezone.utc).isoformat(); return item
+    item["status"] = "Cancelled"; item["updatedAt"] = datetime.now(timezone.utc).isoformat(); persist_followup(item); return item
 
 @app.delete("/customers/{bcn}/follow-ups/{followup_id}")
 def cancel_followup_contract(bcn: str, followup_id: str, user: Annotated[User, Depends(current_user)]) -> dict:
@@ -343,7 +346,7 @@ def complete_followup(bcn: str, followup_id: str, body: InteractionCreate, user:
     item = find_followup(bcn, followup_id, user)
     if item["status"] == "Completed": return item
     if item["status"] != "Open": raise HTTPException(status.HTTP_409_CONFLICT, "Follow-up is not open.")
-    interaction = create_interaction(bcn, body, user); item["status"] = "Completed"; item["interactionId"] = interaction["id"]; item["updatedAt"] = datetime.now(timezone.utc).isoformat(); return item
+    interaction = create_interaction(bcn, body, user); item["status"] = "Completed"; item["interactionId"] = interaction["id"]; item["updatedAt"] = datetime.now(timezone.utc).isoformat(); persist_followup(item); return item
 
 
 @app.post("/admin/assignments/manual/{bcn}", response_model=Customer)

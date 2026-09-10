@@ -53,3 +53,8 @@ class ActivityDatabase:
     def save_activity(self, *, record_id: str, bcn: str, actor_id: str, kind: str, outcome: str | None, text: str | None) -> None:
         with Session(self.engine) as session:
             session.add(ActivityRow(id=record_id, bcn=bcn, actor_id=actor_id, kind=kind, outcome=outcome, text=text, created_at=datetime.now(timezone.utc))); session.commit()
+
+    def save_followup(self, record: dict) -> None:
+        with Session(self.engine) as session:
+            row = session.get(FollowUpRow, record["id"]) or FollowUpRow(id=record["id"], bcn=record["bcn"], actor_id=record["actorId"], type=record["type"], status=record["status"], note=record.get("note"), version=0, created_at=datetime.now(timezone.utc), updated_at=datetime.now(timezone.utc))
+            row.status = record["status"]; row.note = record.get("note"); row.updated_at = datetime.now(timezone.utc); session.add(row); session.commit()

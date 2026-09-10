@@ -348,14 +348,14 @@ def find_followup(bcn: str, followup_id: str, user: User) -> dict:
 def update_followup(bcn: str, followup_id: str, body: FollowUpCreate, user: Annotated[User, Depends(current_user)]) -> dict:
     item = find_followup(bcn, followup_id, user)
     if item["status"] != "Open": raise HTTPException(status.HTTP_409_CONFLICT, "Follow-up is no longer open.")
-    item.update(type=body.type, due=body.due, note=body.note, updatedAt=datetime.now(timezone.utc).isoformat()); persist_followup(item); return item
+    item.update(type=body.type, due=body.due, note=body.note, updatedAt=datetime.now(timezone.utc).isoformat()); persist_followup(item); persist_activity({"id": f"activity-{uuid4()}", "bcn": bcn, "kind": "Follow-up edit", "actorId": user.id, "text": item.get("note")}); return item
 
 @app.post("/customers/{bcn}/follow-ups/{followup_id}/cancel")
 def cancel_followup(bcn: str, followup_id: str, user: Annotated[User, Depends(current_user)]) -> dict:
     item = find_followup(bcn, followup_id, user)
     if item["status"] == "Cancelled": return item
     if item["status"] == "Completed": raise HTTPException(status.HTTP_409_CONFLICT, "Follow-up is completed.")
-    item["status"] = "Cancelled"; item["updatedAt"] = datetime.now(timezone.utc).isoformat(); persist_followup(item); return item
+    item["status"] = "Cancelled"; item["updatedAt"] = datetime.now(timezone.utc).isoformat(); persist_followup(item); persist_activity({"id": f"activity-{uuid4()}", "bcn": bcn, "kind": "Follow-up cancel", "actorId": user.id, "text": None}); return item
 
 @app.delete("/customers/{bcn}/follow-ups/{followup_id}")
 def cancel_followup_contract(bcn: str, followup_id: str, user: Annotated[User, Depends(current_user)]) -> dict:

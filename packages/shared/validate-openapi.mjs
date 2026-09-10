@@ -8,4 +8,7 @@ const fixtures = JSON.parse(fs.readFileSync(new URL("./contract-fixtures.json", 
 assert.equal(fixtures.valid.interaction.outcome, "Contact");
 assert.equal(fixtures.valid.leadingZeroCustomer.bcn, "000123");
 assert.equal("outcome" in fixtures.errors.missingOutcome, false);
+const operationIds = [...text.matchAll(/operationId:\s*([A-Za-z0-9_]+)/g)].map(match => match[1]);
+assert.equal(new Set(operationIds).size, operationIds.length, "operation IDs must be unique");
+for (const id of ["login", "logout", "currentUser", "listCustomers", "getCustomer", "workload", "createInteraction", "createNote", "deleteHistory", "createFollowUp", "updateFollowUp", "cancelFollowUp", "completeFollowUp", "closeCustomer", "reopenCustomer", "listUsers", "createUser", "updateUser", "listClosureReasons", "createClosureReason", "updateClosureReason", "importWorkbook", "listAssignmentRules", "createAssignmentRule", "runAssignments", "reports", "audit"]) assert(operationIds.includes(id), `missing operation mapping: ${id}`);
 console.log("OpenAPI contract and synthetic fixtures validated.");

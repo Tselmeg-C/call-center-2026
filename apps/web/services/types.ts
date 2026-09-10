@@ -3,6 +3,7 @@ export type UserDraft = { name: string; email: string; role: "Admin" | "Sales" }
 export type ImportInput = { name: string; size: number; submissionId?: string };
 export type ImportError = { row: number; field: string; reason: string };
 export type ImportResult = { jobId: string; filename: string; completedAt: string; status: "Completed" | "Partial" | "Rejected"; processed: number; created: number; updated: number; errorRows: number; errors: ImportError[] };
+export type AssignmentResult = { bcn: string; oldOwner: string | null; newOwner: string | null; reason: string };
 export type SampleRecord = { id: string; label: string };
 export type Customer = {
   bcn: string; mbcn: string; name: string; ownerId: string | null; ownerName: string | null;
@@ -64,6 +65,7 @@ export interface Services {
   createClosureReason(label: string): Promise<Result<ClosureReason>>;
   updateClosureReason(id: string, patch: Partial<Pick<ClosureReason, "label" | "active">>): Promise<Result<ClosureReason>>;
   importWorkbook(input: ImportInput): Promise<Result<ImportResult>>;
+  assignCustomer(bcn: string, ownerId: string | null, submissionId?: string): Promise<Result<AssignmentResult>>;
   deleteHistory(bcn: string, recordId: string): Promise<Result<HistoryRecord>>;
   subscribeSession(listener: (user: User | null) => void): () => void;
 }

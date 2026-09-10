@@ -94,8 +94,10 @@ const dash = (value: unknown) => value === null || value === undefined || value 
 function Customers({ mine }: { mine: boolean }) {
   const { services, user } = useServices();
   const [result, setResult] = useState<Result<Customer[]> | null>(null);
-  const [query, setQuery] = useState(""); const [status, setStatus] = useState("all"); const [owner, setOwner] = useState("all"); const [contacted, setContacted] = useState("all"); const [recent, setRecent] = useState("all"); const [tier, setTier] = useState("all"); const [sort, setSort] = useState<"bcn" | "name" | "propensityRank" | "propensityScore">("bcn"); const [descending, setDescending] = useState(false); const [page, setPage] = useState(1); const [pageSize, setPageSize] = useState(25);
+  const initialParams = typeof window === "undefined" ? new URLSearchParams() : new URLSearchParams(window.location.search);
+  const [query, setQuery] = useState(() => initialParams.get("q") ?? ""); const [status, setStatus] = useState(() => initialParams.get("status") ?? "all"); const [owner, setOwner] = useState(() => initialParams.get("owner") ?? "all"); const [contacted, setContacted] = useState("all"); const [recent, setRecent] = useState("all"); const [tier, setTier] = useState("all"); const [sort, setSort] = useState<"bcn" | "name" | "propensityRank" | "propensityScore">("bcn"); const [descending, setDescending] = useState(false); const [page, setPage] = useState(1); const [pageSize, setPageSize] = useState(25);
   useEffect(() => { let active = true; void services.listCustomers().then(value => { if (active) setResult(value); }); return () => { active = false; }; }, [services]);
+  useEffect(() => { const params = new URLSearchParams(); if (query) params.set("q", query); if (status !== "all") params.set("status", status); if (!mine && owner !== "all") params.set("owner", owner); const suffix = params.toString(); window.history.replaceState(null, "", `${window.location.pathname}${suffix ? `?${suffix}` : ""}`); }, [query, status, owner, mine]);
   if (!result) return <p role="status">Loading customers…</p>;
   if (!result.ok) return <><p role="alert">{result.error.message}</p><button onClick={() => { setResult(null); void services.listCustomers().then(setResult); }}>Retry</button></>;
   const needle = query.trim().toLowerCase().replace(/[\s()\-]/g, "");

@@ -610,6 +610,10 @@ def operator_provision(data: Provision) -> User:
 
 @app.post("/operator/reset-password/{user_id}", response_model=User, include_in_schema=False)
 def operator_reset_password(user_id: str, data: ResetPassword) -> User:
+    if auth_db is not None:
+        row = auth_db.reset_password(user_id, password_hash.hash(data.password))
+        if not row: raise HTTPException(status.HTTP_404_NOT_FOUND, "User not found.")
+        return User(id=row.id, name=row.name, email=row.email, role=row.role, active=row.active)
     record = repo.users.get(user_id)
     if not record:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "User not found.")

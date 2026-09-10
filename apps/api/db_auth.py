@@ -55,3 +55,11 @@ class AuthDatabase:
         with Session(self.engine) as session:
             row = session.get(SessionRow, digest(token))
             if row: row.revoked_at = datetime.now(timezone.utc); session.commit()
+
+    def reset_password(self, user_id: str, password_hash: str) -> UserRow | None:
+        with Session(self.engine) as session:
+            row = session.get(UserRow, user_id)
+            if not row: return None
+            row.password_hash = password_hash
+            for token in session.scalars(select(SessionRow).where(SessionRow.user_id == user_id, SessionRow.revoked_at.is_(None))): token.revoked_at = datetime.now(timezone.utc)
+            session.commit(); session.refresh(row); return row

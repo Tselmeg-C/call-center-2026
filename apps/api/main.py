@@ -308,6 +308,10 @@ def cancel_followup(bcn: str, followup_id: str, user: Annotated[User, Depends(cu
     if item["status"] == "Completed": raise HTTPException(status.HTTP_409_CONFLICT, "Follow-up is completed.")
     item["status"] = "Cancelled"; item["updatedAt"] = datetime.now(timezone.utc).isoformat(); return item
 
+@app.delete("/customers/{bcn}/follow-ups/{followup_id}")
+def cancel_followup_contract(bcn: str, followup_id: str, user: Annotated[User, Depends(current_user)]) -> dict:
+    return cancel_followup(bcn, followup_id, user)
+
 @app.post("/customers/{bcn}/follow-ups/{followup_id}/complete")
 def complete_followup(bcn: str, followup_id: str, body: InteractionCreate, user: Annotated[User, Depends(current_user)]) -> dict:
     item = find_followup(bcn, followup_id, user)
@@ -536,11 +540,25 @@ def run_assignment(body: AssignmentRunRequest, _: Annotated[User, Depends(admin_
     result = {"submissionId": body.submissionId, "scope": body.scope, "candidates": len(candidates), "assigned": assigned, "skipped": len(candidates) - assigned}
     repo.assignment_runs[body.submissionId] = result; return result
 
+@app.get("/admin/assignments")
+def list_assignment_rules_contract(user: Annotated[User, Depends(admin_user)]) -> list[dict]:
+    return list_assignment_rules(user)
+
+@app.post("/admin/assignments/run")
+def run_assignment_contract(body: AssignmentRunRequest, user: Annotated[User, Depends(admin_user)]) -> dict:
+    return run_assignment(body, user)
+
 @app.get("/sales/workload")
 def sales_workload(user: Annotated[User, Depends(current_user)]) -> dict:
     if user.role != "Sales": raise HTTPException(status.HTTP_403_FORBIDDEN, "Sales access required.")
     owned = [row for row in repo.customers.values() if row["ownerId"] == user.id and row["status"] == "Open"]
     return {"ownerId": user.id, "totalOpen": len(owned), "neverContacted": sum(1 for row in owned if not any(item.get("kind") == "Interaction" and not item.get("deleted") for item in row["histories"])), "pendingFollowUps": sum(1 for item in repo.followups.values() if item["bcn"] in {row["bcn"] for row in owned} and item["status"] == "Open")}
+
+@app.get("/workload")
+def workload_contract(user: Annotated[User, Depends(current_user)]) -> dict:
+    if user.role != "Sales": raise HTTPException(status.HTTP_403_FORBIDDEN, "Sales access required.")
+    owned = [row for row in repo.customers.values() if row["ownerId"] == user.id and row["status"] == "Open"]
+    return {"asOf": datetime.now(timezone.utc).isoformat(), "today": datetime.now(timezone.utc).date().isoformat(), "counts": {"overdue": 0, "today": 0, "undated": 0, "never-contacted": sum(1 for row in owned if not any(event.get("kind") == "Interaction" and not event.get("deleted") for event in row["histories"])), "other": 0}, "customers": [Customer.model_validate(row).model_dump() | {"workloadBucket": None, "relevantDue": None} for row in owned]}
 
 @app.get("/admin/reports")
 def admin_reports(start: str | None = None, end: str | None = None, _: Annotated[User, Depends(admin_user)] = None) -> dict:

@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 
 from .main import app, password_hash, repo, provision_user
 from .storage import mode
+from .db_auth import AuthDatabase, UserRow, SessionRow, digest
 
 
 def test_login_logout_and_generic_failure() -> None:
@@ -29,6 +30,18 @@ def test_login_failure_throttle_is_generic() -> None:
     for _ in range(5): assert client.post("/session/login", json={"email": "unknown@example.test", "password": "wrong password"}).status_code == 401
     limited = client.post("/session/login", json={"email": "unknown@example.test", "password": "wrong password"})
     assert limited.status_code == 429 and limited.headers.get("retry-after") == "900" and "unknown@example.test" not in limited.text
+
+def test_database_session_lookup_uses_digest_and_revocation() -> None:
+    database = AuthDatabase("sqlite+pysqlite:///:memory:")
+    from sqlalchemy.orm import Session
+    from datetime import datetime, timedelta, timezone
+    with Session(database.engine) as session:
+        session.add(UserRow(id="u1", name="Admin", email="admin@example.test", role="Admin", active=True, password_hash="hash"))
+        session.add(SessionRow(digest=digest("opaque-token"), user_id="u1", issued_at=datetime.now(timezone.utc), expires_at=datetime.now(timezone.utc) + timedelta(hours=1))); session.commit()
+    assert database.user_for_session("opaque-token").id == "u1"
+    assert database.user_for_session("opaque-token").id == "u1"
+    database.revoke("opaque-token"); assert database.user_for_session("opaque-token") is None
+    assert "opaque-token" not in {row.digest for row in Session(database.engine).query(SessionRow).all()}
 
 
 def test_expired_session_is_rejected() -> None:

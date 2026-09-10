@@ -172,3 +172,14 @@ test("lifecycle duplicate submissions return the original result and tie orderin
   const one = await services.createFollowUp({ bcn: "000123", type: "Reminder", dueKind: "date", due: "2026-09-15", note: "first" }); const two = await services.createFollowUp({ bcn: "000123", type: "Reminder", dueKind: "date", due: "2026-09-15", note: "second" }); expect(one).toMatchObject({ ok: true }); expect(two).toMatchObject({ ok: true });
   const detail = await services.getCustomer("000123"); const data = (detail as { ok: true; data: { followUps: { id: string; note: string | null }[]; nextFollowUp: string | null } }).data; expect(data.nextFollowUp).toBe("2026-09-15"); expect(data.followUps.filter(item => item.note === "first" || item.note === "second").map(item => item.note)).toEqual(["first", "second"]);
 });
+
+test("admin reports use UTC ranges and audit includes safe administrative events", async () => {
+  const { services } = createMockAdapter({ now: () => "2026-09-10T12:00:00.000Z" });
+  await services.signIn("admin-demo");
+  expect(await services.reports("2026-09-11", "2026-09-10")).toMatchObject({ ok: false, error: { code: "validation" } });
+  const note = await services.createUser({ name: "New Sales", email: "new@example.test", role: "Sales" }); expect(note).toMatchObject({ ok: true });
+  const reasons = await services.createClosureReason("Custom reason"); expect(reasons).toMatchObject({ ok: true });
+  const report = await services.reports("2026-09-10", "2026-09-10"); expect(report).toMatchObject({ ok: true, data: { owners: expect.any(Array), daily: [{ date: "2026-09-10" }] } });
+  const audit = await services.audit(); expect(audit).toMatchObject({ ok: true }); expect((audit as { ok: true; data: { action: string; details: Record<string, unknown> }[] }).data.some(event => event.action === "User created" && !("password" in event.details))).toBe(true);
+  await services.signIn("sales-river"); expect(await services.reports()).toMatchObject({ ok: false, error: { code: "forbidden" } }); expect(await services.audit()).toMatchObject({ ok: false, error: { code: "forbidden" } });
+});

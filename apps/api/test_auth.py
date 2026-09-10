@@ -45,6 +45,10 @@ def test_request_id_rejects_malformed_client_value() -> None:
     response = TestClient(app, base_url="http://localhost").get("/health/live", headers={"x-request-id": "bad\nvalue"})
     assert response.status_code == 200 and "\n" not in response.headers["x-request-id"] and len(response.headers["x-request-id"]) > 10
 
+def test_import_rejects_oversized_multipart_envelope() -> None:
+    response = TestClient(app, base_url="http://localhost").post("/admin/imports?submission_id=large", headers={"origin": "http://localhost:3000", "content-length": str(11 * 1024 * 1024 + 1)})
+    assert response.status_code == 413 and response.headers.get("x-request-id")
+
 def test_health_endpoints_are_minimal_and_safe() -> None:
     client = TestClient(app, base_url="http://localhost")
     live = client.get("/health/live"); ready = client.get("/health/ready")

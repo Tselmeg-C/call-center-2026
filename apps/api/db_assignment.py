@@ -54,9 +54,11 @@ class AssignmentDatabase:
     def ordered_rules(self) -> list[RuleRow]:
         with Session(self.engine) as session: return list(session.scalars(select(RuleRow).order_by(RuleRow.position, RuleRow.id)))
 
-    def audit(self, page: int = 1, page_size: int = 25) -> tuple[list[AuditRow], int]:
+    def audit(self, page: int = 1, page_size: int = 25, *, actor: str | None = None, action: str | None = None, target: str | None = None, start: str | None = None, end: str | None = None) -> tuple[list[AuditRow], int]:
         with Session(self.engine) as session:
-            total = session.query(AuditRow).count(); rows = list(session.scalars(select(AuditRow).order_by(AuditRow.id).offset((page - 1) * page_size).limit(page_size))); return rows, total
+            rows = list(session.scalars(select(AuditRow).order_by(AuditRow.id)))
+            rows = [row for row in rows if (not actor or actor.casefold() in (row.actor_id or "").casefold()) and (not action or action.casefold() in row.action.casefold()) and (not target or target.casefold() in row.target.casefold()) and (not start or row.created_at.isoformat()[:10] >= start) and (not end or row.created_at.isoformat()[:10] <= end)]
+            return rows[(page - 1) * page_size:page * page_size], len(rows)
 
     def append_audit(self, *, actor_id: str | None, action: str, target: str, details: dict) -> None:
         with Session(self.engine) as session:

@@ -53,3 +53,10 @@ test("a persona change invalidates an earlier session's in-flight read", async (
   expect(await previousRead).toMatchObject({ ok: false, error: { code: "unauthenticated" } });
   expect(await services.sampleRecords()).toMatchObject({ ok: true, data: [{ id: "sales-sky-sample" }] });
 });
+
+test("customer reads preserve leading-zero BCN and full history", async () => {
+  const { services } = createMockAdapter(); await services.signIn("sales-river");
+  const list = await services.listCustomers(); expect(list).toMatchObject({ ok: true }); expect((list as { ok: true; data: { bcn: string }[] }).data.map(item => item.bcn)).toContain("000123");
+  const detail = await services.getCustomer("000124"); expect(detail).toMatchObject({ ok: true, data: { bcn: "000124" } });
+  expect((detail as { ok: true; data: { histories: unknown[] }}).data.histories).toHaveLength(30);
+});

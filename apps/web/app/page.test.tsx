@@ -100,7 +100,16 @@ test("every Admin destination has the matching heading, active link and service 
     go(path);
     expect(screen.getByRole("heading", { name: title })).toBeVisible();
     expect(screen.getByRole("link", { name: title })).toHaveAttribute("aria-current", "page");
-    expect(screen.getByText(/Placeholder/)).toBeVisible();
+    if (title !== "All Customers") expect(screen.getByText(/Placeholder/)).toBeVisible();
     expect(await screen.findByText("Alex Admin's synthetic service record")).toBeVisible();
   }
+});
+
+test("customer lists filter assignments and detail preserves distinct BCN history", async () => {
+  const go = setup(); await signIn("sales-river"); go("/customers/mine");
+  expect(await screen.findByText("000123")).toBeVisible();
+  expect(screen.queryByText("000124")).not.toBeInTheDocument();
+  fireEvent.change(screen.getByPlaceholderText("Name, BCN, MBCN, phone"), { target: { value: " 010-0101 " } });
+  expect(screen.getByText("000123")).toBeVisible();
+  expect(screen.getByRole("link", { name: "Acme North" })).toHaveAttribute("href", "/customers/000123");
 });

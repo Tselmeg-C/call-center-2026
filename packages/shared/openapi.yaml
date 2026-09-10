@@ -50,6 +50,28 @@ paths:
     get:
       operationId: workload
       responses: { '200': { description: Workload, content: { application/json: { schema: { $ref: '#/components/schemas/Workload' } } } }, '401': { $ref: '#/components/responses/Unauthenticated' } }
+  /customers/{bcn}/follow-ups:
+    post:
+      operationId: createFollowUp
+      parameters: [ { $ref: '#/components/parameters/Bcn' } ]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/FollowUpRequest' } } } }
+      responses: { '201': { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/FollowUp' } } } }, '401': { $ref: '#/components/responses/Unauthenticated' }, '403': { $ref: '#/components/responses/Forbidden' }, '409': { $ref: '#/components/responses/Conflict' }, '422': { $ref: '#/components/responses/Validation' } }
+  /customers/{bcn}/follow-ups/{followUpId}:
+    patch:
+      operationId: updateFollowUp
+      parameters: [ { $ref: '#/components/parameters/Bcn' }, { name: followUpId, in: path, required: true, schema: { type: string } } ]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/FollowUpRequest' } } } }
+      responses: { '200': { description: Updated, content: { application/json: { schema: { $ref: '#/components/schemas/FollowUp' } } } }, '401': { $ref: '#/components/responses/Unauthenticated' }, '403': { $ref: '#/components/responses/Forbidden' }, '409': { $ref: '#/components/responses/Conflict' }, '422': { $ref: '#/components/responses/Validation' } }
+    delete:
+      operationId: cancelFollowUp
+      parameters: [ { $ref: '#/components/parameters/Bcn' }, { name: followUpId, in: path, required: true, schema: { type: string } } ]
+      responses: { '200': { description: Cancelled, content: { application/json: { schema: { $ref: '#/components/schemas/FollowUp' } } } }, '401': { $ref: '#/components/responses/Unauthenticated' }, '403': { $ref: '#/components/responses/Forbidden' }, '409': { $ref: '#/components/responses/Conflict' } }
+  /customers/{bcn}/follow-ups/{followUpId}/complete:
+    post:
+      operationId: completeFollowUp
+      parameters: [ { $ref: '#/components/parameters/Bcn' }, { name: followUpId, in: path, required: true, schema: { type: string } } ]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/CompletionRequest' } } } }
+      responses: { '200': { description: Completed, content: { application/json: { schema: { $ref: '#/components/schemas/FollowUp' } } } }, '401': { $ref: '#/components/responses/Unauthenticated' }, '403': { $ref: '#/components/responses/Forbidden' }, '409': { $ref: '#/components/responses/Conflict' }, '422': { $ref: '#/components/responses/Validation' } }
   /customers/{bcn}/close:
     post:
       operationId: closeCustomer
@@ -82,5 +104,8 @@ components:
     InteractionRequest: { allOf: [{ $ref: '#/components/schemas/MutationMeta' }, { type: object, required: [outcome], properties: { outcome: { type: string, enum: [Attempt, Contact] }, note: { type: [string, 'null'], maxLength: 4000 } }, additionalProperties: false }] }
     NoteRequest: { allOf: [{ $ref: '#/components/schemas/MutationMeta' }, { type: object, required: [text], properties: { text: { type: string, minLength: 1, maxLength: 4000 } }, additionalProperties: false }] }
     LifecycleRequest: { allOf: [{ $ref: '#/components/schemas/MutationMeta' }, { type: object, required: [reasonId], properties: { reasonId: { type: string } }, additionalProperties: false }] }
+    FollowUpRequest: { allOf: [{ $ref: '#/components/schemas/MutationMeta' }, { type: object, required: [type], properties: { type: { type: string, enum: [Appointment, Reminder, 'Follow-up needed'] }, due: { type: [string, 'null'], format: date-time }, dueKind: { type: string, enum: [date, datetime, none] }, note: { type: [string, 'null'], maxLength: 4000 }, expectedUpdatedAt: { type: [string, 'null'], format: date-time } }, additionalProperties: false }] }
+    CompletionRequest: { allOf: [{ $ref: '#/components/schemas/MutationMeta' }, { type: object, required: [outcome], properties: { outcome: { type: string, enum: [Attempt, Contact] }, note: { type: [string, 'null'], maxLength: 4000 } }, additionalProperties: false }] }
+    FollowUp: { type: object, required: [id, bcn, type, status, createdAt, updatedAt], properties: { id: { type: string }, bcn: { type: string }, type: { type: string, enum: [Appointment, Reminder, 'Follow-up needed'] }, due: { type: [string, 'null'] }, dueKind: { type: string, enum: [date, datetime, none] }, note: { type: [string, 'null'] }, status: { type: string, enum: [Open, Completed, Cancelled] }, createdAt: { type: string, format: date-time }, updatedAt: { type: string, format: date-time } }, additionalProperties: false }
     Workload: { type: object, required: [asOf, today, counts, customers], properties: { asOf: { type: string, format: date-time }, today: { type: string, format: date }, counts: { type: object, additionalProperties: { type: integer } }, customers: { type: array, items: { $ref: '#/components/schemas/Customer' } } }, additionalProperties: false }
     Error: { type: object, required: [code, message, requestId], properties: { code: { type: string }, message: { type: string }, requestId: { type: string }, fieldErrors: { type: object, additionalProperties: { type: array, items: { type: string } } } }, additionalProperties: false }

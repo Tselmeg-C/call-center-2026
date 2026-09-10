@@ -8,6 +8,10 @@
 | `listCustomers` | `GET /customers` (`listCustomers`) | Sales/Admin | `page`, `page_size`, filters |
 | `getCustomer` | `GET /customers/{bcn}` (`getCustomer`) | Sales/Admin | — |
 | `workload` | `GET /workload` (`workload`) | Sales | UTC bucket snapshot |
+| `createFollowUp` | `POST /customers/{bcn}/follow-ups` (`createFollowUp`) | Owner/Admin | `submissionId` |
+| `updateFollowUp` | `PATCH /customers/{bcn}/follow-ups/{followUpId}` (`updateFollowUp`) | Owner/Admin | `submissionId`, expected version |
+| `cancelFollowUp` | `DELETE /customers/{bcn}/follow-ups/{followUpId}` (`cancelFollowUp`) | Owner/Admin | `submissionId` |
+| `completeFollowUp` | `POST /customers/{bcn}/follow-ups/{followUpId}/complete` (`completeFollowUp`) | Owner/Admin | `submissionId` |
 | `createInteraction` | `POST /customers/{bcn}/interactions` (`createInteraction`) | Owner/Admin | `submissionId` |
 | `createNote` | `POST /customers/{bcn}/notes` (`createNote`) | Owner/Admin | `submissionId` |
 | `deleteHistory` | `DELETE /customers/{bcn}/history/{id}` (`deleteHistory`) | Owner/Admin | Tombstone response |

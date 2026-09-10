@@ -569,6 +569,9 @@ def get_assignment_version(_: Annotated[User, Depends(admin_user)]) -> int:
 
 @app.post("/admin/assignment-runs")
 def run_assignment(body: AssignmentRunRequest, _: Annotated[User, Depends(admin_user)]) -> dict:
+    if assignment_db is not None:
+        persisted = assignment_db.get_run(body.submissionId)
+        if persisted: return persisted
     if body.submissionId in repo.assignment_runs: return repo.assignment_runs[body.submissionId]
     if body.scope not in {"unassigned", "all-open"}: raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Invalid assignment scope.")
     candidates = [row for row in repo.customers.values() if row["status"] == "Open" and (body.scope == "all-open" or row["ownerId"] is None)]
@@ -580,7 +583,9 @@ def run_assignment(body: AssignmentRunRequest, _: Annotated[User, Depends(admin_
         owner = min((rule["ownerId"] for rule in eligible), key=lambda user_id: (counts[user_id], user_id))
         row.update(ownerId=owner, ownerName=repo.users[owner]["name"], version=row["version"] + 1); counts[owner] += 1; assigned += 1
     result = {"submissionId": body.submissionId, "scope": body.scope, "candidates": len(candidates), "assigned": assigned, "skipped": len(candidates) - assigned}
-    repo.assignment_runs[body.submissionId] = result; return result
+    repo.assignment_runs[body.submissionId] = result
+    if assignment_db is not None: assignment_db.save_run(submission_id=body.submissionId, scope=body.scope, result=result)
+    return result
 
 @app.get("/admin/assignments")
 def list_assignment_rules_contract(user: Annotated[User, Depends(admin_user)]) -> list[dict]:

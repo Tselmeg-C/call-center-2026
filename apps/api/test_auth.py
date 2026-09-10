@@ -79,6 +79,9 @@ def test_assignment_database_keeps_ordered_rules_and_audit() -> None:
     database.create_rule(rule_id="r1", name="First", position=1, actor_id="admin")
     assert [row.id for row in database.ordered_rules()] == ["r1", "r2"]
     events, total = database.audit(); assert total == 2 and len(events) == 2
+    result = {"submissionId": "s1", "scope": "unassigned", "assigned": 1}
+    assert database.save_run(submission_id="s1", scope="unassigned", result=result) == result
+    assert database.get_run("s1") == result
 
 def test_activity_idempotency_replays_and_rejects_payload_reuse() -> None:
     database = ActivityDatabase("sqlite+pysqlite:///:memory:")

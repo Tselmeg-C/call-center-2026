@@ -27,6 +27,11 @@ class AssignmentHistoryRow(AssignmentBase):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     bcn: Mapped[str] = mapped_column(String(64)); actor_id: Mapped[str | None] = mapped_column(String(120), nullable=True); old_owner_id: Mapped[str | None] = mapped_column(String(120), nullable=True); new_owner_id: Mapped[str | None] = mapped_column(String(120), nullable=True); reason: Mapped[str] = mapped_column(String(255)); created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
+class AssignmentRunRow(AssignmentBase):
+    __tablename__ = "assignment_runs"
+    submission_id: Mapped[str] = mapped_column(String(120), primary_key=True)
+    scope: Mapped[str] = mapped_column(String(32)); result: Mapped[dict] = mapped_column(JSON); created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
 class AssignmentDatabase:
     def __init__(self, url: str, *, create_schema: bool = True):
         options = {"connect_args": {"check_same_thread": False}, "poolclass": StaticPool} if ":memory:" in url else {}
@@ -59,3 +64,14 @@ class AssignmentDatabase:
     def append_assignment(self, *, bcn: str, actor_id: str, old_owner_id: str | None, new_owner_id: str | None, reason: str) -> None:
         with Session(self.engine) as session:
             session.add(AssignmentHistoryRow(bcn=bcn, actor_id=actor_id, old_owner_id=old_owner_id, new_owner_id=new_owner_id, reason=reason, created_at=datetime.now(timezone.utc))); session.commit()
+
+    def save_run(self, *, submission_id: str, scope: str, result: dict) -> dict:
+        with Session(self.engine) as session:
+            row = session.get(AssignmentRunRow, submission_id)
+            if row: return row.result
+            session.add(AssignmentRunRow(submission_id=submission_id, scope=scope, result=result, created_at=datetime.now(timezone.utc))); session.commit(); return result
+
+    def get_run(self, submission_id: str) -> dict | None:
+        with Session(self.engine) as session:
+            row = session.get(AssignmentRunRow, submission_id)
+            return row.result if row else None

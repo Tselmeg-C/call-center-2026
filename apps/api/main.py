@@ -362,10 +362,17 @@ def delete_history(bcn: str, record_id: str, user: Annotated[User, Depends(curre
 @app.post("/customers/{bcn}/follow-ups")
 def create_followup(bcn: str, body: FollowUpCreate, user: Annotated[User, Depends(current_user)]) -> dict:
     row = writable_customer(bcn, user); key = f"{user.id}:{bcn}:followup:{body.submissionId}"
+    payload = f"{bcn}|{body.type}|{body.due or ''}|{body.note}"
+    if activity_db is not None:
+        try: persisted = activity_db.get_idempotent(actor_id=user.id, operation="followup", submission_id=body.submissionId, payload=payload)
+        except ValueError as exc: raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+        if persisted: return persisted
     if key in repo.followups: return repo.followups[key]
     if body.type not in {"Appointment", "Reminder"}: raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Invalid follow-up type.")
     record = {"id": f"followup-{len(repo.followups)+1}", "bcn": bcn, "type": body.type, "due": body.due, "note": body.note, "status": "Open", "actor": user.name, "actorId": user.id, "createdAt": datetime.now(timezone.utc).isoformat()}
-    repo.followups[key] = record; row["histories"].append({**record, "kind": "Follow-up"}); persist_followup(record); return record
+    repo.followups[key] = record; row["histories"].append({**record, "kind": "Follow-up"}); persist_followup(record)
+    if activity_db is not None: activity_db.save_idempotent(actor_id=user.id, operation="followup", submission_id=body.submissionId, payload=payload, result=record)
+    return record
 
 @app.post("/customers/{bcn}/close")
 def close_customer(bcn: str, body: LifecycleRequest, user: Annotated[User, Depends(current_user)]) -> Customer:

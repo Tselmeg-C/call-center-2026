@@ -4,6 +4,7 @@ from openpyxl import Workbook
 
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
+from sqlalchemy import text
 
 from .main import app, password_hash, repo, provision_user
 from .storage import mode
@@ -54,6 +55,16 @@ def test_health_endpoints_are_minimal_and_safe() -> None:
     live = client.get("/health/live"); ready = client.get("/health/ready")
     assert live.status_code == 200 and live.json() == {"status": "ok"}
     assert ready.status_code == 200 and ready.json()["storage"] == "memory"
+
+def test_postgres_readiness_rejects_stale_migration(monkeypatch) -> None:
+    from .main import health_ready
+    database = AuthDatabase("sqlite+pysqlite:///:memory:")
+    with database.engine.begin() as connection:
+        connection.execute(text("CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL)"))
+        connection.execute(text("INSERT INTO alembic_version VALUES ('001_auth')"))
+    monkeypatch.setitem(health_ready.__globals__, "auth_db", database)
+    response = TestClient(app, base_url="http://localhost").get("/health/ready")
+    assert response.status_code == 503
 
 def test_database_session_lookup_uses_digest_and_revocation() -> None:
     database = AuthDatabase("sqlite+pysqlite:///:memory:")

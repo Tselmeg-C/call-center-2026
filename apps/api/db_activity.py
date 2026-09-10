@@ -33,9 +33,10 @@ class IdempotencyRow(ActivityBase):
 def fingerprint(payload: str) -> str: return sha256(payload.encode()).hexdigest()
 
 class ActivityDatabase:
-    def __init__(self, url: str):
+    def __init__(self, url: str, *, create_schema: bool = True):
         options = {"connect_args": {"check_same_thread": False}, "poolclass": StaticPool} if ":memory:" in url else {}
-        self.engine = create_engine(url, **options); ActivityBase.metadata.create_all(self.engine)
+        self.engine = create_engine(url, **options)
+        if create_schema: ActivityBase.metadata.create_all(self.engine)
 
     def save_idempotent(self, *, actor_id: str, operation: str, submission_id: str, payload: str, result: dict) -> dict:
         with Session(self.engine) as session:
@@ -48,3 +49,7 @@ class ActivityDatabase:
     def history(self, bcn: str, page: int = 1, page_size: int = 25) -> tuple[list[ActivityRow], int]:
         with Session(self.engine) as session:
             query = select(ActivityRow).where(ActivityRow.bcn == bcn).order_by(ActivityRow.created_at, ActivityRow.id); total = session.query(ActivityRow).filter(ActivityRow.bcn == bcn).count(); return list(session.scalars(query.offset((page - 1) * page_size).limit(page_size))), total
+
+    def save_activity(self, *, record_id: str, bcn: str, actor_id: str, kind: str, outcome: str | None, text: str | None) -> None:
+        with Session(self.engine) as session:
+            session.add(ActivityRow(id=record_id, bcn=bcn, actor_id=actor_id, kind=kind, outcome=outcome, text=text, created_at=datetime.now(timezone.utc))); session.commit()

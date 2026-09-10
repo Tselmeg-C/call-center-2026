@@ -15,6 +15,7 @@ from .storage import mode
 from .db_auth import AuthDatabase
 from .db_customers import CustomerDatabase
 from .db_assignment import AssignmentDatabase
+from .db_activity import ActivityDatabase
 from sqlalchemy import inspect
 
 app = FastAPI(title="Call Center API", version="0.1.0")
@@ -125,9 +126,13 @@ storage_mode = mode()
 auth_db = AuthDatabase(__import__("os").environ["DATABASE_URL"], create_schema=False) if storage_mode == "postgres" else None
 customer_db = CustomerDatabase(__import__("os").environ["DATABASE_URL"], create_schema=False) if storage_mode == "postgres" else None
 assignment_db = AssignmentDatabase(__import__("os").environ["DATABASE_URL"], create_schema=False) if storage_mode == "postgres" else None
+activity_db = ActivityDatabase(__import__("os").environ["DATABASE_URL"], create_schema=False) if storage_mode == "postgres" else None
 
 def append_audit(actor_id: str | None, action: str, target: str, details: dict) -> None:
     if assignment_db is not None: assignment_db.append_audit(actor_id=actor_id, action=action, target=target, details=details)
+
+def persist_activity(record: dict) -> None:
+    if activity_db is not None: activity_db.save_activity(record_id=record["id"], bcn=record["bcn"], actor_id=record["actorId"], kind=record["kind"], outcome=record.get("outcome"), text=record.get("text") or record.get("note"))
 
 @app.get("/health/live")
 def health_live() -> dict:
@@ -260,7 +265,7 @@ def create_interaction(bcn: str, body: InteractionCreate, user: Annotated[User, 
         return prior
     if body.outcome not in {"Attempt", "Contact"}: raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Invalid outcome.")
     record = {"id": f"interaction-{len(repo.interactions)+1}", "bcn": bcn, "kind": "Interaction", "outcome": body.outcome, "note": body.note, "actor": user.name, "actorId": user.id, "timestamp": datetime.now(timezone.utc).isoformat(), "deleted": False}
-    repo.interactions[key] = record; row["histories"].append(record); append_audit(user.id, "Interaction created", bcn, {"outcome": body.outcome}); return record
+    repo.interactions[key] = record; row["histories"].append(record); persist_activity(record); append_audit(user.id, "Interaction created", bcn, {"outcome": body.outcome}); return record
 
 @app.post("/customers/{bcn}/notes")
 def create_note(bcn: str, body: NoteCreate, user: Annotated[User, Depends(current_user)]) -> dict:
@@ -270,7 +275,7 @@ def create_note(bcn: str, body: NoteCreate, user: Annotated[User, Depends(curren
         if prior["text"] != body.text: raise HTTPException(status.HTTP_409_CONFLICT, "Submission already used.")
         return prior
     record = {"id": f"note-{len(repo.notes)+1}", "bcn": bcn, "kind": "Standalone note", "text": body.text, "actor": user.name, "actorId": user.id, "timestamp": datetime.now(timezone.utc).isoformat(), "deleted": False}
-    repo.notes[key] = record; row["histories"].append(record); append_audit(user.id, "Note created", bcn, {}); return record
+    repo.notes[key] = record; row["histories"].append(record); persist_activity(record); append_audit(user.id, "Note created", bcn, {}); return record
 
 @app.delete("/customers/{bcn}/history/{record_id}")
 def delete_history(bcn: str, record_id: str, user: Annotated[User, Depends(current_user)]) -> dict:

@@ -163,14 +163,20 @@ def readable_rows() -> list[dict]:
 
 @app.middleware("http")
 async def origin_guard(request: Request, call_next):
+    candidate = request.headers.get("x-request-id", "")
+    request_id = candidate if re.fullmatch(r"[A-Za-z0-9._-]{1,128}", candidate) else str(uuid4())
+    if request.url.path == "/admin/imports":
+        try: content_length = int(request.headers.get("content-length", "0"))
+        except ValueError: content_length = 0
+        if content_length > 11 * 1024 * 1024:
+            return Response("Upload is too large.", status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, headers={"x-request-id": request_id}, media_type="application/json")
     if request.method in {"POST", "PATCH", "PUT", "DELETE"} and request.url.path != "/session/login":
         origin = request.headers.get("origin")
         referer = request.headers.get("referer", "")
         if origin not in {"http://localhost:3000", "http://127.0.0.1:3000"} and not referer.startswith("http://localhost:3000/") and not referer.startswith("http://127.0.0.1:3000/"):
-            return Response("Origin not allowed.", status_code=403, media_type="application/json")
+            return Response("Origin not allowed.", status_code=403, headers={"x-request-id": request_id}, media_type="application/json")
     response = await call_next(request)
-    candidate = request.headers.get("x-request-id", "")
-    response.headers["x-request-id"] = candidate if re.fullmatch(r"[A-Za-z0-9._-]{1,128}", candidate) else str(uuid4())
+    response.headers["x-request-id"] = request_id
     return response
 
 

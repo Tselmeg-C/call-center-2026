@@ -4,7 +4,7 @@ from contextlib import contextmanager
 from secrets import token_urlsafe
 from typing import Annotated
 
-from fastapi import Cookie, Depends, FastAPI, HTTPException, Query, Request, Response, status
+from fastapi import Cookie, Depends, FastAPI, HTTPException, Query, Request, Response, UploadFile, File, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
@@ -68,10 +68,11 @@ class MemoryRepo:
         self.interactions: dict[str, dict] = {}
         self.notes: dict[str, dict] = {}
         self.followups: dict[str, dict] = {}
+        self.imports: dict[str, dict] = {}
         self.reset()
 
     def reset(self) -> None:
-        self.users.clear(); self.sessions.clear(); self.submissions.clear(); self.interactions.clear(); self.notes.clear(); self.followups.clear(); self.reasons = {"closure-1": {"id": "closure-1", "label": "Won", "active": True}}
+        self.users.clear(); self.sessions.clear(); self.submissions.clear(); self.interactions.clear(); self.notes.clear(); self.followups.clear(); self.imports.clear(); self.reasons = {"closure-1": {"id": "closure-1", "label": "Won", "active": True}}
         self.customers = {
             "000123": {"bcn": "000123", "name": "Acme North", "ownerId": "sales-river", "ownerName": "River Sales", "status": "Open", "phones": ["(555) 010-0101"], "source": {"propensity_score": 0.98}, "version": 0, "histories": []},
             "000124": {"bcn": "000124", "name": "Acme North", "ownerId": "sales-sky", "ownerName": "Sky Sales", "status": "Closed", "phones": ["555 010 0103"], "source": {"propensity_score": 0.7}, "version": 0, "histories": []},
@@ -80,11 +81,11 @@ class MemoryRepo:
 
     @contextmanager
     def transaction(self):
-        snapshot = (deepcopy(self.users), deepcopy(self.sessions), deepcopy(self.customers), deepcopy(self.submissions), deepcopy(self.interactions), deepcopy(self.notes), deepcopy(self.followups))
+        snapshot = (deepcopy(self.users), deepcopy(self.sessions), deepcopy(self.customers), deepcopy(self.submissions), deepcopy(self.interactions), deepcopy(self.notes), deepcopy(self.followups), deepcopy(self.imports))
         try:
             yield self
         except Exception:
-            self.users, self.sessions, self.customers, self.submissions, self.interactions, self.notes, self.followups = snapshot
+            self.users, self.sessions, self.customers, self.submissions, self.interactions, self.notes, self.followups, self.imports = snapshot
             raise
 
 
@@ -360,6 +361,44 @@ def update_reason(reason_id: str, patch: ClosureReasonPatch, _: Annotated[User, 
     label = patch.label.strip() if patch.label else reason["label"]
     if any(item["id"] != reason_id and item["label"].casefold() == label.casefold() for item in repo.reasons.values()): raise HTTPException(status.HTTP_409_CONFLICT, "Reason already exists.")
     reason.update(label=label, **({"active": patch.active} if patch.active is not None else {})); return ClosureReason.model_validate(reason)
+
+@app.post("/admin/imports", status_code=201)
+async def import_customers(file: UploadFile = File(...), submission_id: str = Query(..., min_length=1), user: Annotated[User, Depends(admin_user)] = None) -> dict:
+    if not file.filename or not file.filename.casefold().endswith(".xlsx"):
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Upload an .xlsx workbook.")
+    if submission_id in repo.imports: return repo.imports[submission_id]
+    payload = await file.read()
+    if len(payload) > 10 * 1024 * 1024: raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, "Workbook is too large.")
+    try:
+        from io import BytesIO
+        from openpyxl import load_workbook
+        workbook = load_workbook(BytesIO(payload), read_only=True, data_only=True, keep_links=False)
+        sheet = workbook.worksheets[0]
+        rows = sheet.iter_rows(values_only=True)
+        headers = [str(value).strip() if value is not None else "" for value in next(rows, ())]
+        if not headers or "bcn" not in {item.casefold() for item in headers}: raise ValueError("Missing bcn header")
+        bcn_index = next(index for index, value in enumerate(headers) if value.casefold() == "bcn")
+        name_index = next((index for index, value in enumerate(headers) if value.casefold() in {"customer_name", "name"}), None)
+        phone_index = next((index for index, value in enumerate(headers) if value.casefold() == "phone"), None)
+        errors = []; created = updated = 0
+        with repo.transaction():
+            for row_number, values in enumerate(rows, 2):
+                if not any(value not in (None, "") for value in values): continue
+                raw = values[bcn_index] if bcn_index < len(values) else None
+                bcn = str(raw).strip() if raw is not None else ""
+                if not bcn or not bcn.isdigit(): errors.append({"row": row_number, "field": "bcn", "reason": "Invalid bcn"}); continue
+                bcn = bcn.zfill(6); name = str(values[name_index]).strip() if name_index is not None and name_index < len(values) and values[name_index] is not None else ""
+                phone = str(values[phone_index]).strip() if phone_index is not None and phone_index < len(values) and values[phone_index] is not None else None
+                if bcn in repo.customers:
+                    record = repo.customers[bcn]; record["name"] = name or record["name"]; record["phones"] = [phone] if phone else []; record.setdefault("source", {})["customer_name"] = record["name"]; updated += 1
+                else:
+                    repo.customers[bcn] = {"bcn": bcn, "name": name or bcn, "ownerId": None, "ownerName": None, "status": "Open", "phones": [phone] if phone else [], "source": {"customer_name": name or bcn}, "version": 0, "histories": []}; created += 1
+        result = {"jobId": f"import-{len(repo.imports)+1}", "submissionId": submission_id, "filename": file.filename, "created": created, "updated": updated, "errors": errors, "processed": created + updated + len(errors), "actorId": user.id}
+        repo.imports[submission_id] = result; return result
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Workbook could not be processed.") from exc
 
 
 @app.post("/operator/provision", response_model=User, include_in_schema=False)

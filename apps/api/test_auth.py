@@ -1,4 +1,6 @@
 from datetime import datetime, timedelta, timezone
+from io import BytesIO
+from openpyxl import Workbook
 
 from fastapi.testclient import TestClient
 
@@ -79,3 +81,12 @@ def test_sales_my_scope_cannot_be_widened_and_reads_are_paginated() -> None:
     scoped = client.get("/customers", params={"mine": "true", "page_size": 1}); assert scoped.status_code == 200 and scoped.json()["total"] == 1 and scoped.json()["items"][0]["bcn"] == "000123"
     assert client.get("/customers", params={"mine": "true", "owner": "sales-sky"}).json()["total"] == 0
     assert client.get("/customers", params={"page": 0}).status_code == 422
+
+def test_admin_xlsx_import_preserves_assignment_and_is_idempotent() -> None:
+    repo.reset(); admin = provision_user(type("P", (), {"name": "Admin", "email": "admin@example.test", "role": "Admin", "password": "correct horse battery staple"})())
+    client = TestClient(app, base_url="http://localhost"); client.post("/session/login", json={"email": admin.email, "password": "correct horse battery staple"})
+    workbook = Workbook(); sheet = workbook.active; sheet.append(["bcn", "customer_name", "phone"]); sheet.append(["000123", "Renamed", "555-0001"]); sheet.append(["009999", "New Co", None]); payload = BytesIO(); workbook.save(payload); payload.seek(0)
+    response = client.post("/admin/imports?submission_id=job-1", files={"file": ("customers.xlsx", payload.getvalue(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")}, headers={"origin": "http://localhost:3000"})
+    assert response.status_code == 201 and response.json()["processed"] == 2 and response.json()["created"] == 1
+    assert client.get("/customers/000123").json()["ownerId"] == "sales-river"
+    assert client.post("/admin/imports?submission_id=job-1", files={"file": ("customers.xlsx", payload.getvalue(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")}, headers={"origin": "http://localhost:3000"}).json()["jobId"] == response.json()["jobId"]

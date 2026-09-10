@@ -374,6 +374,7 @@ def assign_customer(bcn: str, body: AssignmentRequest, user: Annotated[User, Dep
         row["ownerId"] = body.ownerId; row["ownerName"] = owner["name"] if owner else None
         row["version"] += 1
         row["histories"].append({"kind": "Assignment", "actor": user.name, "actorId": user.id, "oldOwner": old, "newOwner": body.ownerId, "reason": "Manual assignment", "timestamp": datetime.now(timezone.utc).isoformat()})
+        if assignment_db is not None: assignment_db.append_assignment(bcn=bcn, actor_id=user.id, old_owner_id=old, new_owner_id=body.ownerId, reason="Manual assignment")
         append_audit(user.id, "Customer assigned", bcn, {"oldOwner": old, "newOwner": body.ownerId})
         repo.submissions[key] = {"ownerId": body.ownerId, "expectedVersion": body.expectedVersion}
     return Customer.model_validate(row)

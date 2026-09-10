@@ -59,6 +59,7 @@ test("customer reads preserve leading-zero BCN and full history", async () => {
   const list = await services.listCustomers(); expect(list).toMatchObject({ ok: true }); expect((list as { ok: true; data: { bcn: string }[] }).data.map(item => item.bcn)).toContain("000123");
   const detail = await services.getCustomer("000124"); expect(detail).toMatchObject({ ok: true, data: { bcn: "000124" } });
   expect((detail as { ok: true; data: { histories: unknown[] }}).data.histories).toHaveLength(30);
+  expect(detail).toMatchObject({ ok: true, data: { status: "Closed", closure: { reason: "Won", actor: "Sky Sales", timestamp: "2026-09-26T10:00:00Z" } } });
 });
 
 test("interaction and note creation trims, validates, deduplicates, and uses the injected clock", async () => {

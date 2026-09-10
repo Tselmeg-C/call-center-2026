@@ -10,6 +10,19 @@ permissions:
 jobs:
   check:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+          POSTGRES_DB: call_center_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d call_center_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -28,3 +41,10 @@ jobs:
           python -m compileall -q apps/api
           python -m pytest apps/api/test_auth.py
           DATABASE_URL=sqlite+pysqlite:////tmp/call-center-ci.db alembic -c apps/api/alembic.ini upgrade head
+      - name: PostgreSQL migration and HTTP smoke
+        env:
+          CALL_CENTER_STORAGE: postgres
+          DATABASE_URL: postgresql+psycopg://postgres@localhost:5432/call_center_ci
+        run: |
+          alembic -c apps/api/alembic.ini upgrade head
+          python -m apps.api.postgres_smoke

@@ -97,7 +97,7 @@ class MemoryRepo:
 
 repo = MemoryRepo()
 storage_mode = mode()
-auth_db = AuthDatabase(__import__("os").environ["DATABASE_URL"]) if storage_mode == "postgres" else None
+auth_db = AuthDatabase(__import__("os").environ["DATABASE_URL"], create_schema=False) if storage_mode == "postgres" else None
 
 @app.get("/health/live")
 def health_live() -> dict:

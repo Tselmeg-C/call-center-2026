@@ -27,9 +27,9 @@ def digest(token: str) -> str:
     return sha256(token.encode()).hexdigest()
 
 class AuthDatabase:
-    def __init__(self, url: str):
+    def __init__(self, url: str, *, create_schema: bool = True):
         self.engine = create_engine(url)
-        Base.metadata.create_all(self.engine)
+        if create_schema: Base.metadata.create_all(self.engine)
 
     def user_for_session(self, token: str) -> UserRow | None:
         now = datetime.now(timezone.utc)

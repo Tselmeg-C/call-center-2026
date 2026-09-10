@@ -52,6 +52,15 @@ def test_database_customer_upsert_preserves_operational_owner() -> None:
     second = database.upsert_source(bcn="000123", name="Imported", source={"score": 2}, primary_phone="777")
     assert second.name == "Imported" and second.owner_id == "sales-river" and second.status == "Closed"
 
+def test_assignment_configuration_and_run_are_admin_only() -> None:
+    repo.reset(); admin = provision_user(type("P", (), {"name": "Admin", "email": "admin@example.test", "role": "Admin", "password": "correct horse battery staple"})()); repo.users["sales-river"] = {"id": "sales-river", "name": "River Sales", "email": "river@example.test", "role": "Sales", "active": True, "password": "unused"}
+    client = TestClient(app, base_url="http://localhost"); client.post("/session/login", json={"email": admin.email, "password": "correct horse battery staple"})
+    created = client.post("/admin/assignment-rules", json={"name": "River", "ownerId": "sales-river"}, headers={"origin": "http://localhost:3000"})
+    assert created.status_code == 201
+    assert client.put("/admin/assignment-fallback", json=["sales-river"], headers={"origin": "http://localhost:3000"}).json() == ["sales-river"]
+    result = client.post("/admin/assignment-runs", json={"scope": "unassigned", "submissionId": "run-1"}, headers={"origin": "http://localhost:3000"})
+    assert result.status_code == 200 and result.json()["assigned"] == 1
+
 
 def test_expired_session_is_rejected() -> None:
     repo.reset()

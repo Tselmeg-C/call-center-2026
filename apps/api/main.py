@@ -64,10 +64,11 @@ class MemoryRepo:
         self.sessions: dict[str, tuple[str, datetime]] = {}
         self.customers: dict[str, dict] = {}
         self.submissions: dict[tuple[str, str], dict] = {}
+        self.reasons: dict[str, dict] = {}
         self.reset()
 
     def reset(self) -> None:
-        self.users.clear(); self.sessions.clear(); self.submissions.clear()
+        self.users.clear(); self.sessions.clear(); self.submissions.clear(); self.reasons = {"closure-1": {"id": "closure-1", "label": "Won", "active": True}}
         self.customers = {
             "000123": {"bcn": "000123", "name": "Acme North", "ownerId": "sales-river", "ownerName": "River Sales", "status": "Open", "phones": ["(555) 010-0101"], "source": {"propensity_score": 0.98}, "version": 0, "histories": []},
             "000124": {"bcn": "000124", "name": "Acme North", "ownerId": "sales-sky", "ownerName": "Sky Sales", "status": "Closed", "phones": ["555 010 0103"], "source": {"propensity_score": 0.7}, "version": 0, "histories": []},
@@ -194,6 +195,29 @@ class Provision(BaseModel):
 class ResetPassword(BaseModel):
     password: str = Field(min_length=12, max_length=128)
 
+class UserDraft(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    email: str = Field(min_length=3, max_length=254)
+    role: str = "Sales"
+    password: str = Field(min_length=12, max_length=128)
+
+class UserPatch(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    role: str | None = None
+    active: bool | None = None
+
+class ClosureReason(BaseModel):
+    id: str
+    label: str
+    active: bool = True
+
+class ClosureReasonDraft(BaseModel):
+    label: str = Field(min_length=1, max_length=120)
+
+class ClosureReasonPatch(BaseModel):
+    label: str | None = Field(default=None, min_length=1, max_length=120)
+    active: bool | None = None
+
 
 def provision_user(data: Provision) -> User:
     email = safe_email(data.email)
@@ -204,6 +228,53 @@ def provision_user(data: Provision) -> User:
     record = {"id": f"user-{len(repo.users) + 1}", "name": data.name, "email": email, "role": data.role, "active": True, "password": password_hash.hash(data.password)}
     repo.users[record["id"]] = record
     return User.model_validate(record)
+
+def admin_user(user: Annotated[User, Depends(current_user)]) -> User:
+    if user.role != "Admin": raise HTTPException(status.HTTP_403_FORBIDDEN, "Admin access required.")
+    return user
+
+@app.get("/admin/users", response_model=list[User])
+def list_users(_: Annotated[User, Depends(admin_user)]) -> list[User]:
+    return [User.model_validate(item) for item in repo.users.values()]
+
+@app.post("/admin/users", response_model=User, status_code=201)
+def create_user(data: UserDraft, _: Annotated[User, Depends(admin_user)]) -> User:
+    try: return provision_user(Provision(**data.model_dump()))
+    except ValueError as exc: raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+
+@app.patch("/admin/users/{user_id}", response_model=User)
+def update_user(user_id: str, patch: UserPatch, actor: Annotated[User, Depends(admin_user)]) -> User:
+    record = repo.users.get(user_id)
+    if not record: raise HTTPException(status.HTTP_404_NOT_FOUND, "User not found.")
+    changes = patch.model_dump(exclude_none=True)
+    if user_id == actor.id and (changes.get("active") is False or changes.get("role") == "Sales"): raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Cannot disable or demote yourself.")
+    if changes.get("role") not in {None, "Admin", "Sales"}: raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Invalid role.")
+    if changes.get("email"): changes["email"] = safe_email(changes["email"])
+    prior_active = record["active"]; record.update(changes)
+    if prior_active and (record["active"] is False or record["role"] != "Sales"):
+        for token, (owner, _) in list(repo.sessions.items()):
+            if owner == user_id: repo.sessions.pop(token, None)
+        if record["role"] != "Sales":
+            for row in repo.customers.values():
+                if row["ownerId"] == user_id and row["status"] == "Open": row.update(ownerId=None, ownerName=None, version=row["version"] + 1)
+    return User.model_validate(record)
+
+@app.get("/admin/closure-reasons", response_model=list[ClosureReason])
+def list_reasons(_: Annotated[User, Depends(admin_user)]) -> list[ClosureReason]:
+    return [ClosureReason.model_validate(item) for item in repo.reasons.values()]
+
+@app.post("/admin/closure-reasons", response_model=ClosureReason, status_code=201)
+def create_reason(data: ClosureReasonDraft, _: Annotated[User, Depends(admin_user)]) -> ClosureReason:
+    if any(item["label"].casefold() == data.label.strip().casefold() for item in repo.reasons.values()): raise HTTPException(status.HTTP_409_CONFLICT, "Reason already exists.")
+    reason = {"id": f"closure-{len(repo.reasons) + 1}", "label": data.label.strip(), "active": True}; repo.reasons[reason["id"]] = reason; return ClosureReason.model_validate(reason)
+
+@app.patch("/admin/closure-reasons/{reason_id}", response_model=ClosureReason)
+def update_reason(reason_id: str, patch: ClosureReasonPatch, _: Annotated[User, Depends(admin_user)]) -> ClosureReason:
+    reason = repo.reasons.get(reason_id)
+    if not reason: raise HTTPException(status.HTTP_404_NOT_FOUND, "Reason not found.")
+    label = patch.label.strip() if patch.label else reason["label"]
+    if any(item["id"] != reason_id and item["label"].casefold() == label.casefold() for item in repo.reasons.values()): raise HTTPException(status.HTTP_409_CONFLICT, "Reason already exists.")
+    reason.update(label=label, **({"active": patch.active} if patch.active is not None else {})); return ClosureReason.model_validate(reason)
 
 
 @app.post("/operator/provision", response_model=User, include_in_schema=False)

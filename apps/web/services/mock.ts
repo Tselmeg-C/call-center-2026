@@ -1,13 +1,13 @@
 import type { ClosureReason, CreateInteractionInput, CreateNoteInput, Customer, CustomerDetail, FollowUp, FollowUpInput, HistoryRecord, MockControls, MockSnapshot, Result, SampleRecord, Services, User, UpdateFollowUpInput, CompleteFollowUpInput, LifecycleInput } from "./types";
 import { calculateWorkload } from "./workload";
 
-const personas: readonly User[] = [
-  { id: "admin-demo", name: "Alex Admin", role: "Admin" },
-  { id: "sales-river", name: "River Sales", role: "Sales" },
-  { id: "sales-sky", name: "Sky Sales", role: "Sales" },
+const seedUsers: User[] = [
+  { id: "admin-demo", name: "Alex Admin", email: "alex@example.test", role: "Admin", active: true },
+  { id: "sales-river", name: "River Sales", email: "river@example.test", role: "Sales", active: true },
+  { id: "sales-sky", name: "Sky Sales", email: "sky@example.test", role: "Sales", active: true },
 ];
 const failure = <T>(code: "unauthenticated" | "forbidden" | "request-failure" | "validation" | "conflict", message: string): Result<T> => ({ ok: false, error: { code, message } });
-const closureReasons: readonly ClosureReason[] = ["Won", "Lost", "No longer a fit", "Duplicate", "Unreachable", "Out of territory", "Other"].map((label, i) => ({ id: `closure-${i + 1}`, label, active: true }));
+const seedReasons: ClosureReason[] = ["Won", "Lost", "No longer a fit", "Duplicate", "Unreachable", "Out of territory", "Other"].map((label, i) => ({ id: `closure-${i + 1}`, label, active: true }));
 const customerFixtures: CustomerDetail[] = [
   { bcn: "000123", mbcn: "M-00123", name: "Acme North", ownerId: "sales-river", ownerName: "River Sales", status: "Open", previouslyContacted: false, recent: true, propensityTier: "A", propensityRank: 1, propensityScore: 0.98, phones: ["(555) 010-0101", "555-010-0102"], nextFollowUp: "2026-09-12", contactStatus: "No recorded interaction", source: { bcn: "000123", MBCN: "M-00123", customer_name: "Acme North", phone: "(555) 010-0101", previously_contacted: false, propensity_score: 0.98, propensity_tier: "A", propensity_rank: 1, Inside_Lead: "Lead A", Field_Rep: null, SC_Naming: "SC-1", Inside_Rep: "River Sales", Branch_Code: "001", RSM_Name: "RSM North", Originating_BU: "North", LAST_PURCHASE_DATE: null, recent: true, REVENUE_AMOUNT_2024: 1000, REVENUE_AMOUNT_2025: null, REVENUE_AMOUNT_2026: 1200, FEM_AMOUNT_2024: null, FEM_AMOUNT_2025: null, FEM_AMOUNT_2026: null, Payment_Terms: "Net 30", vendor_1: null, vendor_1_revenue: null, vendor_2: null, vendor_2_revenue: null, vendor_3: null, vendor_3_revenue: null, category_1: "Industrial", category_1_revenue: 1200, category_2: null, category_2_revenue: null, category_3: null, category_3_revenue: null }, histories: [], followUps: [{ id: "fu-fixture-1", bcn: "000123", type: "Reminder", due: "2026-09-12", dueKind: "date", note: "Call back", status: "Open", actor: "River Sales", actorId: "sales-river", createdAt: "2026-09-10T10:00:00Z", updatedAt: "2026-09-10T10:00:00Z" }] },
   { bcn: "000124", mbcn: "M-00124", name: "Acme North", ownerId: "sales-sky", ownerName: "Sky Sales", status: "Closed", previouslyContacted: true, recent: false, propensityTier: "B", propensityRank: 2, propensityScore: 0.7, phones: ["555 010 0103"], nextFollowUp: null, contactStatus: "Contact", source: { bcn: "000124", MBCN: "M-00124", customer_name: "Acme North", phone: "555 010 0103", previously_contacted: true, propensity_score: 0.7, propensity_tier: "B", propensity_rank: 2, Inside_Lead: null, Field_Rep: "Rep B", SC_Naming: null, Inside_Rep: "Sky Sales", Branch_Code: "002", RSM_Name: null, Originating_BU: "West", LAST_PURCHASE_DATE: "2026-01-04", recent: false, REVENUE_AMOUNT_2024: 200, REVENUE_AMOUNT_2025: 300, REVENUE_AMOUNT_2026: 400, FEM_AMOUNT_2024: null, FEM_AMOUNT_2025: null, FEM_AMOUNT_2026: null, Payment_Terms: null, vendor_1: "Vendor", vendor_1_revenue: 20, vendor_2: null, vendor_2_revenue: null, vendor_3: null, vendor_3_revenue: null, category_1: null, category_1_revenue: null, category_2: null, category_2_revenue: null, category_3: null, category_3_revenue: null }, histories: Array.from({ length: 30 }, (_, i) => ({ kind: ["Interaction", "Standalone note", "Follow-up", "Assignment", "Closure", "Reopen"][i % 6], id: `i-${i + 1}`, actor: "Sky Sales", timestamp: `2026-09-${String(30 - i).padStart(2, "0")}T10:00:00Z`, text: i % 2 ? "Attempt" : "Contact", ...(i === 0 ? { attachedNoteId: "note-fixture-1" } : {}), ...(i === 2 ? { interactionId: "i-1", followUpStatus: "Completed" as const } : {}) })), followUps: [], closure: { reasonId: "closure-1", reason: "Won", actor: "Sky Sales", actorId: "sales-sky", timestamp: "2026-09-26T10:00:00Z" } },
@@ -15,6 +15,8 @@ const customerFixtures: CustomerDetail[] = [
 ];
 
 export function createMockAdapter(options: { now?: () => string } = {}): { services: Services; controls: MockControls } {
+  let personas = seedUsers.map(user => ({ ...user }));
+  let closureReasons = seedReasons.map(reason => ({ ...reason }));
   let user: User | null = null;
   let generation = 0;
   let failNext = false;
@@ -46,8 +48,8 @@ export function createMockAdapter(options: { now?: () => string } = {}): { servi
   }
   const services: Services = {
     signIn: id => request(() => {
-      const selected = personas.find(persona => persona.id === id);
-      if (!selected) return failure("forbidden", "Choose a valid mock persona.");
+      const selected = personas.find(persona => persona.id === id && persona.active !== false);
+      if (!selected) return failure("forbidden", "Choose a valid active mock persona.");
       generation++;
       user = { ...selected };
       snapshot = { ...snapshot, notice: "" };
@@ -107,6 +109,36 @@ export function createMockAdapter(options: { now?: () => string } = {}): { servi
       return request(() => reopenCustomer(input));
     },
     closureReasons: () => Promise.resolve({ ok: true, data: closureReasons.map(reason => ({ ...reason })) }),
+    listUsers: () => user?.role === "Admin" ? Promise.resolve({ ok: true, data: personas.map(item => ({ ...item })) }) : Promise.resolve(failure("forbidden", "Admin access required.")),
+    createUser: input => {
+      if (!user || user.role !== "Admin") return Promise.resolve(failure("forbidden", "Admin access required."));
+      const name = input.name?.trim() ?? "", email = input.email?.trim() ?? "";
+      if (name.length < 1 || name.length > 120) return Promise.resolve(failure("validation", "Name must be 1–120 characters."));
+      if (!/^\S+@\S+\.\S+$/.test(email) || email.length > 254) return Promise.resolve(failure("validation", "Enter a valid email address."));
+      if (personas.some(item => item.email?.trim().toLowerCase() === email.toLowerCase())) return Promise.resolve(failure("conflict", "Email is already in use."));
+      const created = { id: `user-${personas.length + 1}`, name, email, role: input.role, active: true } as User;
+      personas = [...personas, created]; records = fixtures(); publish(); return Promise.resolve({ ok: true, data: { ...created } });
+    },
+    updateUser: (id, patch) => {
+      if (!user || user.role !== "Admin") return Promise.resolve(failure("forbidden", "Admin access required."));
+      const target = personas.find(item => item.id === id); if (!target) return Promise.resolve(failure("request-failure", "User not found."));
+      const nextRole = patch.role ?? target.role, nextActive = patch.active ?? target.active !== false;
+      if (id === user.id && (nextRole !== target.role || !nextActive)) return Promise.resolve(failure("conflict", "You cannot deactivate or demote your current session."));
+      if (target.role === "Admin" && (nextRole !== "Admin" || !nextActive) && personas.filter(item => item.role === "Admin" && item.active !== false && item.id !== id).length === 0) return Promise.resolve(failure("conflict", "At least one active Admin is required."));
+      personas = personas.map(item => item.id === id ? { ...item, ...patch, name: patch.name?.trim() || item.name, active: nextActive, role: nextRole } : item);
+      if ((target.role === "Sales" && (nextRole === "Admin" || !nextActive))) customers.forEach(customer => { if (customer.status === "Open" && customer.ownerId === id) { customer.histories.push({ id: `assignment-${nextRecord++}`, kind: "Assignment", actor: user!.name, actorId: user!.id, timestamp: now(), text: `${customer.ownerName ?? target.name} released to Unassigned`, before: { ownerId: id }, after: { ownerId: null } }); customer.ownerId = null; customer.ownerName = null; } });
+      if (id === user.id || (target.active !== false && !nextActive) || target.role !== nextRole) clearSession();
+      publish(); return Promise.resolve({ ok: true, data: { ...(personas.find(item => item.id === id) as User) } });
+    },
+    createClosureReason: label => {
+      if (!user || user.role !== "Admin") return Promise.resolve(failure("forbidden", "Admin access required.")); const value = label?.trim() ?? "";
+      if (!value || value.length > 120) return Promise.resolve(failure("validation", "Reason must be 1–120 characters.")); if (closureReasons.some(item => item.label.toLowerCase() === value.toLowerCase())) return Promise.resolve(failure("conflict", "Reason already exists."));
+      const created = { id: `closure-${closureReasons.length + 1}`, label: value, active: true }; closureReasons = [...closureReasons, created]; publish(); return Promise.resolve({ ok: true, data: { ...created } });
+    },
+    updateClosureReason: (id, patch) => {
+      if (!user || user.role !== "Admin") return Promise.resolve(failure("forbidden", "Admin access required.")); const target = closureReasons.find(item => item.id === id); if (!target) return Promise.resolve(failure("request-failure", "Reason not found."));
+      const label = patch.label?.trim() ?? target.label; if (!label || label.length > 120) return Promise.resolve(failure("validation", "Reason must be 1–120 characters.")); if (closureReasons.some(item => item.id !== id && item.label.toLowerCase() === label.toLowerCase())) return Promise.resolve(failure("conflict", "Reason already exists.")); closureReasons = closureReasons.map(item => item.id === id ? { ...item, ...patch, label } : item); publish(); return Promise.resolve({ ok: true, data: { ...(closureReasons.find(item => item.id === id) as ClosureReason) } });
+    },
     deleteHistory: (bcn, recordId) => {
       if (!user) return Promise.resolve(failure("unauthenticated", "Sign in to continue."));
       return request(() => deleteHistory(bcn, recordId));
@@ -127,7 +159,7 @@ export function createMockAdapter(options: { now?: () => string } = {}): { servi
       if (scenario !== "Loading") wake();
       publish();
     },
-    reset: () => { clearSession(); records = fixtures(); customers = customerFixtures.map(cloneCustomer); submissions.clear(); followUpSubmissions.clear(); lifecycleSubmissions.clear(); nextRecord = 1; failNext = false; snapshot = { scenario: "Normal", revision: snapshot.revision, reset: snapshot.reset + 1, notice: "" }; publish(); },
+    reset: () => { clearSession(); personas = seedUsers.map(user => ({ ...user })); closureReasons = seedReasons.map(reason => ({ ...reason })); records = fixtures(); customers = customerFixtures.map(cloneCustomer); submissions.clear(); followUpSubmissions.clear(); lifecycleSubmissions.clear(); nextRecord = 1; failNext = false; snapshot = { scenario: "Normal", revision: snapshot.revision, reset: snapshot.reset + 1, notice: "" }; publish(); },
   };
   function actorAllowed(customer: CustomerDetail) { return Boolean(user && (user.role === "Admin" || customer.ownerId === user.id)); }
   function validateText(value: string | null | undefined, field: string, required: boolean) {

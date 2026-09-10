@@ -1,11 +1,11 @@
 "use client";
 
-import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore, type FormEvent } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { Typography } from "antd";
 import { useServices } from "../../services/provider";
-import { workloadBuckets, type Customer, type CustomerDetail, type FollowUpType, type Result, type SampleRecord, type Scenario, type User, type WorkloadBucket, type WorkloadCustomer, type WorkloadData } from "../../services/types";
+import { workloadBuckets, type ClosureReason, type Customer, type CustomerDetail, type FollowUpType, type Result, type SampleRecord, type Scenario, type User, type WorkloadBucket, type WorkloadCustomer, type WorkloadData } from "../../services/types";
 
 const routes = [
   ["/dashboard", "Dashboard", "Sales"],
@@ -116,6 +116,16 @@ function Dashboard() {
   return <><section aria-label="Sales workload"><p>UTC date: {result.data.today}</p>{assigned.length === 0 && <p>No open assigned customers need work.</p>}<div className="workload">{workloadBuckets.map(bucket => <Link key={bucket} href={`/customers/mine?status=open&bucket=${bucket}`}><b>{bucketLabels[bucket]}</b><span>{result.data.counts[bucket]}</span></Link>)}</div><p>Never contacted uses imported contact history separately from recorded application activity; attempts alone remain never contacted.</p></section><SamplePanel key={`${user?.id}:${snapshot.revision}`} /></>;
 }
 
+function AdminSettings({ reasons }: { reasons: boolean }) {
+  const { services, controls } = useServices(); const [users, setUsers] = useState<Result<User[]> | null>(null); const [items, setItems] = useState<Result<ClosureReason[]> | null>(null); const [name, setName] = useState(""); const [email, setEmail] = useState(""); const [role, setRole] = useState<"Admin" | "Sales">("Sales"); const [error, setError] = useState("");
+  const snapshot = useSyncExternalStore(controls.subscribe, controls.getSnapshot, controls.getSnapshot); const load = () => { if (reasons) void services.closureReasons().then(setItems); else void services.listUsers().then(setUsers); }; useEffect(load, [services, reasons, snapshot.revision]);
+  async function add(event: FormEvent) { event.preventDefault(); setError(""); const result = reasons ? await services.createClosureReason(name) : await services.createUser({ name, email, role }); if (!result.ok) { setError(result.error.message); return; } setName(""); setEmail(""); load(); }
+  async function toggle(item: User | ClosureReason) { const result = reasons ? await services.updateClosureReason(item.id, { active: !(item as ClosureReason).active }) : await services.updateUser(item.id, { active: !(item as User).active }); if (!result.ok) setError(result.error.message); else load(); }
+  async function rename(item: User | ClosureReason) { const value = window.prompt("New name", reasons ? (item as ClosureReason).label : (item as User).name); if (value === null) return; const result = reasons ? await services.updateClosureReason(item.id, { label: value }) : await services.updateUser(item.id, { name: value }); if (!result.ok) setError(result.error.message); else load(); }
+  const list = reasons ? items : users; if (!list) return <><p>Placeholder — settings are synthetic.</p><p role="status">Loading settings…</p></>; if (!list.ok) return <p role="alert">{list.error.message}</p>;
+  return <section aria-label={reasons ? "Closure reason settings" : "User settings"}><p>Placeholder — settings are synthetic.</p><form onSubmit={add}><label>Name <input value={name} onChange={e => setName(e.target.value)} /></label>{!reasons && <><label>Email <input type="email" value={email} onChange={e => setEmail(e.target.value)} /></label><label>Role <select value={role} onChange={e => setRole(e.target.value as "Admin" | "Sales")}><option>Sales</option><option>Admin</option></select></label></>}<button type="submit">Create</button></form>{error && <p role="alert">{error}</p>}<ul>{list.data.map(item => <li key={item.id}>{reasons ? `${(item as ClosureReason).label} · ${(item as ClosureReason).active ? "Active" : "Inactive"}` : `${(item as User).name} · ${(item as User).email} · ${(item as User).role} · ${(item as User).active === false ? "Inactive" : "Active"}`}<button type="button" onClick={() => void rename(item)}>Rename</button><button type="button" onClick={() => void toggle(item)}>{reasons ? ((item as ClosureReason).active ? "Deactivate" : "Reactivate") : ((item as User).active === false ? "Activate" : "Deactivate")}</button></li>)}</ul></section>;
+}
+
 const dash = (value: unknown) => value === null || value === undefined || value === "" ? "—" : String(value);
 const submissionId = (prefix: string) => `${prefix}-${Date.now()}-${Math.random()}`;
 function Customers({ mine }: { mine: boolean }) {
@@ -200,7 +210,7 @@ export default function Home() {
       <header><p>{user.name} · {user.role}</p><button onClick={() => void services.signOut()}>Log out</button></header>
       <nav aria-label="Main navigation">{routes.filter(([, , role]) => role === "Both" || role === user.role).map(([path, title]) => <Link key={path} href={path} aria-current={path === pathname ? "page" : undefined}>{title}</Link>)}</nav>
       {detailBcn ? <CustomerDetailView bcn={detailBcn} /> : customerRoute ? <><h1>{pathname === "/customers/mine" ? "My Customers" : "All Customers"}</h1><Customers mine={pathname === "/customers/mine"} /></> : route![0] === "/dashboard" ? <><h1>Dashboard</h1><Dashboard /></> : route![2] === "Admin" && user.role !== "Admin" ? <><h1>Access denied</h1><p>This page requires the Admin role.</p><Link href="/dashboard">Back to Dashboard</Link></> : <>
-        <h1>{route![1]}</h1><p>Placeholder — this functionality is not implemented yet.</p>
+        <h1>{route![1]}</h1>{pathname === "/admin/users" ? <AdminSettings reasons={false} /> : pathname === "/admin/closure-reasons" ? <AdminSettings reasons /> : <p>Placeholder — this functionality is not implemented yet.</p>}
         <SamplePanel key={`${user.id}:${pathname}:${snapshot.revision}`} />
       </>}
     </>}

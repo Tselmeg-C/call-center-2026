@@ -1,4 +1,5 @@
-export type User = { id: string; name: string; role: "Admin" | "Sales" };
+export type User = { id: string; name: string; role: "Admin" | "Sales"; email?: string; active?: boolean };
+export type UserDraft = { name: string; email: string; role: "Admin" | "Sales" };
 export type SampleRecord = { id: string; label: string };
 export type Customer = {
   bcn: string; mbcn: string; name: string; ownerId: string | null; ownerName: string | null;
@@ -19,7 +20,7 @@ export type HistoryRecord = {
   text: string | null; outcome?: InteractionOutcome; deleted?: boolean;
   deletedAt?: string; deletedBy?: string; deletedById?: string; customerBcn?: string; targetId?: string;
   attachedNoteId?: string; interactionId?: string; followUpStatus?: FollowUpStatus;
-  followUpId?: string; before?: Partial<FollowUp>; after?: Partial<FollowUp>; reasonId?: string; reason?: string;
+  followUpId?: string; before?: Record<string, unknown>; after?: Record<string, unknown>; reasonId?: string; reason?: string;
 };
 export type ClosureReason = { id: string; label: string; active: boolean };
 export type CustomerDetail = Customer & { source: Record<string, string | number | boolean | null>; histories: HistoryRecord[]; followUps: FollowUp[]; closure?: { reasonId: string; reason: string; actor: string; actorId: string; timestamp: string } };
@@ -54,6 +55,11 @@ export interface Services {
   closeCustomer(input: LifecycleInput): Promise<Result<Customer>>;
   reopenCustomer(input: LifecycleInput): Promise<Result<Customer>>;
   closureReasons(): Promise<Result<ClosureReason[]>>;
+  listUsers(): Promise<Result<User[]>>;
+  createUser(input: UserDraft): Promise<Result<User>>;
+  updateUser(id: string, patch: Partial<Pick<User, "name" | "role" | "active">>): Promise<Result<User>>;
+  createClosureReason(label: string): Promise<Result<ClosureReason>>;
+  updateClosureReason(id: string, patch: Partial<Pick<ClosureReason, "label" | "active">>): Promise<Result<ClosureReason>>;
   deleteHistory(bcn: string, recordId: string): Promise<Result<HistoryRecord>>;
   subscribeSession(listener: (user: User | null) => void): () => void;
 }

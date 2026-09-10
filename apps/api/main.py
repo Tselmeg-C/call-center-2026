@@ -691,6 +691,7 @@ def run_assignment(body: AssignmentRunRequest, _: Annotated[User, Depends(admin_
         if customer_db is not None:
             customer_db.save_operational(bcn=row["bcn"], owner_id=owner, status=row["status"], version=row["version"])
             if assignment_db is not None: assignment_db.append_assignment(bcn=row["bcn"], actor_id=_.id, old_owner_id=old_owner, new_owner_id=owner, reason="Bulk assignment")
+            append_audit(_.id, "Customer assigned", row["bcn"], {"oldOwner": old_owner, "newOwner": owner, "source": "bulk"})
     result = {"submissionId": body.submissionId, "scope": body.scope, "candidates": len(candidates), "assigned": assigned, "skipped": len(candidates) - assigned}
     repo.assignment_runs[body.submissionId] = result
     if assignment_db is not None: assignment_db.save_run(submission_id=body.submissionId, scope=body.scope, result=result)

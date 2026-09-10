@@ -771,7 +771,7 @@ def admin_reports(start: str | None = None, end: str | None = None, _: Annotated
     for item in all_followups:
         if item["status"] != "Open": continue
         if not item.get("due"): followups["undated"] += 1
-    return {"owners": list(owners.values()), "daily": sorted(daily.values(), key=lambda item: item["date"]), "closureReasons": [], "followUps": followups}
+    return {"owners": list(owners.values()), "daily": sorted(daily.values(), key=lambda item: item["date"]), "closureReasons": list(repo.reasons.values()), "followUps": followups}
 
 @app.get("/admin/audit")
 def admin_audit(actor: str | None = None, action: str | None = None, bcn: str | None = None, start: str | None = None, end: str | None = None, page: int = Query(1, ge=1), page_size: int = Query(25, ge=1, le=100), _: Annotated[User, Depends(admin_user)] = None) -> dict:

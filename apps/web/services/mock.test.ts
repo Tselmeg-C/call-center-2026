@@ -107,3 +107,26 @@ test("a session change during a pending mutation rejects it without changing sto
   await services.signIn("sales-river"); const detail = await services.getCustomer("000123");
   expect((detail as { ok: true; data: { histories: { text: string | null }[] } }).data.histories.some(item => item.text === "must not save")).toBe(false);
 });
+
+test("follow-ups validate UTC values, link to interactions, and keep retries idempotent", async () => {
+  const { services } = createMockAdapter({ now: () => "2026-09-10T12:00:00.000Z" }); await services.signIn("sales-river");
+  expect(await services.createFollowUp({ bcn: "000123", type: "Appointment", dueKind: "datetime", due: "2026-09-10T11:00Z" })).toMatchObject({ ok: false, error: { code: "validation" } });
+  const interaction = await services.createInteraction({ bcn: "000123", outcome: "Contact", followUp: { type: "Reminder", dueKind: "date", due: "2026-09-12", note: "  call back  " }, submissionId: "with-follow-up" }); expect(interaction).toMatchObject({ ok: true });
+  const detail = await services.getCustomer("000123"); const followUps = (detail as { ok: true; data: { followUps: { id: string; note: string | null; interactionId?: string }[] } }).data.followUps; const created = followUps.find(item => item.note === "call back")!; expect(created.interactionId).toMatch(/^interaction-/);
+  expect(await services.updateFollowUp({ bcn: "000123", followUpId: created.id, type: "Reminder", dueKind: "date", due: "2026-09-13", note: "edited", submissionId: "edit-1" })).toMatchObject({ ok: true, data: { due: "2026-09-13" } });
+  const editAgain = await services.updateFollowUp({ bcn: "000123", followUpId: created.id, type: "Reminder", dueKind: "date", due: "2026-09-13", note: "edited", submissionId: "edit-1" }); expect(editAgain).toMatchObject({ ok: true, data: { due: "2026-09-13" } });
+  expect(await services.cancelFollowUp("000123", created.id, "cancel-1")).toMatchObject({ ok: true, data: { status: "Cancelled" } });
+  expect(await services.completeFollowUp({ bcn: "000123", followUpId: created.id, outcome: "Contact", submissionId: "complete-after-cancel" })).toMatchObject({ ok: false, error: { code: "conflict" } });
+});
+
+test("completion and closure lifecycle preserve history and cancel open work atomically", async () => {
+  const { services } = createMockAdapter({ now: () => "2026-09-10T12:00:00.000Z" }); await services.signIn("sales-river");
+  const created = await services.createFollowUp({ bcn: "000123", type: "Appointment", dueKind: "datetime", due: "2026-09-11T10:00Z", note: "meeting" }); const id = (created as { ok: true; data: { id: string } }).data.id;
+  expect(await services.completeFollowUp({ bcn: "000123", followUpId: id, outcome: "Attempt", note: "no answer", submissionId: "complete-1" })).toMatchObject({ ok: true, data: { status: "Completed" } });
+  const second = await services.createFollowUp({ bcn: "000123", type: "Follow-up needed", dueKind: "none", note: "later" }); const secondId = (second as { ok: true; data: { id: string } }).data.id;
+  expect(await services.closeCustomer({ bcn: "000123", reasonId: "closure-1", submissionId: "close-1" })).toMatchObject({ ok: true, data: { status: "Closed" } });
+  const closed = await services.getCustomer("000123"); const closedData = (closed as { ok: true; data: { followUps: { id: string; status: string }[]; histories: { kind: string }[] } }).data; expect(closedData.followUps.find(item => item.id === secondId)?.status).toBe("Cancelled"); expect(closedData.histories.some(item => item.kind === "Closure")).toBe(true);
+  expect(await services.closeCustomer({ bcn: "000123", reasonId: "closure-1", submissionId: "close-2" })).toMatchObject({ ok: false, error: { code: "conflict" } });
+  expect(await services.reopenCustomer({ bcn: "000123", submissionId: "reopen-1" })).toMatchObject({ ok: true, data: { status: "Open" } });
+  const reopened = await services.getCustomer("000123"); expect((reopened as { ok: true; data: { histories: { kind: string }[] } }).data.histories.some(item => item.kind === "Reopen")).toBe(true);
+});

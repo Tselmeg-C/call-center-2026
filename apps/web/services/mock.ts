@@ -1,15 +1,16 @@
-import type { CreateInteractionInput, CreateNoteInput, CustomerDetail, HistoryRecord, MockControls, MockSnapshot, Result, SampleRecord, Services, User } from "./types";
+import type { ClosureReason, CreateInteractionInput, CreateNoteInput, Customer, CustomerDetail, FollowUp, FollowUpInput, HistoryRecord, MockControls, MockSnapshot, Result, SampleRecord, Services, User, UpdateFollowUpInput, CompleteFollowUpInput, LifecycleInput } from "./types";
 
 const personas: readonly User[] = [
   { id: "admin-demo", name: "Alex Admin", role: "Admin" },
   { id: "sales-river", name: "River Sales", role: "Sales" },
   { id: "sales-sky", name: "Sky Sales", role: "Sales" },
 ];
-const failure = <T>(code: "unauthenticated" | "forbidden" | "request-failure" | "validation", message: string): Result<T> => ({ ok: false, error: { code, message } });
+const failure = <T>(code: "unauthenticated" | "forbidden" | "request-failure" | "validation" | "conflict", message: string): Result<T> => ({ ok: false, error: { code, message } });
+const closureReasons: readonly ClosureReason[] = ["Won", "Lost", "No longer a fit", "Duplicate", "Unreachable", "Out of territory", "Other"].map((label, i) => ({ id: `closure-${i + 1}`, label, active: true }));
 const customerFixtures: CustomerDetail[] = [
-  { bcn: "000123", mbcn: "M-00123", name: "Acme North", ownerId: "sales-river", ownerName: "River Sales", status: "Open", previouslyContacted: false, recent: true, propensityTier: "A", propensityRank: 1, propensityScore: 0.98, phones: ["(555) 010-0101", "555-010-0102"], nextFollowUp: "2026-09-12", contactStatus: "No recorded interaction", source: { bcn: "000123", MBCN: "M-00123", customer_name: "Acme North", phone: "(555) 010-0101", previously_contacted: false, propensity_score: 0.98, propensity_tier: "A", propensity_rank: 1, Inside_Lead: "Lead A", Field_Rep: null, SC_Naming: "SC-1", Inside_Rep: "River Sales", Branch_Code: "001", RSM_Name: "RSM North", Originating_BU: "North", LAST_PURCHASE_DATE: null, recent: true, REVENUE_AMOUNT_2024: 1000, REVENUE_AMOUNT_2025: null, REVENUE_AMOUNT_2026: 1200, FEM_AMOUNT_2024: null, FEM_AMOUNT_2025: null, FEM_AMOUNT_2026: null, Payment_Terms: "Net 30", vendor_1: null, vendor_1_revenue: null, vendor_2: null, vendor_2_revenue: null, vendor_3: null, vendor_3_revenue: null, category_1: "Industrial", category_1_revenue: 1200, category_2: null, category_2_revenue: null, category_3: null, category_3_revenue: null }, histories: [] },
-  { bcn: "000124", mbcn: "M-00124", name: "Acme North", ownerId: "sales-sky", ownerName: "Sky Sales", status: "Closed", previouslyContacted: true, recent: false, propensityTier: "B", propensityRank: 2, propensityScore: 0.7, phones: ["555 010 0103"], nextFollowUp: null, contactStatus: "Contact", source: { bcn: "000124", MBCN: "M-00124", customer_name: "Acme North", phone: "555 010 0103", previously_contacted: true, propensity_score: 0.7, propensity_tier: "B", propensity_rank: 2, Inside_Lead: null, Field_Rep: "Rep B", SC_Naming: null, Inside_Rep: "Sky Sales", Branch_Code: "002", RSM_Name: null, Originating_BU: "West", LAST_PURCHASE_DATE: "2026-01-04", recent: false, REVENUE_AMOUNT_2024: 200, REVENUE_AMOUNT_2025: 300, REVENUE_AMOUNT_2026: 400, FEM_AMOUNT_2024: null, FEM_AMOUNT_2025: null, FEM_AMOUNT_2026: null, Payment_Terms: null, vendor_1: "Vendor", vendor_1_revenue: 20, vendor_2: null, vendor_2_revenue: null, vendor_3: null, vendor_3_revenue: null, category_1: null, category_1_revenue: null, category_2: null, category_2_revenue: null, category_3: null, category_3_revenue: null }, histories: Array.from({ length: 30 }, (_, i) => ({ kind: ["Interaction", "Standalone note", "Follow-up", "Assignment", "Closure", "Reopen"][i % 6], id: `i-${i + 1}`, actor: "Sky Sales", timestamp: `2026-09-${String(30 - i).padStart(2, "0")}T10:00:00Z`, text: i % 2 ? "Attempt" : "Contact", ...(i === 0 ? { attachedNoteId: "note-fixture-1" } : {}), ...(i === 2 ? { interactionId: "i-1", followUpStatus: "Completed" as const } : {}) })) },
-  { bcn: "000125", mbcn: "M-00125", name: "Beta Works", ownerId: null, ownerName: null, status: "Open", previouslyContacted: false, recent: false, propensityTier: null, propensityRank: null, propensityScore: null, phones: [], nextFollowUp: null, contactStatus: "No recorded interaction", source: { bcn: "000125", MBCN: "M-00125", customer_name: "Beta Works", phone: null, previously_contacted: false, propensity_score: null, propensity_tier: null, propensity_rank: null, Inside_Lead: null, Field_Rep: null, SC_Naming: null, Inside_Rep: null, Branch_Code: null, RSM_Name: null, Originating_BU: null, LAST_PURCHASE_DATE: null, recent: false, REVENUE_AMOUNT_2024: null, REVENUE_AMOUNT_2025: null, REVENUE_AMOUNT_2026: null, FEM_AMOUNT_2024: null, FEM_AMOUNT_2025: null, FEM_AMOUNT_2026: null, Payment_Terms: null, vendor_1: null, vendor_1_revenue: null, vendor_2: null, vendor_2_revenue: null, vendor_3: null, vendor_3_revenue: null, category_1: null, category_1_revenue: null, category_2: null, category_2_revenue: null, category_3: null, category_3_revenue: null }, histories: [] },
+  { bcn: "000123", mbcn: "M-00123", name: "Acme North", ownerId: "sales-river", ownerName: "River Sales", status: "Open", previouslyContacted: false, recent: true, propensityTier: "A", propensityRank: 1, propensityScore: 0.98, phones: ["(555) 010-0101", "555-010-0102"], nextFollowUp: "2026-09-12", contactStatus: "No recorded interaction", source: { bcn: "000123", MBCN: "M-00123", customer_name: "Acme North", phone: "(555) 010-0101", previously_contacted: false, propensity_score: 0.98, propensity_tier: "A", propensity_rank: 1, Inside_Lead: "Lead A", Field_Rep: null, SC_Naming: "SC-1", Inside_Rep: "River Sales", Branch_Code: "001", RSM_Name: "RSM North", Originating_BU: "North", LAST_PURCHASE_DATE: null, recent: true, REVENUE_AMOUNT_2024: 1000, REVENUE_AMOUNT_2025: null, REVENUE_AMOUNT_2026: 1200, FEM_AMOUNT_2024: null, FEM_AMOUNT_2025: null, FEM_AMOUNT_2026: null, Payment_Terms: "Net 30", vendor_1: null, vendor_1_revenue: null, vendor_2: null, vendor_2_revenue: null, vendor_3: null, vendor_3_revenue: null, category_1: "Industrial", category_1_revenue: 1200, category_2: null, category_2_revenue: null, category_3: null, category_3_revenue: null }, histories: [], followUps: [{ id: "fu-fixture-1", bcn: "000123", type: "Reminder", due: "2026-09-12", dueKind: "date", note: "Call back", status: "Open", actor: "River Sales", actorId: "sales-river", createdAt: "2026-09-10T10:00:00Z", updatedAt: "2026-09-10T10:00:00Z" }] },
+  { bcn: "000124", mbcn: "M-00124", name: "Acme North", ownerId: "sales-sky", ownerName: "Sky Sales", status: "Closed", previouslyContacted: true, recent: false, propensityTier: "B", propensityRank: 2, propensityScore: 0.7, phones: ["555 010 0103"], nextFollowUp: null, contactStatus: "Contact", source: { bcn: "000124", MBCN: "M-00124", customer_name: "Acme North", phone: "555 010 0103", previously_contacted: true, propensity_score: 0.7, propensity_tier: "B", propensity_rank: 2, Inside_Lead: null, Field_Rep: "Rep B", SC_Naming: null, Inside_Rep: "Sky Sales", Branch_Code: "002", RSM_Name: null, Originating_BU: "West", LAST_PURCHASE_DATE: "2026-01-04", recent: false, REVENUE_AMOUNT_2024: 200, REVENUE_AMOUNT_2025: 300, REVENUE_AMOUNT_2026: 400, FEM_AMOUNT_2024: null, FEM_AMOUNT_2025: null, FEM_AMOUNT_2026: null, Payment_Terms: null, vendor_1: "Vendor", vendor_1_revenue: 20, vendor_2: null, vendor_2_revenue: null, vendor_3: null, vendor_3_revenue: null, category_1: null, category_1_revenue: null, category_2: null, category_2_revenue: null, category_3: null, category_3_revenue: null }, histories: Array.from({ length: 30 }, (_, i) => ({ kind: ["Interaction", "Standalone note", "Follow-up", "Assignment", "Closure", "Reopen"][i % 6], id: `i-${i + 1}`, actor: "Sky Sales", timestamp: `2026-09-${String(30 - i).padStart(2, "0")}T10:00:00Z`, text: i % 2 ? "Attempt" : "Contact", ...(i === 0 ? { attachedNoteId: "note-fixture-1" } : {}), ...(i === 2 ? { interactionId: "i-1", followUpStatus: "Completed" as const } : {}) })), followUps: [] },
+  { bcn: "000125", mbcn: "M-00125", name: "Beta Works", ownerId: null, ownerName: null, status: "Open", previouslyContacted: false, recent: false, propensityTier: null, propensityRank: null, propensityScore: null, phones: [], nextFollowUp: null, contactStatus: "No recorded interaction", source: { bcn: "000125", MBCN: "M-00125", customer_name: "Beta Works", phone: null, previously_contacted: false, propensity_score: null, propensity_tier: null, propensity_rank: null, Inside_Lead: null, Field_Rep: null, SC_Naming: null, Inside_Rep: null, Branch_Code: null, RSM_Name: null, Originating_BU: null, LAST_PURCHASE_DATE: null, recent: false, REVENUE_AMOUNT_2024: null, REVENUE_AMOUNT_2025: null, REVENUE_AMOUNT_2026: null, FEM_AMOUNT_2024: null, FEM_AMOUNT_2025: null, FEM_AMOUNT_2026: null, Payment_Terms: null, vendor_1: null, vendor_1_revenue: null, vendor_2: null, vendor_2_revenue: null, vendor_3: null, vendor_3_revenue: null, category_1: null, category_1_revenue: null, category_2: null, category_2_revenue: null, category_3: null, category_3_revenue: null }, histories: [], followUps: [] },
 ];
 
 export function createMockAdapter(options: { now?: () => string } = {}): { services: Services; controls: MockControls } {
@@ -19,9 +20,12 @@ export function createMockAdapter(options: { now?: () => string } = {}): { servi
   let snapshot: MockSnapshot = { scenario: "Normal", revision: 0, reset: 0, notice: "" };
   const fixtures = () => Object.fromEntries(personas.map(persona => [persona.id, [{ id: `${persona.id}-sample`, label: `${persona.name}'s synthetic service record` }]]));
   let records: Record<string, SampleRecord[]> = fixtures();
-  let customers = customerFixtures.map(customer => ({ ...customer, histories: customer.histories.map(history => ({ ...history })) }));
+  const cloneCustomer = (customer: CustomerDetail) => ({ ...customer, histories: customer.histories.map(history => ({ ...history })), followUps: customer.followUps.map(followUp => ({ ...followUp })), closure: customer.closure ? { ...customer.closure } : undefined });
+  let customers = customerFixtures.map(cloneCustomer);
   let nextRecord = 1;
   const submissions = new Map<string, HistoryRecord>();
+  const followUpSubmissions = new Map<string, FollowUp>();
+  const lifecycleSubmissions = new Map<string, CustomerDetail>();
   const now = options.now ?? (() => new Date().toISOString());
   const listeners = new Set<() => void>();
   const sessionListeners = new Set<(user: User | null) => void>();
@@ -63,7 +67,7 @@ export function createMockAdapter(options: { now?: () => string } = {}): { servi
     },
     getCustomer: bcn => {
       if (!user) return Promise.resolve(failure("unauthenticated", "Sign in to continue."));
-      return request(() => { const customer = customers.find(item => item.bcn === bcn); return customer ? { ok: true, data: { ...customer, histories: [...customer.histories].sort((a, b) => b.timestamp.localeCompare(a.timestamp) || b.id.localeCompare(a.id)) } } : failure("request-failure", "Customer not found."); });
+      return request(() => { const customer = customers.find(item => item.bcn === bcn); return customer ? { ok: true, data: { ...cloneCustomer(customer), histories: [...customer.histories].sort((a, b) => b.timestamp.localeCompare(a.timestamp) || b.id.localeCompare(a.id)), followUps: customer.followUps.map(f => ({ ...f })) } } : failure("request-failure", "Customer not found."); });
     },
     createInteraction: input => {
       if (!user) return Promise.resolve(failure("unauthenticated", "Sign in to continue."));
@@ -73,6 +77,31 @@ export function createMockAdapter(options: { now?: () => string } = {}): { servi
       if (!user) return Promise.resolve(failure("unauthenticated", "Sign in to continue."));
       return request(() => createNote(input));
     },
+    createFollowUp: input => {
+      if (!user) return Promise.resolve(failure("unauthenticated", "Sign in to continue."));
+      return request(() => createFollowUp(input));
+    },
+    updateFollowUp: input => {
+      if (!user) return Promise.resolve(failure("unauthenticated", "Sign in to continue."));
+      return request(() => updateFollowUp(input));
+    },
+    cancelFollowUp: (bcn, followUpId, submissionId) => {
+      if (!user) return Promise.resolve(failure("unauthenticated", "Sign in to continue."));
+      return request(() => cancelFollowUp(bcn, followUpId, submissionId));
+    },
+    completeFollowUp: input => {
+      if (!user) return Promise.resolve(failure("unauthenticated", "Sign in to continue."));
+      return request(() => completeFollowUp(input));
+    },
+    closeCustomer: input => {
+      if (!user) return Promise.resolve(failure("unauthenticated", "Sign in to continue."));
+      return request(() => closeCustomer(input));
+    },
+    reopenCustomer: input => {
+      if (!user) return Promise.resolve(failure("unauthenticated", "Sign in to continue."));
+      return request(() => reopenCustomer(input));
+    },
+    closureReasons: () => Promise.resolve({ ok: true, data: closureReasons.map(reason => ({ ...reason })) }),
     deleteHistory: (bcn, recordId) => {
       if (!user) return Promise.resolve(failure("unauthenticated", "Sign in to continue."));
       return request(() => deleteHistory(bcn, recordId));
@@ -93,13 +122,36 @@ export function createMockAdapter(options: { now?: () => string } = {}): { servi
       if (scenario !== "Loading") wake();
       publish();
     },
-    reset: () => { clearSession(); records = fixtures(); customers = customerFixtures.map(customer => ({ ...customer, histories: customer.histories.map(history => ({ ...history })) })); submissions.clear(); nextRecord = 1; failNext = false; snapshot = { scenario: "Normal", revision: snapshot.revision, reset: snapshot.reset + 1, notice: "" }; publish(); },
+    reset: () => { clearSession(); records = fixtures(); customers = customerFixtures.map(cloneCustomer); submissions.clear(); followUpSubmissions.clear(); lifecycleSubmissions.clear(); nextRecord = 1; failNext = false; snapshot = { scenario: "Normal", revision: snapshot.revision, reset: snapshot.reset + 1, notice: "" }; publish(); },
   };
   function actorAllowed(customer: CustomerDetail) { return Boolean(user && (user.role === "Admin" || customer.ownerId === user.id)); }
   function validateText(value: string | null | undefined, field: string, required: boolean) {
     if (required && !value?.trim()) return failure<string>("validation", `${field} is required.`);
     if (value && value.trim().length > 4000) return failure<string>("validation", `${field} must be 4,000 characters or fewer.`);
     return { ok: true as const, data: value?.trim() ?? "" };
+  }
+  function validateFollowUp(input: { type: FollowUpInput["type"]; due?: string | null; dueKind?: FollowUpInput["dueKind"] }, existing?: FollowUp): Result<{ due: string | null; dueKind: "date" | "datetime" | "none" }> {
+    const dueKind = input.dueKind ?? (input.due ? (input.due.includes("T") ? "datetime" : "date") : "none");
+    const due = input.due?.trim() || null;
+    if (input.type === "Follow-up needed" && (due || dueKind !== "none")) return failure<{ due: string | null; dueKind: "date" | "datetime" | "none" }>("validation", "Follow-up needed cannot have a date.");
+    if (input.type === "Appointment" && dueKind !== "datetime") return failure<{ due: string | null; dueKind: "date" | "datetime" | "none" }>("validation", "Appointments require a UTC date and time.");
+    if (input.type === "Reminder" && dueKind === "none") return failure<{ due: string | null; dueKind: "date" | "datetime" | "none" }>("validation", "Reminders require a UTC date or time.");
+    if (dueKind === "none") return { ok: true as const, data: { due: null, dueKind } };
+    if (!due || (dueKind === "date" ? !/^\d{4}-\d{2}-\d{2}$/.test(due) : !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,3})?)?Z$/.test(due))) return failure("validation", "Enter a valid UTC date or date/time.");
+    const instant = dueKind === "date" ? `${due}T00:00:00.000Z` : due;
+    if (Number.isNaN(Date.parse(instant))) return failure("validation", "Enter a valid UTC date or date/time.");
+    const today = now().slice(0, 10);
+    const unchanged = existing && existing.due === due && existing.dueKind === dueKind;
+    if (!unchanged && (dueKind === "date" ? due < today : Date.parse(instant) <= Date.parse(now()))) return failure("validation", "The due value must be today or in the future in UTC.");
+    return { ok: true as const, data: { due, dueKind } };
+  }
+  function refreshNextAction(customer: CustomerDetail) {
+    const open = customer.followUps.filter(item => item.status === "Open").sort((a, b) => {
+      const ad = a.dueKind === "none" ? Number.POSITIVE_INFINITY : Date.parse(a.dueKind === "date" ? `${a.due}T00:00:00.000Z` : a.due!);
+      const bd = b.dueKind === "none" ? Number.POSITIVE_INFINITY : Date.parse(b.dueKind === "date" ? `${b.due}T00:00:00.000Z` : b.due!);
+      return ad - bd || a.id.localeCompare(b.id);
+    });
+    customer.nextFollowUp = open[0]?.due ?? null;
   }
   function createInteraction(input: CreateInteractionInput): Result<HistoryRecord> {
     const customer = customers.find(item => item.bcn === input.bcn);
@@ -108,10 +160,18 @@ export function createMockAdapter(options: { now?: () => string } = {}): { servi
     if (customer.status === "Closed") return failure("forbidden", "Reopen this customer before recording an interaction.");
     if (input.outcome !== "Attempt" && input.outcome !== "Contact") return failure("validation", "Outcome must be Attempt or Contact.");
     const text = validateText(input.note, "Interaction note", false); if (!text.ok) return text;
+    const followUp = input.followUp ? validateFollowUp(input.followUp) : null;
+    if (followUp && !followUp.ok) return followUp;
+    if (input.followUp) { const followUpNote = validateText(input.followUp.note, "Follow-up note", false); if (!followUpNote.ok) return followUpNote; }
     const submissionId = input.submissionId?.trim() || `submission-${nextRecord}`;
     const previous = submissions.get(`${user!.id}:${input.bcn}:${submissionId}`); if (previous) return { ok: true, data: { ...previous } };
     const record: HistoryRecord = { id: `interaction-${nextRecord++}`, kind: "Interaction", actor: user!.name, actorId: user!.id, timestamp: now(), text: text.data || null, outcome: input.outcome, ...(text.data ? { attachedNoteId: `attached-note-${nextRecord - 1}` } : {}) };
     customer.histories.push(record); customer.contactStatus = input.outcome; customer.previouslyContacted = true; submissions.set(`${user!.id}:${input.bcn}:${submissionId}`, record);
+    if (input.followUp && followUp?.ok) {
+      const item: FollowUp = { id: `follow-up-${nextRecord++}`, bcn: input.bcn, type: input.followUp!.type, ...followUp.data, note: input.followUp!.note?.trim() || null, status: "Open", actor: user!.name, actorId: user!.id, createdAt: record.timestamp, updatedAt: record.timestamp, interactionId: record.id };
+      customer.followUps.push(item); record.followUpId = item.id; refreshNextAction(customer);
+      customer.histories.push({ id: `follow-up-created-${item.id}`, kind: "Follow-up", actor: user!.name, actorId: user!.id, timestamp: record.timestamp, text: item.note, followUpId: item.id, followUpStatus: "Open", interactionId: record.id });
+    }
     return { ok: true, data: { ...record } };
   }
   function createNote(input: CreateNoteInput): Result<HistoryRecord> {
@@ -125,6 +185,44 @@ export function createMockAdapter(options: { now?: () => string } = {}): { servi
     const record: HistoryRecord = { id: `note-${nextRecord++}`, kind: "Standalone note", actor: user!.name, actorId: user!.id, timestamp: now(), text: text.data };
     customer.histories.push(record); submissions.set(`${user!.id}:${input.bcn}:${submissionId}`, record);
     return { ok: true, data: { ...record } };
+  }
+  function createFollowUp(input: FollowUpInput): Result<FollowUp> {
+    const customer = customers.find(item => item.bcn === input.bcn); if (!customer) return failure("request-failure", "Customer not found.");
+    if (!actorAllowed(customer)) return failure("forbidden", "You can only work on customers you own.");
+    if (customer.status === "Closed") return failure("conflict", "Reopen this customer before adding a follow-up.");
+    const due = validateFollowUp(input); if (!due.ok) return due;
+    const note = validateText(input.note, "Follow-up note", false); if (!note.ok) return note;
+    const key = `${user!.id}:${input.bcn}:${input.submissionId?.trim() || `submission-${nextRecord}`}`;
+    const previous = followUpSubmissions.get(key); if (previous) return { ok: true, data: { ...previous } };
+    const timestamp = now(); const item: FollowUp = { id: `follow-up-${nextRecord++}`, bcn: input.bcn, type: input.type, ...due.data, note: note.data || null, status: "Open", actor: user!.name, actorId: user!.id, createdAt: timestamp, updatedAt: timestamp, ...(input.interactionId ? { interactionId: input.interactionId } : {}) };
+    customer.followUps.push(item); customer.histories.push({ id: `follow-up-created-${item.id}`, kind: "Follow-up", actor: user!.name, actorId: user!.id, timestamp, text: item.note, followUpId: item.id, followUpStatus: "Open", ...(item.interactionId ? { interactionId: item.interactionId } : {}) }); refreshNextAction(customer); followUpSubmissions.set(key, item); return { ok: true, data: { ...item } };
+  }
+  function updateFollowUp(input: UpdateFollowUpInput): Result<FollowUp> {
+    const customer = customers.find(item => item.bcn === input.bcn); if (!customer) return failure("request-failure", "Customer not found.");
+    if (!actorAllowed(customer)) return failure("forbidden", "You can only work on customers you own.");
+    const item = customer.followUps.find(value => value.id === input.followUpId); if (!item) return failure("request-failure", "Follow-up not found.");
+    if (item.status !== "Open") return failure("conflict", `Follow-up is already ${item.status.toLowerCase()}.`);
+    const due = validateFollowUp(input, item); if (!due.ok) return due; const note = validateText(input.note, "Follow-up note", false); if (!note.ok) return note;
+    const key = `${user!.id}:${input.bcn}:${input.followUpId}:${input.submissionId?.trim() || `submission-${nextRecord}`}`; const previous = followUpSubmissions.get(key); if (previous) return { ok: true, data: { ...previous } };
+    const before = { type: item.type, due: item.due, dueKind: item.dueKind, note: item.note }; const timestamp = now(); Object.assign(item, { type: input.type, ...due.data, note: note.data || null, updatedAt: timestamp }); customer.histories.push({ id: `follow-up-edit-${nextRecord++}`, kind: "Follow-up edited", actor: user!.name, actorId: user!.id, timestamp, text: item.note, followUpId: item.id, before, after: { type: item.type, due: item.due, dueKind: item.dueKind, note: item.note }, followUpStatus: item.status }); refreshNextAction(customer); followUpSubmissions.set(key, item); return { ok: true, data: { ...item } };
+  }
+  function cancelFollowUp(bcn: string, followUpId: string, submissionId?: string): Result<FollowUp> {
+    const customer = customers.find(item => item.bcn === bcn); if (!customer) return failure("request-failure", "Customer not found.");
+    if (!actorAllowed(customer)) return failure("forbidden", "You can only work on customers you own."); const item = customer.followUps.find(value => value.id === followUpId); if (!item) return failure("request-failure", "Follow-up not found.");
+    const key = `${user!.id}:${bcn}:${followUpId}:cancel:${submissionId?.trim() || `submission-${nextRecord}`}`; const previous = followUpSubmissions.get(key); if (previous) return { ok: true, data: { ...previous } }; if (item.status !== "Open") return failure("conflict", `Follow-up is already ${item.status.toLowerCase()}.`);
+    const timestamp = now(); item.status = "Cancelled"; item.updatedAt = timestamp; item.cancelledAt = timestamp; item.cancelledBy = user!.name; customer.histories.push({ id: `follow-up-cancel-${nextRecord++}`, kind: "Follow-up cancelled", actor: user!.name, actorId: user!.id, timestamp, text: item.note, followUpId: item.id, followUpStatus: "Cancelled" }); refreshNextAction(customer); followUpSubmissions.set(key, item); return { ok: true, data: { ...item } };
+  }
+  function completeFollowUp(input: CompleteFollowUpInput): Result<FollowUp> {
+    const customer = customers.find(item => item.bcn === input.bcn); if (!customer) return failure("request-failure", "Customer not found."); if (!actorAllowed(customer)) return failure("forbidden", "You can only work on customers you own."); const item = customer.followUps.find(value => value.id === input.followUpId); if (!item) return failure("request-failure", "Follow-up not found.");
+    const key = `${user!.id}:${input.bcn}:${input.followUpId}:complete:${input.submissionId?.trim() || `submission-${nextRecord}`}`; const previous = followUpSubmissions.get(key); if (previous) return { ok: true, data: { ...previous } }; if (item.status !== "Open") return failure("conflict", `Follow-up is already ${item.status.toLowerCase()}.`); if (input.outcome !== "Attempt" && input.outcome !== "Contact") return failure("validation", "Outcome must be Attempt or Contact."); const note = validateText(input.note, "Completion note", false); if (!note.ok) return note;
+    const timestamp = now(); const interaction: HistoryRecord = { id: `interaction-${nextRecord++}`, kind: "Interaction", actor: user!.name, actorId: user!.id, timestamp, text: note.data || null, outcome: input.outcome, interactionId: item.interactionId, followUpId: item.id }; customer.histories.push(interaction); customer.contactStatus = input.outcome; customer.previouslyContacted = true; item.status = "Completed"; item.updatedAt = timestamp; customer.histories.push({ id: `follow-up-complete-${nextRecord++}`, kind: "Follow-up completed", actor: user!.name, actorId: user!.id, timestamp, text: note.data || null, followUpId: item.id, followUpStatus: "Completed", interactionId: interaction.id }); refreshNextAction(customer); followUpSubmissions.set(key, item); return { ok: true, data: { ...item } };
+  }
+  function closeCustomer(input: LifecycleInput): Result<Customer> {
+    const customer = customers.find(item => item.bcn === input.bcn); if (!customer) return failure("request-failure", "Customer not found."); if (!actorAllowed(customer)) return failure("forbidden", "You can only manage customers you own."); if (customer.status === "Closed") return failure("conflict", "Customer is already closed."); const reason = closureReasons.find(value => value.id === input.reasonId && value.active); if (!reason) return failure("validation", "Choose an active closure reason."); const key = `${user!.id}:${input.bcn}:close:${input.submissionId?.trim() || `submission-${nextRecord}`}`; const previous = lifecycleSubmissions.get(key); if (previous) return { ok: true, data: { ...previous } };
+    const timestamp = now(); customer.status = "Closed"; customer.closure = { reasonId: reason.id, reason: reason.label, actor: user!.name, actorId: user!.id, timestamp }; const open = customer.followUps.filter(item => item.status === "Open"); open.forEach(item => { item.status = "Cancelled"; item.updatedAt = timestamp; item.cancelledAt = timestamp; item.cancelledBy = user!.name; customer.histories.push({ id: `follow-up-cancel-${nextRecord++}`, kind: "Follow-up cancelled", actor: user!.name, actorId: user!.id, timestamp, text: "Customer closed", followUpId: item.id, followUpStatus: "Cancelled" }); }); customer.histories.push({ id: `closure-${nextRecord++}`, kind: "Closure", actor: user!.name, actorId: user!.id, timestamp, text: reason.label, reasonId: reason.id }); refreshNextAction(customer); const result = { ...customer }; lifecycleSubmissions.set(key, result); return { ok: true, data: { ...result } };
+  }
+  function reopenCustomer(input: LifecycleInput): Result<Customer> {
+    const customer = customers.find(item => item.bcn === input.bcn); if (!customer) return failure("request-failure", "Customer not found."); if (!user || user.role !== "Admin" && customer.ownerId !== user.id) return failure("forbidden", "You can only manage customers you own."); if (customer.status === "Open") return failure("conflict", "Customer is already open."); const key = `${user.id}:${input.bcn}:reopen:${input.submissionId?.trim() || `submission-${nextRecord}`}`; const previous = lifecycleSubmissions.get(key); if (previous) return { ok: true, data: { ...previous } }; const timestamp = now(); customer.status = "Open"; if (customer.ownerId && !personas.some(persona => persona.id === customer.ownerId && persona.role === "Sales")) { const oldOwner = customer.ownerName; customer.ownerId = null; customer.ownerName = null; customer.histories.push({ id: `assignment-${nextRecord++}`, kind: "Assignment", actor: user.name, actorId: user.id, timestamp, text: `Cleared inactive owner ${oldOwner ?? ""}`.trim() }); } customer.histories.push({ id: `reopen-${nextRecord++}`, kind: "Reopen", actor: user.name, actorId: user.id, timestamp, text: customer.closure?.reason ?? null }); refreshNextAction(customer); const result = { ...customer }; lifecycleSubmissions.set(key, result); return { ok: true, data: { ...result } };
   }
   function deleteHistory(bcn: string, recordId: string): Result<HistoryRecord> {
     const customer = customers.find(item => item.bcn === bcn); if (!customer) return failure("request-failure", "Customer not found.");

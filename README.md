@@ -36,6 +36,7 @@ Typed asynchronous application services live in `apps/web/services/types.ts`. Th
 
 Customer browsing decisions and display rules are documented in [`_docs/customer-browsing.md`](_docs/customer-browsing.md).
 Interaction and note permissions, validation, idempotency, and soft deletion are documented in [`_docs/interactions.md`](_docs/interactions.md).
+Follow-up validation, lifecycle transitions, UTC semantics, and next-action rules are documented in [`_docs/follow-ups-lifecycle.md`](_docs/follow-ups-lifecycle.md).
 
 ## Checks
 

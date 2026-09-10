@@ -437,6 +437,31 @@ def run_assignment(body: AssignmentRunRequest, _: Annotated[User, Depends(admin_
     result = {"submissionId": body.submissionId, "scope": body.scope, "candidates": len(candidates), "assigned": assigned, "skipped": len(candidates) - assigned}
     repo.assignment_runs[body.submissionId] = result; return result
 
+@app.get("/sales/workload")
+def sales_workload(user: Annotated[User, Depends(current_user)]) -> dict:
+    if user.role != "Sales": raise HTTPException(status.HTTP_403_FORBIDDEN, "Sales access required.")
+    owned = [row for row in repo.customers.values() if row["ownerId"] == user.id and row["status"] == "Open"]
+    return {"ownerId": user.id, "totalOpen": len(owned), "neverContacted": sum(1 for row in owned if not any(item.get("kind") == "Interaction" and not item.get("deleted") for item in row["histories"])), "pendingFollowUps": sum(1 for item in repo.followups.values() if item["bcn"] in {row["bcn"] for row in owned} and item["status"] == "Open")}
+
+@app.get("/admin/reports")
+def admin_reports(_: Annotated[User, Depends(admin_user)]) -> dict:
+    owners: dict[str, dict] = {}
+    for row in repo.customers.values():
+        key = row["ownerId"] or "unassigned"; bucket = owners.setdefault(key, {"ownerId": row["ownerId"], "open": 0, "closed": 0, "attempts": 0, "contacts": 0})
+        bucket["open" if row["status"] == "Open" else "closed"] += 1
+        for event in row["histories"]:
+            if event.get("deleted") or event.get("kind") != "Interaction": continue
+            bucket["attempts" if event.get("outcome") == "Attempt" else "contacts"] += 1
+    for bucket in owners.values(): bucket["contactRate"] = bucket["contacts"] / bucket["attempts"] * 100 if bucket["attempts"] else None
+    return {"owners": list(owners.values())}
+
+@app.get("/admin/audit")
+def admin_audit(page: int = Query(1, ge=1), page_size: int = Query(25, ge=1, le=100), _: Annotated[User, Depends(admin_user)] = None) -> dict:
+    events = []
+    for row in repo.customers.values(): events.extend({"customerId": row["bcn"], **event} for event in row["histories"])
+    events.sort(key=lambda item: item.get("timestamp", ""), reverse=True); start = (page - 1) * page_size
+    return {"items": events[start:start + page_size], "page": page, "page_size": page_size, "total": len(events)}
+
 
 @app.post("/operator/provision", response_model=User, include_in_schema=False)
 def operator_provision(data: Provision) -> User:

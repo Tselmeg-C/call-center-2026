@@ -6,7 +6,7 @@ import { ServiceProvider } from "../services/provider";
 const nav = vi.hoisted(() => ({ path: "/login", replace: vi.fn() }));
 vi.mock("next/navigation", () => ({ usePathname: () => nav.path, useRouter: () => ({ replace: nav.replace }) }));
 vi.mock("next/link", () => ({ default: ({ href, children, ...props }: React.AnchorHTMLAttributes<HTMLAnchorElement>) => <a href={href} {...props}>{children}</a> }));
-beforeEach(() => { nav.path = "/login"; nav.replace.mockReset(); });
+beforeEach(() => { nav.path = "/login"; nav.replace.mockReset(); window.history.replaceState(null, "", "/login"); });
 function setup() {
   const view = render(<ServiceProvider><Home /></ServiceProvider>);
   return (path: string) => { nav.path = path; view.rerender(<ServiceProvider><Home /></ServiceProvider>); };
@@ -112,4 +112,13 @@ test("customer lists filter assignments and detail preserves distinct BCN histor
   fireEvent.change(screen.getByPlaceholderText("Name, BCN, MBCN, phone"), { target: { value: " 010-0101 " } });
   expect(screen.getByText("000123")).toBeVisible();
   expect(screen.getByRole("link", { name: "Acme North" })).toHaveAttribute("href", "/customers/000123");
+});
+
+test("All Customers combines owner and imported filters and writes URL state", async () => {
+  const go = setup(); await signIn("admin-demo"); go("/customers");
+  expect(await screen.findByText("3 customers")).toBeVisible();
+  fireEvent.change(screen.getByLabelText("Owner"), { target: { value: "unassigned" } });
+  expect(await screen.findByText("000125")).toBeVisible();
+  expect(screen.queryByText("000123")).not.toBeInTheDocument();
+  expect(window.location.search).toContain("owner=unassigned");
 });

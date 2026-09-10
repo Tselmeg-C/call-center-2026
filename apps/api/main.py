@@ -584,9 +584,9 @@ def update_user(user_id: str, patch: UserPatch, actor: Annotated[User, Depends(a
     if prior_active and (record["active"] is False or record["role"] != "Sales"):
         for token, (owner, _) in list(repo.sessions.items()):
             if owner == user_id: repo.sessions.pop(token, None)
-        if record["role"] != "Sales":
-            for row in repo.customers.values():
-                if row["ownerId"] == user_id and row["status"] == "Open": row.update(ownerId=None, ownerName=None, version=row["version"] + 1)
+        for row in repo.customers.values():
+            if row["ownerId"] == user_id and row["status"] == "Open": row.update(ownerId=None, ownerName=None, version=row["version"] + 1)
+        if customer_db is not None: customer_db.release_open_owner(user_id)
     return User.model_validate(record)
 
 @app.get("/admin/closure-reasons", response_model=list[ClosureReason])

@@ -76,3 +76,9 @@ class CustomerDatabase:
             if row:
                 row.owner_id, row.status, row.version = owner_id, status, version
                 session.commit()
+
+    def release_open_owner(self, owner_id: str) -> None:
+        with Session(self.engine) as session:
+            rows = session.scalars(select(CustomerRow).where(CustomerRow.owner_id == owner_id, CustomerRow.status == "Open")).all()
+            for row in rows: row.owner_id = None; row.version += 1
+            session.commit()

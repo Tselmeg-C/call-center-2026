@@ -72,6 +72,8 @@ export interface Services {
   assignmentRules(): Promise<Result<AssignmentRule[]>>;
   createAssignmentRule(input: Omit<AssignmentRule, "id" | "position">): Promise<Result<AssignmentRule>>;
   updateAssignmentRule(id: string, patch: Partial<Pick<AssignmentRule, "name" | "active" | "position" | "eligibleSalesIds">>): Promise<Result<AssignmentRule>>;
+  assignmentFallback(): Promise<Result<string[]>>;
+  setAssignmentFallback(ids: string[]): Promise<Result<string[]>>;
   runAssignments(input: AssignmentRunInput): Promise<Result<AssignmentRunResult>>;
   deleteHistory(bcn: string, recordId: string): Promise<Result<HistoryRecord>>;
   subscribeSession(listener: (user: User | null) => void): () => void;

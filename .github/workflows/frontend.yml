@@ -27,3 +27,4 @@ jobs:
           python -m pip install -r apps/api/requirements.txt
           python -m compileall -q apps/api
           python -m pytest apps/api/test_auth.py
+          DATABASE_URL=sqlite+pysqlite:////tmp/call-center-ci.db alembic -c apps/api/alembic.ini upgrade head

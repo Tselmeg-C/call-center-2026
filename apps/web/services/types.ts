@@ -29,9 +29,9 @@ export type FollowUpDraft = { type: FollowUpType; due?: string | null; dueKind?:
 export type CreateInteractionInput = { bcn: string; outcome: InteractionOutcome; note?: string | null; followUp?: FollowUpDraft | null; submissionId?: string };
 export type CreateNoteInput = { bcn: string; text: string; submissionId?: string };
 export type FollowUpInput = { bcn: string; type: FollowUpType; due?: string | null; dueKind?: "date" | "datetime" | "none"; note?: string | null; interactionId?: string; submissionId?: string };
-export type UpdateFollowUpInput = { bcn: string; followUpId: string; type: FollowUpType; due?: string | null; dueKind?: "date" | "datetime" | "none"; note?: string | null; submissionId?: string };
+export type UpdateFollowUpInput = { bcn: string; followUpId: string; type: FollowUpType; due?: string | null; dueKind?: "date" | "datetime" | "none"; note?: string | null; expectedUpdatedAt?: string; submissionId?: string };
 export type CompleteFollowUpInput = { bcn: string; followUpId: string; outcome: InteractionOutcome; note?: string | null; submissionId?: string };
-export type LifecycleInput = { bcn: string; reasonId?: string; submissionId?: string };
+export type LifecycleInput = { bcn: string; reasonId?: string; expectedStatus?: "Open" | "Closed"; submissionId?: string };
 
 export interface Services {
   signIn(personaId: string): Promise<Result<User>>;

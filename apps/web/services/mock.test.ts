@@ -130,3 +130,11 @@ test("completion and closure lifecycle preserve history and cancel open work ato
   expect(await services.reopenCustomer({ bcn: "000123", submissionId: "reopen-1" })).toMatchObject({ ok: true, data: { status: "Open" } });
   const reopened = await services.getCustomer("000123"); expect((reopened as { ok: true; data: { histories: { kind: string }[] } }).data.histories.some(item => item.kind === "Reopen")).toBe(true);
 });
+
+test("stale follow-up and lifecycle versions reject without partial mutation", async () => {
+  const { services } = createMockAdapter({ now: () => "2026-09-10T12:00:00.000Z" }); await services.signIn("sales-river");
+  const created = await services.createFollowUp({ bcn: "000123", type: "Reminder", dueKind: "date", due: "2026-09-11" }); const item = (created as { ok: true; data: { id: string; updatedAt: string } }).data;
+  expect(await services.updateFollowUp({ bcn: "000123", followUpId: item.id, type: "Reminder", dueKind: "date", due: "2026-09-12", expectedUpdatedAt: "stale" })).toMatchObject({ ok: false, error: { code: "conflict" } });
+  const before = await services.getCustomer("000123"); expect((before as { ok: true; data: { followUps: { id: string; due: string | null }[] } }).data.followUps.find(value => value.id === item.id)?.due).toBe("2026-09-11");
+  expect(await services.closeCustomer({ bcn: "000123", reasonId: "closure-1", expectedStatus: "Closed" })).toMatchObject({ ok: false, error: { code: "conflict" } });
+});

@@ -158,7 +158,7 @@ def health_ready() -> dict:
 
 def readable_rows() -> list[dict]:
     if customer_db is None: return list(repo.customers.values())
-    return [{"bcn": item.bcn, "name": item.name, "ownerId": item.owner_id, "ownerName": repo.users.get(item.owner_id or "", {}).get("name"), "status": item.status, "phones": [], "source": item.source, "version": item.version, "histories": []} for item in customer_db.all()]
+    return [{"bcn": item.bcn, "name": item.name, "ownerId": item.owner_id, "ownerName": repo.users.get(item.owner_id or "", {}).get("name"), "status": item.status, "phones": phones, "source": item.source, "version": item.version, "histories": []} for item, phones in customer_db.all_with_phones()]
 
 
 @app.middleware("http")

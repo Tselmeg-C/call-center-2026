@@ -57,6 +57,13 @@ class CustomerDatabase:
     def all(self) -> list[CustomerRow]:
         with Session(self.engine) as session: return list(session.scalars(select(CustomerRow).order_by(CustomerRow.bcn)))
 
+    def all_with_phones(self) -> list[tuple[CustomerRow, list[str]]]:
+        with Session(self.engine) as session:
+            rows = list(session.scalars(select(CustomerRow).order_by(CustomerRow.bcn)))
+            phones = {}
+            for row in session.scalars(select(PhoneRow).order_by(PhoneRow.id)): phones.setdefault(row.bcn, []).append(row.phone)
+            return [(row, phones.get(row.bcn, [])) for row in rows]
+
     def get(self, bcn: str) -> CustomerRow | None:
         with Session(self.engine) as session: return session.get(CustomerRow, bcn)
 

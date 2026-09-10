@@ -10,3 +10,11 @@ main {
   margin: 0 auto;
   padding: 64px 24px;
 }
+
+nav { display: flex; flex-wrap: wrap; gap: 16px; margin: 24px 0; }
+nav a[aria-current="page"] { font-weight: bold; text-decoration-thickness: 3px; }
+button, select { font: inherit; padding: 8px; margin: 4px 0; }
+button { cursor: pointer; }
+button:disabled { cursor: wait; }
+:focus-visible { outline: 3px solid #0958d9; outline-offset: 3px; }
+fieldset { padding: 16px; margin-bottom: 24px; border: 1px solid #777; }

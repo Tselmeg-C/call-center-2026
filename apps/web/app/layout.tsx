@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { AntdRegistry } from "@ant-design/nextjs-registry";
 import "antd/dist/reset.css";
 import "./globals.css";
+import { ServiceProvider } from "../services/provider";
 
 export const metadata: Metadata = {
   title: "Call Center",
@@ -12,7 +13,7 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
   return (
     <html lang="en">
       <body>
-        <AntdRegistry>{children}</AntdRegistry>
+        <AntdRegistry><ServiceProvider>{children}</ServiceProvider></AntdRegistry>
       </body>
     </html>
   );

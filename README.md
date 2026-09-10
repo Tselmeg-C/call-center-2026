@@ -2,7 +2,7 @@
 
 Capstone project for AI Dev Zoomcamp 2026: a Sales customer-contact management application.
 
-The initial scaffold contains a Next.js App Router frontend with TypeScript and Ant Design in `apps/web`. It displays a placeholder page; backend and database functionality will be added in later tasks.
+The mock prototype uses Next.js App Router, TypeScript and Ant Design in `apps/web`. No backend, database, secrets, or real account is needed.
 
 ## Local setup
 
@@ -15,7 +15,24 @@ npm ci
 npm run dev
 ```
 
-Open http://localhost:3000. Edit `apps/web/app/page.tsx` to update the landing page.
+Open http://localhost:3000. The app sends you to `/login`.
+
+## Mock prototype
+
+Select Alex Admin (Admin), River Sales (Sales), or Sky Sales (Sales), then Sign in. No password is requested. Admin lands on All Customers; Sales lands on Dashboard. Navigation destinations are explicitly labeled placeholders. Sales opening an Admin URL sees Access denied. The service-status panel shows synthetic demonstration records only, not customer data or workload calculations.
+
+Mock controls are available on sign-in and application pages:
+
+- Normal: sign-in and sample reads succeed.
+- Loading: the next operation stays pending until you select Normal or reset. Controls remain usable while pending.
+- Empty: sample reads return a no-data message.
+- Error: the next sign-in or sample read fails once; Retry succeeds. Selecting Error again arms another failure.
+- Expired session: clears the session and returns to sign-in with an expiry message. Sign in again to continue, or select Normal first.
+- Reset mock state: restores original fixtures, clears scenarios/errors, signs out, and returns to sign-in.
+
+Session and fixture state live only in memory, survive navigation, and reset on a full browser reload. Separate tabs have independent mock state. Logout, expiry, and reset invalidate pending requests; no durable browser storage is used. Mock role guards demonstrate behavior and are not a production security boundary.
+
+Typed asynchronous application services live in `apps/web/services/types.ts`. The resettable mock adapter is `apps/web/services/mock.ts`; select or replace the adapter at the single composition point in `apps/web/services/provider.tsx`. UI components consume service interfaces, while scenario/reset controls use a separate mock-only interface. Full business screens and production authentication follow in later backlog tasks.
 
 ## Checks
 
@@ -26,7 +43,7 @@ npm test
 npm run build
 ```
 
-The smoke test renders the actual landing page, including Ant Design components, and checks its visible heading and content. Vitest uses jsdom and React Testing Library. For watch mode, run `npm run test:watch --workspace @call-center/web`.
+Vitest and React Testing Library cover sign-in/logout, route restrictions, retry, reset, deterministic fixtures, and stale responses after session removal. For watch mode, run `npm run test:watch --workspace @call-center/web`.
 
 GitHub Actions runs installation, linting, type checking, the test, and a production build on pushes and pull requests. Type checking generates Next.js route types first, so it also works on a fresh checkout.
 

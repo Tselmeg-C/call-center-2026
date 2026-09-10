@@ -39,6 +39,12 @@ def test_request_id_rejects_malformed_client_value() -> None:
     response = TestClient(app, base_url="http://localhost").get("/health/live", headers={"x-request-id": "bad\nvalue"})
     assert response.status_code == 200 and "\n" not in response.headers["x-request-id"] and len(response.headers["x-request-id"]) > 10
 
+def test_health_endpoints_are_minimal_and_safe() -> None:
+    client = TestClient(app, base_url="http://localhost")
+    live = client.get("/health/live"); ready = client.get("/health/ready")
+    assert live.status_code == 200 and live.json() == {"status": "ok"}
+    assert ready.status_code == 200 and ready.json()["storage"] == "memory"
+
 def test_database_session_lookup_uses_digest_and_revocation() -> None:
     database = AuthDatabase("sqlite+pysqlite:///:memory:")
     from datetime import datetime, timedelta, timezone

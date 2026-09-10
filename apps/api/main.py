@@ -1,4 +1,6 @@
 from datetime import datetime, timedelta, timezone
+from copy import deepcopy
+from contextlib import contextmanager
 from secrets import token_urlsafe
 from typing import Annotated
 
@@ -32,6 +34,15 @@ class MemoryRepo:
 
     def reset(self) -> None:
         self.users.clear(); self.sessions.clear()
+
+    @contextmanager
+    def transaction(self):
+        snapshot = (deepcopy(self.users), deepcopy(self.sessions))
+        try:
+            yield self
+        except Exception:
+            self.users, self.sessions = snapshot
+            raise
 
 
 repo = MemoryRepo()

@@ -28,3 +28,14 @@ def test_expired_session_is_rejected() -> None:
 def test_foreign_origin_is_rejected_before_mutation() -> None:
     repo.reset(); client = TestClient(app)
     assert client.post("/session/logout", headers={"origin": "https://foreign.example"}).status_code == 403
+
+
+def test_memory_unit_of_work_rolls_back_auth_state() -> None:
+    repo.reset()
+    try:
+        with repo.transaction():
+            provision_user(type("P", (), {"name": "Transient", "email": "transient@example.test", "role": "Admin", "password": "correct horse battery staple"})())
+            raise RuntimeError("rollback")
+    except RuntimeError:
+        pass
+    assert repo.users == {}

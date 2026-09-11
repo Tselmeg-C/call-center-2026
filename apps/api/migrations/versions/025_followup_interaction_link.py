@@ -11,6 +11,7 @@ def upgrade():
     if op.get_bind().dialect.name == "postgresql":
         op.add_column("follow_ups", sa.Column("interaction_id", sa.String(120), nullable=True))
         op.create_unique_constraint("uq_followup_interaction", "follow_ups", ["interaction_id"])
+        op.create_foreign_key("fk_followup_interaction", "follow_ups", "activities", ["interaction_id"], ["id"], ondelete="RESTRICT")
 
 def downgrade():
     raise RuntimeError("Restore a verified backup instead of destructive down-migration.")

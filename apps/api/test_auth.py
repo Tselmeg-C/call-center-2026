@@ -145,6 +145,11 @@ def test_assignment_database_keeps_ordered_rules_and_audit() -> None:
     database.set_setting("fallback_sales", {"ids": ["u1"]})
     assert database.get_setting("fallback_sales") == {"ids": ["u1"]}
 
+def test_assignment_run_retry_returns_persisted_result() -> None:
+    database = AssignmentDatabase("sqlite+pysqlite:///:memory:")
+    assert database.save_run(actor_id="admin", submission_id="same", scope="all", result={"assigned": 1}) == {"assigned": 1}
+    assert database.save_run(actor_id="admin", submission_id="same", scope="all", result={"assigned": 99}) == {"assigned": 1}
+
 def test_activity_idempotency_replays_and_rejects_payload_reuse() -> None:
     database = ActivityDatabase("sqlite+pysqlite:///:memory:")
     assert database.save_idempotent(actor_id="u1", operation="note", submission_id="s1", payload="hello", result={"id": "n1"}) == {"id": "n1"}

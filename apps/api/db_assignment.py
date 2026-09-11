@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta, timezone
 from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, UniqueConstraint, create_engine, func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
 from sqlalchemy.pool import StaticPool
 
@@ -85,7 +86,15 @@ class AssignmentDatabase:
         with Session(self.engine) as session:
             row = session.get(AssignmentRunRow, (actor_id, submission_id))
             if row: return row.result
-            session.add(AssignmentRunRow(actor_id=actor_id, submission_id=submission_id, scope=scope, result=result, created_at=datetime.now(timezone.utc))); session.commit(); return result
+            session.add(AssignmentRunRow(actor_id=actor_id, submission_id=submission_id, scope=scope, result=result, created_at=datetime.now(timezone.utc)))
+            try:
+                session.commit()
+            except IntegrityError:
+                session.rollback()
+                row = session.get(AssignmentRunRow, (actor_id, submission_id))
+                if row is not None: return row.result
+                raise
+            return result
 
     def get_run(self, actor_id: str, submission_id: str) -> dict | None:
         with Session(self.engine) as session:

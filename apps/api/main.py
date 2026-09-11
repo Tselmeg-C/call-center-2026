@@ -24,7 +24,7 @@ from sqlalchemy import inspect
 
 app = FastAPI(title="Call Center API", version="0.1.0")
 logger = logging.getLogger("call-center.api")
-ALLOWED_ORIGINS = [os.environ["FRONTEND_ORIGIN"]] if os.environ.get("FRONTEND_ORIGIN") else ["http://localhost:3000", "http://127.0.0.1:3000"]
+ALLOWED_ORIGINS = [os.environ["FRONTEND_ORIGIN"]] if os.environ.get("FRONTEND_ORIGIN") else ["http://localhost:3000", "http://127.0.0.1:3000", "http://localhost:4174", "http://127.0.0.1:4174"]
 app.add_middleware(CORSMiddleware, allow_origins=ALLOWED_ORIGINS, allow_credentials=True, allow_methods=["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"], allow_headers=["*"])
 password_hash = PasswordHash.recommended()
 SESSION_SECONDS = 8 * 60 * 60

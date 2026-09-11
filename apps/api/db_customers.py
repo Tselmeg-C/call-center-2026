@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from sqlalchemy import Boolean, Date, JSON, Numeric, ForeignKey, Integer, String, DateTime, UniqueConstraint, create_engine, select, func, or_
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
 from sqlalchemy.pool import StaticPool
@@ -25,7 +25,7 @@ class CustomerRow(CustomerBase):
     branch_code: Mapped[str | None] = mapped_column(String(128), nullable=True)
     rsm_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     originating_bu: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    last_purchase_date: Mapped[datetime | None] = mapped_column(Date, nullable=True)
+    last_purchase_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     recent: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     revenue_amount_2024: Mapped[float | None] = mapped_column(Numeric(18, 6), nullable=True)
     revenue_amount_2025: Mapped[float | None] = mapped_column(Numeric(18, 6), nullable=True)

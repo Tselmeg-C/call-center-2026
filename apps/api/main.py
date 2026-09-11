@@ -795,6 +795,10 @@ async def import_customers(file: UploadFile = File(...), submission_id: str = Qu
                 customer_db.ingest_sources(source_rows, result)
             except Exception:
                 repo.customers.clear(); repo.customers.update(customer_snapshot or {})
+                try:
+                    customer_db.save_import_job({**result, "status": "Failed", "created": 0, "updated": 0, "processed": 0, "errors": [], "errorRows": 0})
+                except Exception:
+                    pass
                 raise
         repo.imports[local_key] = result
         repo.import_payloads[local_key] = fingerprint

@@ -247,11 +247,13 @@ def test_import_storage_failure_restores_in_memory_staging(monkeypatch) -> None:
     workbook = Workbook(); workbook.active.append(["bcn", "customer_name"]); workbook.active.append(["999999", "Transient"])
     payload = BytesIO(); workbook.save(payload)
     class FailingCustomerDB:
+        failed = None
         def ingest_sources(self, *_): raise RuntimeError("database unavailable")
         def import_job(self, *_): return None
-    monkeypatch.setattr(main, "customer_db", FailingCustomerDB())
+        def save_import_job(self, result): self.failed = result
+    failing = FailingCustomerDB(); monkeypatch.setattr(main, "customer_db", failing)
     response = client.post("/admin/imports?submission_id=rollback", files={"file": ("source.xlsx", payload.getvalue(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")}, headers={"origin": "http://localhost:3000"})
-    assert response.status_code == 422 and "999999" not in repo.customers
+    assert response.status_code == 422 and "999999" not in repo.customers and failing.failed["status"] == "Failed"
 
 def test_memory_assignment_retry_is_scoped_to_actor() -> None:
     repo.reset()

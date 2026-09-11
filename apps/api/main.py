@@ -558,11 +558,22 @@ def cancel_followup_contract(bcn: str, followup_id: str, user: Annotated[User, D
 @app.post("/customers/{bcn}/follow-ups/{followup_id}/complete")
 def complete_followup(bcn: str, followup_id: str, body: InteractionCreate, user: Annotated[User, Depends(current_user)]) -> dict:
     item = find_followup(bcn, followup_id, user)
+    payload = f"{bcn}|{followup_id}|{body.outcome}|{body.note or ''}"
+    if activity_db is not None:
+        try: persisted = activity_db.get_idempotent(actor_id=user.id, operation="followup-complete", submission_id=body.submissionId, payload=payload)
+        except ValueError as exc: raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+        if persisted: return persisted
+    key = (f"followup:{bcn}", body.submissionId); prior = repo.submissions.get(key)
+    if prior:
+        if prior["payload"] != payload: raise HTTPException(status.HTTP_409_CONFLICT, "Submission already used.")
+        return prior["result"]
     if item["status"] == "Completed": return item
     if item["status"] != "Open": raise HTTPException(status.HTTP_409_CONFLICT, "Follow-up is not open.")
     interaction = create_interaction(bcn, body, user, persist=activity_db is None); item["status"] = "Completed"; item["interactionId"] = interaction["id"]; item["updatedAt"] = datetime.now(timezone.utc).isoformat()
     if activity_db is not None: activity_db.complete_followup(item, interaction)
     else: persist_followup(item)
+    repo.submissions[key] = {"payload": payload, "result": item}
+    if activity_db is not None: activity_db.save_idempotent(actor_id=user.id, operation="followup-complete", submission_id=body.submissionId, payload=payload, result=item)
     return item
 
 

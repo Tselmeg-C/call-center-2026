@@ -205,7 +205,9 @@ def test_real_http_admin_sales_journey() -> None:
     assert interaction.status_code == 200, interaction.text
     followup = client.post("/customers/009990/follow-ups", json={"type": "Reminder", "due": "2026-09-20", "note": "Next", "submissionId": "journey-followup"}, headers=origin)
     assert followup.status_code == 200
-    assert client.post(f"/customers/009990/follow-ups/{followup.json()['id']}/complete", json={"outcome": "Attempt", "submissionId": "journey-complete"}, headers=origin).status_code == 200
+    complete_url = f"/customers/009990/follow-ups/{followup.json()['id']}/complete"
+    assert client.post(complete_url, json={"outcome": "Attempt", "submissionId": "journey-complete"}, headers=origin).status_code == 200
+    assert client.post(complete_url, json={"outcome": "Contact", "submissionId": "journey-complete"}, headers=origin).status_code == 409
     assert client.post("/customers/000125/interactions", json={"outcome": "Attempt", "submissionId": "foreign"}, headers=origin).status_code == 403
 
 def test_import_preserves_source_columns_and_operational_phone_history() -> None:

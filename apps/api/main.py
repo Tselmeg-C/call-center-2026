@@ -1,4 +1,6 @@
 from datetime import datetime, timedelta, timezone
+from datetime import date
+from decimal import Decimal, InvalidOperation
 from copy import deepcopy
 from contextlib import contextmanager
 from secrets import token_urlsafe
@@ -29,7 +31,7 @@ ALLOWED_ORIGINS = [os.environ["FRONTEND_ORIGIN"]] if os.environ.get("FRONTEND_OR
 app.add_middleware(CORSMiddleware, allow_origins=ALLOWED_ORIGINS, allow_credentials=True, allow_methods=["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"], allow_headers=["*"])
 password_hash = PasswordHash.recommended()
 SESSION_SECONDS = 8 * 60 * 60
-ALEMBIC_HEAD = "014_assignment_owner_fks"
+ALEMBIC_HEAD = "015_typed_customer_source"
 
 
 @app.exception_handler(StorageError)
@@ -191,6 +193,27 @@ def import_value(value: object) -> str | int | float | bool | None:
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
     return str(value)
+
+def typed_import_values(headers: list[str], values: tuple[object, ...]) -> dict:
+    fields = {"mbcn": "mbcn", "previously_contacted": "previously_contacted", "propensity_score": "propensity_score", "propensity_tier": "propensity_tier", "propensity_rank": "propensity_rank", "inside_lead": "inside_lead", "field_rep": "field_rep", "sc_naming": "sc_naming", "inside_rep": "inside_rep", "branch_code": "branch_code", "rsm_name": "rsm_name", "originating_bu": "originating_bu", "last_purchase_date": "last_purchase_date", "recent": "recent", "revenue_amount_2024": "revenue_amount_2024", "revenue_amount_2025": "revenue_amount_2025", "revenue_amount_2026": "revenue_amount_2026", "fem_amount_2024": "fem_amount_2024", "fem_amount_2025": "fem_amount_2025", "fem_amount_2026": "fem_amount_2026", "payment_terms": "payment_terms"}
+    result = {}
+    for index, header in enumerate(headers):
+        field = fields.get(header.casefold())
+        value = values[index] if index < len(values) else None
+        if not field: continue
+        if value in (None, ""):
+            result[field] = None; continue
+        try:
+            if field in {"previously_contacted", "recent"}:
+                result[field] = value if isinstance(value, bool) else str(value).strip().casefold() in {"1", "true", "yes", "y"}
+            elif field in {"propensity_score", "revenue_amount_2024", "revenue_amount_2025", "revenue_amount_2026", "fem_amount_2024", "fem_amount_2025", "fem_amount_2026"}:
+                result[field] = Decimal(str(value))
+            elif field == "propensity_rank": result[field] = int(value)
+            elif field == "last_purchase_date": result[field] = value.date() if isinstance(value, datetime) else date.fromisoformat(str(value)[:10])
+            else: result[field] = str(value).strip()
+        except (ValueError, InvalidOperation):
+            result[field] = None
+    return result
 
 
 @app.middleware("http")
@@ -722,7 +745,7 @@ async def import_customers(file: UploadFile = File(...), submission_id: str = Qu
                 seen_bcns.add(bcn)
                 source = {header: import_value(values[index] if index < len(values) else None) for index, header in enumerate(headers) if header}
                 source["customer_name"] = name or bcn
-                source_rows.append({"bcn": bcn, "name": name, "source": source, "primary_phone": phone})
+                source_rows.append({"bcn": bcn, "name": name, "source": source, "typed": typed_import_values(headers, values), "primary_phone": phone})
                 if bcn in repo.customers:
                     record = repo.customers[bcn]
                     record["name"] = name or record["name"]

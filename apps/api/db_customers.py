@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from sqlalchemy import JSON, ForeignKey, Integer, String, DateTime, UniqueConstraint, create_engine, select, func, or_
+from sqlalchemy import Boolean, Date, JSON, Numeric, ForeignKey, Integer, String, DateTime, UniqueConstraint, create_engine, select, func, or_
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
 from sqlalchemy.pool import StaticPool
 
@@ -13,6 +13,27 @@ class CustomerRow(CustomerBase):
     owner_id: Mapped[str | None] = mapped_column(String(120), nullable=True)
     source: Mapped[dict] = mapped_column(JSON, default=dict)
     version: Mapped[int] = mapped_column(Integer, default=0)
+    mbcn: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    previously_contacted: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    propensity_score: Mapped[float | None] = mapped_column(Numeric(18, 6), nullable=True)
+    propensity_tier: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    propensity_rank: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    inside_lead: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    field_rep: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    sc_naming: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    inside_rep: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    branch_code: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    rsm_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    originating_bu: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    last_purchase_date: Mapped[datetime | None] = mapped_column(Date, nullable=True)
+    recent: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    revenue_amount_2024: Mapped[float | None] = mapped_column(Numeric(18, 6), nullable=True)
+    revenue_amount_2025: Mapped[float | None] = mapped_column(Numeric(18, 6), nullable=True)
+    revenue_amount_2026: Mapped[float | None] = mapped_column(Numeric(18, 6), nullable=True)
+    fem_amount_2024: Mapped[float | None] = mapped_column(Numeric(18, 6), nullable=True)
+    fem_amount_2025: Mapped[float | None] = mapped_column(Numeric(18, 6), nullable=True)
+    fem_amount_2026: Mapped[float | None] = mapped_column(Numeric(18, 6), nullable=True)
+    payment_terms: Mapped[str | None] = mapped_column(String(128), nullable=True)
 
 class PhoneRow(CustomerBase):
     __tablename__ = "customer_phones"
@@ -171,6 +192,7 @@ class CustomerDatabase:
                     session.add(row)
                 row.name = record["name"] or row.name
                 row.source = record["source"]
+                for field, value in record.get("typed", {}).items(): setattr(row, field, value)
                 phone = record.get("primary_phone")
                 existing = session.scalars(select(PhoneRow).where(PhoneRow.bcn == record["bcn"], PhoneRow.primary.is_(True))).first()
                 if phone:

@@ -209,6 +209,16 @@ def test_memory_followup_retry_rejects_payload_reuse() -> None:
     changed = {**body, "note": "Different"}
     assert client.post("/customers/000123/follow-ups", json=changed, headers=origin).status_code == 409
 
+def test_memory_lifecycle_retries_are_idempotent() -> None:
+    repo.reset()
+    admin = provision_user(type("P", (), {"name": "Admin", "email": "admin@example.test", "role": "Admin", "password": "correct horse battery staple"})())
+    client = TestClient(app, base_url="http://localhost"); client.post("/session/login", json={"email": admin.email, "password": "correct horse battery staple"})
+    origin = {"origin": "http://localhost:3000"}
+    body = {"reasonId": "closure-1", "submissionId": "close-once"}
+    assert client.post("/customers/000123/close", json=body, headers=origin).status_code == 200
+    replay = client.post("/customers/000123/close", json=body, headers=origin)
+    assert replay.status_code == 200 and repo.customers["000123"]["version"] == 1
+
 def test_mutation_routes_bind_json_bodies() -> None:
     paths = {route.path: {field.name for field in route.dependant.body_params} for route in app.routes if getattr(route, "dependant", None)}
     assert paths["/customers/{bcn}/interactions"] == {"body"}

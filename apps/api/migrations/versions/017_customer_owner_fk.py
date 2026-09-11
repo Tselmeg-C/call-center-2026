@@ -8,7 +8,7 @@ depends_on = None
 
 def upgrade():
     if op.get_bind().dialect.name == "postgresql":
-        op.create_foreign_key("fk_customers_owner", "customers", "users", ["owner_id"], ["id"], ondelete="SET NULL")
+        op.execute("ALTER TABLE customers ADD CONSTRAINT fk_customers_owner FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE SET NULL NOT VALID")
 
 def downgrade():
     raise RuntimeError("Restore a verified backup instead of destructive down-migration.")

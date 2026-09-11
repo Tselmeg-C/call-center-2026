@@ -161,6 +161,18 @@ def test_activity_idempotency_replays_and_rejects_payload_reuse() -> None:
     assert database.soft_delete("a1", "u1") is True
     assert database.history("000123")[0][0].deleted_by == "u1"
 
+def test_followup_completion_rejects_cross_customer_and_stale_links() -> None:
+    database = ActivityDatabase("sqlite+pysqlite:///:memory:")
+    followup = {"id": "f1", "bcn": "000123", "actorId": "u1", "type": "Reminder", "due": None, "status": "Open", "note": None}
+    database.save_followup(followup)
+    try: database.complete_followup(followup, {"id": "a1", "bcn": "000124", "actorId": "u1"})
+    except ValueError as exc: assert "another customer" in str(exc)
+    else: assert False
+    database.complete_followup(followup, {"id": "a1", "bcn": "000123", "actorId": "u1"})
+    try: database.complete_followup(followup, {"id": "a2", "bcn": "000123", "actorId": "u1"})
+    except ValueError as exc: assert "no longer open" in str(exc)
+    else: assert False
+
 def test_real_http_admin_sales_journey() -> None:
     repo.reset()
     admin = provision_user(type("P", (), {"name": "Admin", "email": "admin@example.test", "role": "Admin", "password": "correct horse battery staple"})())

@@ -89,8 +89,10 @@ class ActivityDatabase:
 
     def complete_followup(self, record: dict, interaction: dict) -> None:
         with Session(self.engine) as session:
-            row = session.get(FollowUpRow, record["id"])
+            row = session.get(FollowUpRow, record["id"], with_for_update=True)
             if not row: raise ValueError("follow-up not found")
+            if row.bcn != interaction.get("bcn"): raise ValueError("interaction belongs to another customer")
+            if row.status != "Open": raise ValueError("follow-up is no longer open")
             row.status = "Completed"; row.updated_at = datetime.now(timezone.utc)
             session.add(ActivityRow(id=interaction["id"], bcn=interaction["bcn"], actor_id=interaction["actorId"], kind="Interaction", outcome=interaction.get("outcome"), text=interaction.get("note"), created_at=datetime.now(timezone.utc)))
             session.add(row); session.commit()

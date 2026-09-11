@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import * as seed from "./seed";
 import type {
   Activity,
@@ -12,6 +12,7 @@ import type {
   Note,
   User,
 } from "./types";
+import { loadBackendState } from "./api";
 
 const uid = () => Math.random().toString(36).slice(2, 10);
 
@@ -53,6 +54,19 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const [auditLog, setAuditLog] = useState<AuditEntry[]>(seed.auditLog);
   const [importJobs, setImportJobs] = useState<ImportJob[]>(seed.importJobs);
   const [assignmentRules, setAssignmentRules] = useState(seed.assignmentRules);
+
+  useEffect(() => {
+    let active = true;
+    loadBackendState().then((state) => {
+      if (!active || !state) return;
+      setCurrentUserId(state.user.id);
+      setUsers((previous) => [state.user, ...previous.filter((item) => item.id !== state.user.id)]);
+      if (state.customers.length) setCustomers(state.customers);
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const currentUser = users.find((u) => u.id === currentUserId) ?? users[0]!;
 

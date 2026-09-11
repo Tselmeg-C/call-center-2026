@@ -42,6 +42,16 @@ class PhoneRow(CustomerBase):
     phone: Mapped[str] = mapped_column(String(64))
     primary: Mapped[bool] = mapped_column("is_primary", default=False)
 
+class CustomerCollectionRow(CustomerBase):
+    __tablename__ = "customer_collections"
+    __table_args__ = (UniqueConstraint("bcn", "kind", "slot", name="uq_customer_collection_slot"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    bcn: Mapped[str] = mapped_column(ForeignKey("customers.bcn", ondelete="CASCADE"))
+    kind: Mapped[str] = mapped_column(String(16))
+    slot: Mapped[int] = mapped_column(Integer)
+    name: Mapped[str] = mapped_column(String(255))
+    revenue: Mapped[float | None] = mapped_column(Numeric(18, 6), nullable=True)
+
 class ImportJobRow(CustomerBase):
     __tablename__ = "import_jobs"
     __table_args__ = (UniqueConstraint("actor_id", "submission_id", name="uq_import_actor_submission"),)
@@ -193,6 +203,8 @@ class CustomerDatabase:
                 row.name = record["name"] or row.name
                 row.source = record["source"]
                 for field, value in record.get("typed", {}).items(): setattr(row, field, value)
+                session.query(CustomerCollectionRow).filter_by(bcn=record["bcn"]).delete(synchronize_session=False)
+                session.add_all(CustomerCollectionRow(bcn=record["bcn"], kind=item["kind"], slot=item["slot"], name=item["name"], revenue=item.get("revenue")) for item in record.get("collections", []))
                 phone = record.get("primary_phone")
                 existing = session.scalars(select(PhoneRow).where(PhoneRow.bcn == record["bcn"], PhoneRow.primary.is_(True))).first()
                 if phone:

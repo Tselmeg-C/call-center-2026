@@ -62,7 +62,7 @@ def test_health_endpoints_are_minimal_and_safe() -> None:
     assert live.status_code == 200 and live.json() == {"status": "ok"}
     assert ready.status_code == 200 and ready.json()["storage"] == "memory"
     from .main import ALEMBIC_HEAD
-    assert ALEMBIC_HEAD == "015_typed_customer_source"
+    assert ALEMBIC_HEAD == "016_customer_collections"
 
 def test_postgres_readiness_rejects_stale_migration(monkeypatch) -> None:
     from .main import health_ready
@@ -109,6 +109,17 @@ def test_database_customer_ingest_stores_typed_source_fields() -> None:
     database.ingest_sources([{"bcn": "000123", "name": "Typed", "source": {}, "typed": {"propensity_score": Decimal("0.875000"), "last_purchase_date": date(2025, 1, 2), "previously_contacted": True}, "primary_phone": None}], {"jobId": "job-typed", "submissionId": "typed", "filename": "x.xlsx", "processed": 1, "created": 1, "updated": 0, "errorRows": 0, "status": "Completed", "errors": [], "actorId": "admin"})
     row = database.get("000123")
     assert row.propensity_score == Decimal("0.875000") and row.last_purchase_date == date(2025, 1, 2) and row.previously_contacted is True
+
+def test_database_customer_ingest_stores_extensible_collections() -> None:
+    from decimal import Decimal
+    from .db_customers import CustomerCollectionRow
+    database = CustomerDatabase("sqlite+pysqlite:///:memory:")
+    result = {"jobId": "job-collections", "submissionId": "collections", "filename": "x.xlsx", "processed": 1, "created": 1, "updated": 0, "errorRows": 0, "status": "Completed", "errors": [], "actorId": "admin"}
+    record = {"bcn": "000123", "name": "Collections", "source": {}, "collections": [{"kind": "vendor", "slot": 4, "name": "New vendor", "revenue": Decimal("12.50")}], "primary_phone": None}
+    database.ingest_sources([record], result)
+    with Session(database.engine) as session:
+        row = session.query(CustomerCollectionRow).one()
+        assert row.kind == "vendor" and row.slot == 4 and row.revenue == Decimal("12.500000")
 
 def test_assignment_configuration_and_run_are_admin_only() -> None:
     repo.reset(); admin = provision_user(type("P", (), {"name": "Admin", "email": "admin@example.test", "role": "Admin", "password": "correct horse battery staple"})()); repo.users["sales-river"] = {"id": "sales-river", "name": "River Sales", "email": "river@example.test", "role": "Sales", "active": True, "password": "unused"}

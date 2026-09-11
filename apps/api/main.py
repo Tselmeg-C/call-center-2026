@@ -31,7 +31,7 @@ ALLOWED_ORIGINS = [os.environ["FRONTEND_ORIGIN"]] if os.environ.get("FRONTEND_OR
 app.add_middleware(CORSMiddleware, allow_origins=ALLOWED_ORIGINS, allow_credentials=True, allow_methods=["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"], allow_headers=["*"])
 password_hash = PasswordHash.recommended()
 SESSION_SECONDS = 8 * 60 * 60
-ALEMBIC_HEAD = "015_typed_customer_source"
+ALEMBIC_HEAD = "016_customer_collections"
 
 
 @app.exception_handler(StorageError)
@@ -213,6 +213,19 @@ def typed_import_values(headers: list[str], values: tuple[object, ...]) -> dict:
             else: result[field] = str(value).strip()
         except (ValueError, InvalidOperation):
             result[field] = None
+    return result
+
+def collection_import_values(headers: list[str], values: tuple[object, ...]) -> list[dict]:
+    by_name = {header.casefold(): values[index] if index < len(values) else None for index, header in enumerate(headers)}
+    result = []
+    for kind in ("vendor", "category"):
+        for slot in range(1, 4):
+            name = by_name.get(f"{kind}_{slot}")
+            if name in (None, ""): continue
+            revenue = by_name.get(f"{kind}_{slot}_revenue")
+            try: revenue = None if revenue in (None, "") else Decimal(str(revenue))
+            except InvalidOperation: revenue = None
+            result.append({"kind": kind, "slot": slot, "name": str(name).strip(), "revenue": revenue})
     return result
 
 
@@ -745,7 +758,7 @@ async def import_customers(file: UploadFile = File(...), submission_id: str = Qu
                 seen_bcns.add(bcn)
                 source = {header: import_value(values[index] if index < len(values) else None) for index, header in enumerate(headers) if header}
                 source["customer_name"] = name or bcn
-                source_rows.append({"bcn": bcn, "name": name, "source": source, "typed": typed_import_values(headers, values), "primary_phone": phone})
+                source_rows.append({"bcn": bcn, "name": name, "source": source, "typed": typed_import_values(headers, values), "collections": collection_import_values(headers, values), "primary_phone": phone})
                 if bcn in repo.customers:
                     record = repo.customers[bcn]
                     record["name"] = name or record["name"]

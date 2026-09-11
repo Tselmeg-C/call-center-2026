@@ -8,7 +8,7 @@ depends_on = None
 
 def upgrade():
     if op.get_bind().dialect.name == "postgresql":
-        op.create_foreign_key("fk_assignment_history_customer", "assignment_history", "customers", ["bcn"], ["bcn"], ondelete="RESTRICT")
+        op.execute("ALTER TABLE assignment_history ADD CONSTRAINT fk_assignment_history_customer FOREIGN KEY (bcn) REFERENCES customers(bcn) ON DELETE RESTRICT NOT VALID")
 
 def downgrade():
     raise RuntimeError("Restore a verified backup instead of destructive down-migration.")

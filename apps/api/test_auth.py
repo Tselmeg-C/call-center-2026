@@ -197,6 +197,18 @@ def test_memory_assignment_retry_is_scoped_to_actor() -> None:
     repo.assignment_runs[(admin_two.id, "same-run")] = {"actorId": admin_two.id}
     assert repo.assignment_runs[(admin_one.id, "same-run")] != repo.assignment_runs[(admin_two.id, "same-run")]
 
+def test_memory_followup_retry_rejects_payload_reuse() -> None:
+    repo.reset()
+    sales = provision_user(type("P", (), {"name": "Sales", "email": "sales@example.test", "role": "Sales", "password": "correct horse battery staple"})())
+    repo.customers["000123"]["ownerId"] = sales.id
+    client = TestClient(app, base_url="http://localhost")
+    client.post("/session/login", json={"email": sales.email, "password": "correct horse battery staple"})
+    origin = {"origin": "http://localhost:3000"}
+    body = {"type": "Reminder", "due": "2026-09-20", "note": "Call", "submissionId": "same-followup"}
+    assert client.post("/customers/000123/follow-ups", json=body, headers=origin).status_code == 200
+    changed = {**body, "note": "Different"}
+    assert client.post("/customers/000123/follow-ups", json=changed, headers=origin).status_code == 409
+
 def test_mutation_routes_bind_json_bodies() -> None:
     paths = {route.path: {field.name for field in route.dependant.body_params} for route in app.routes if getattr(route, "dependant", None)}
     assert paths["/customers/{bcn}/interactions"] == {"body"}

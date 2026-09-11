@@ -407,7 +407,11 @@ def create_followup(bcn: str, body: FollowUpCreate, user: Annotated[User, Depend
         try: persisted = activity_db.get_idempotent(actor_id=user.id, operation="followup", submission_id=body.submissionId, payload=payload)
         except ValueError as exc: raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
         if persisted: return persisted
-    if key in repo.followups: return repo.followups[key]
+    if key in repo.followups:
+        prior = repo.followups[key]
+        if (prior.get("type"), prior.get("due"), prior.get("note")) != (body.type, body.due, body.note):
+            raise HTTPException(status.HTTP_409_CONFLICT, "Submission already used.")
+        return prior
     if body.type not in {"Appointment", "Reminder"}: raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Invalid follow-up type.")
     record = {"id": f"followup-{len(repo.followups)+1}", "bcn": bcn, "type": body.type, "due": body.due, "note": body.note, "status": "Open", "actor": user.name, "actorId": user.id, "createdAt": datetime.now(timezone.utc).isoformat()}
     repo.followups[key] = record; row["histories"].append({**record, "kind": "Follow-up"}); persist_followup(record)

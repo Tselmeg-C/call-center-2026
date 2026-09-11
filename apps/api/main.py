@@ -183,6 +183,13 @@ def readable_rows() -> list[dict]:
     pairs = customer_db.all_with_phones(); histories = activity_db.history_map([item.bcn for item, _ in pairs]) if activity_db is not None else {}
     return [{"bcn": item.bcn, "name": item.name, "ownerId": item.owner_id, "ownerName": repo.users.get(item.owner_id or "", {}).get("name"), "status": item.status, "phones": phones, "source": item.source, "version": item.version, "histories": histories.get(item.bcn, [])} for item, phones in pairs]
 
+def import_value(value: object) -> str | int | float | bool | None:
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    return str(value)
+
 
 @app.middleware("http")
 async def origin_guard(request: Request, call_next):
@@ -683,11 +690,22 @@ async def import_customers(file: UploadFile = File(...), submission_id: str = Qu
                 phone = str(values[phone_index]).strip() if phone_index is not None and phone_index < len(values) and values[phone_index] is not None else None
                 if bcn in seen_bcns: errors.append({"row": row_number, "field": "bcn", "reason": "Duplicate bcn"}); continue
                 seen_bcns.add(bcn)
-                source_rows.append({"bcn": bcn, "name": name, "source": {"customer_name": name or bcn}, "primary_phone": phone})
+                source = {header: import_value(values[index] if index < len(values) else None) for index, header in enumerate(headers) if header}
+                source["customer_name"] = name or bcn
+                source_rows.append({"bcn": bcn, "name": name, "source": source, "primary_phone": phone})
                 if bcn in repo.customers:
-                    record = repo.customers[bcn]; record["name"] = name or record["name"]; record["phones"] = [phone] if phone else []; record.setdefault("source", {})["customer_name"] = record["name"]; updated += 1
+                    record = repo.customers[bcn]
+                    record["name"] = name or record["name"]
+                    phones = record.setdefault("phones", [])
+                    if phone:
+                        if phones: phones[0] = phone
+                        else: phones.append(phone)
+                    elif phones:
+                        phones.pop(0)
+                    record["source"] = source
+                    updated += 1
                 else:
-                    repo.customers[bcn] = {"bcn": bcn, "name": name or bcn, "ownerId": None, "ownerName": None, "status": "Open", "phones": [phone] if phone else [], "source": {"customer_name": name or bcn}, "version": 0, "histories": []}; created += 1
+                    repo.customers[bcn] = {"bcn": bcn, "name": name or bcn, "ownerId": None, "ownerName": None, "status": "Open", "phones": [phone] if phone else [], "source": source, "version": 0, "histories": []}; created += 1
         if customer_db is not None: customer_db.upsert_sources(source_rows)
         result = {"jobId": f"import-{len(repo.imports)+1}", "submissionId": submission_id, "filename": file.filename, "completedAt": datetime.now(timezone.utc).isoformat(), "status": "Partial" if errors else "Completed", "created": created, "updated": updated, "errors": errors, "errorRows": len(errors), "processed": created + updated + len(errors), "actorId": user.id}
         repo.imports[submission_id] = result

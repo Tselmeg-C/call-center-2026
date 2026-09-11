@@ -26,6 +26,55 @@ from .db_auth import AuthDatabase, SessionRow, UserRow, digest, StorageError
 ORIGIN = {"origin": "http://localhost:3000"}
 
 
+def test_manual_assignment_commit_and_rollback(tmp_path, monkeypatch):
+    from .db_assignment import AssignmentDatabase, AssignmentHistoryRow, AuditRow
+    from .db_customers import CustomerDatabase
+    from fastapi import HTTPException
+
+    url = f"sqlite+pysqlite:///{tmp_path / 'manual.db'}"
+    customers = CustomerDatabase(url)
+    assignments = AssignmentDatabase(url)
+    monkeypatch.setattr(main, "customer_db", customers)
+    monkeypatch.setattr(main, "assignment_db", assignments)
+    monkeypatch.setattr(main, "activity_db", None)
+    main.repo.reset()
+    try:
+        customers.upsert_source(bcn="000001", name="Synthetic", source={})
+        main.repo.customers.clear()
+        main.repo.users["sales"] = {"id": "sales", "name": "Sales", "role": "Sales", "active": True}
+        actor = main.User(id="admin", name="Admin", email="admin@example.test", role="Admin")
+        body = main.AssignmentRequest(ownerId="sales", expectedVersion=0, submissionId="manual")
+        def fail_commit(session):
+            if session.bind is assignments.engine:
+                session.flush()
+                raise RuntimeError("Injected failure")
+        event.listen(Session, "before_commit", fail_commit)
+        try:
+            with pytest.raises(RuntimeError, match="Injected failure"):
+                main.assign_customer("000001", body, actor)
+        finally:
+            event.remove(Session, "before_commit", fail_commit)
+        assert main.repo.customers == {} and main.repo.submissions == {}
+        assert customers.get("000001").owner_id is None and customers.get("000001").version == 0
+        with Session(assignments.engine) as session:
+            assert session.scalar(select(AssignmentHistoryRow)) is None and session.scalar(select(AuditRow)) is None
+        result = main.assign_customer("000001", body, actor)
+        assert result.ownerId == "sales" and result.version == 1
+        assert main.assign_customer("000001", body, actor) == result
+        unchanged = main.assign_customer("000001", main.AssignmentRequest(ownerId="sales", expectedVersion=1, submissionId="unchanged"), actor)
+        assert unchanged == result
+        with pytest.raises(HTTPException) as stale:
+            main.assign_customer("000001", main.AssignmentRequest(ownerId=None, expectedVersion=0, submissionId="stale"), actor)
+        assert stale.value.status_code == 409
+        assert customers.get("000001").owner_id == "sales" and customers.get("000001").version == 1
+        with Session(assignments.engine) as session:
+            assert len(list(session.scalars(select(AssignmentHistoryRow)))) == 1
+            assert len(list(session.scalars(select(AuditRow)))) == 1
+    finally:
+        customers.engine.dispose(); assignments.engine.dispose()
+        main.repo.reset()
+
+
 @pytest.mark.parametrize("changes", [{"active": False}, {"role": "Admin"}])
 def test_owner_identity_change_rolls_back_and_releases_only_open(changes, tmp_path, monkeypatch):
     from copy import deepcopy

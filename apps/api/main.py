@@ -587,7 +587,7 @@ def assign_customer(bcn: str, body: AssignmentRequest, user: Annotated[User, Dep
     row = repo.customers.get(bcn)
     if row is None and customer_db is not None:
         stored = customer_db.get(bcn)
-        if stored: row = {"bcn": stored.bcn, "name": stored.name, "ownerId": stored.owner_id, "ownerName": repo.users.get(stored.owner_id or "", {}).get("name"), "status": stored.status, "phones": customer_db.phones(bcn), "source": stored.source, "version": stored.version, "histories": []}; repo.customers[bcn] = row
+        if stored: row = {"bcn": stored.bcn, "name": stored.name, "ownerId": stored.owner_id, "ownerName": repo.users.get(stored.owner_id or "", {}).get("name"), "status": stored.status, "phones": customer_db.phones(bcn), "source": stored.source, "version": stored.version, "histories": []}
     if not row: raise HTTPException(status.HTTP_404_NOT_FOUND, "Customer not found.")
     if body.ownerId and not any(item["id"] == body.ownerId and item["role"] == "Sales" and item["active"] for item in repo.users.values()): raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Owner must be an active Sales user.")
     payload = f"{bcn}|{body.ownerId}|{body.expectedVersion}"
@@ -601,6 +601,19 @@ def assign_customer(bcn: str, body: AssignmentRequest, user: Annotated[User, Dep
         if prior["ownerId"] != body.ownerId or prior["expectedVersion"] != body.expectedVersion:
             raise HTTPException(status.HTTP_409_CONFLICT, "Submission already used.")
         return Customer.model_validate(row)
+    if customer_db is not None and assignment_db is not None:
+        try: change = assignment_db.assign_manual(bcn=bcn, owner_id=body.ownerId, expected_version=body.expectedVersion, actor_id=user.id)
+        except ValueError as exc: raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+        if change is None: raise HTTPException(status.HTTP_404_NOT_FOUND, "Customer not found.")
+        row = deepcopy(row)
+        row.update(ownerId=change["ownerId"], ownerName=repo.users.get(change["ownerId"], {}).get("name"), version=change["version"])
+        if change["oldOwner"] != change["ownerId"]:
+            row.setdefault("histories", []).append({"kind": "Assignment", "actor": user.name, "actorId": user.id, "oldOwner": change["oldOwner"], "newOwner": change["ownerId"], "reason": "Manual assignment", "timestamp": change["timestamp"]})
+        result = Customer.model_validate(row)
+        repo.customers[bcn] = row
+        repo.submissions[key] = {"ownerId": body.ownerId, "expectedVersion": body.expectedVersion}
+        if activity_db is not None: activity_db.save_idempotent(actor_id=user.id, operation="assignment", submission_id=body.submissionId, payload=payload, result=result.model_dump())
+        return result
     if body.expectedVersion is not None and body.expectedVersion != row["version"]:
         raise HTTPException(status.HTTP_409_CONFLICT, "Customer version is stale.")
     if row["ownerId"] == body.ownerId:

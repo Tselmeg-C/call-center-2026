@@ -158,6 +158,24 @@ class AssignmentDatabase:
         except SQLAlchemyError:
             raise StorageError("Storage operation failed.") from None
 
+    def assign_manual(self, *, bcn: str, owner_id: str | None, expected_version: int | None, actor_id: str) -> dict | None:
+        try:
+            with Session(self.engine) as session, session.begin():
+                row = session.scalar(select(CustomerRow).where(CustomerRow.bcn == bcn).with_for_update())
+                if row is None: return None
+                if expected_version is not None and row.version != expected_version:
+                    raise ValueError("Customer version is stale.")
+                old_owner = row.owner_id
+                now = datetime.now(timezone.utc)
+                if old_owner != owner_id:
+                    row.owner_id = owner_id; row.version += 1
+                    session.add(AssignmentHistoryRow(bcn=bcn, actor_id=actor_id, old_owner_id=old_owner, new_owner_id=owner_id, reason="Manual assignment", created_at=now))
+                    session.add(AuditRow(actor_id=actor_id, action="Customer assigned", target=bcn, details={"oldOwner": old_owner, "newOwner": owner_id}, created_at=now))
+                result = {"oldOwner": old_owner, "ownerId": row.owner_id, "version": row.version, "timestamp": now.isoformat()}
+            return result
+        except SQLAlchemyError:
+            raise StorageError("Storage operation failed.") from None
+
     def get_run(self, actor_id: str, submission_id: str, payload: str | None = None) -> dict | None:
         with Session(self.engine) as session:
             row = session.get(AssignmentRunRow, (actor_id, submission_id))

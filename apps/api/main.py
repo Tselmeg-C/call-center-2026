@@ -759,6 +759,15 @@ def get_import_result(submission_id: str, user: Annotated[User, Depends(admin_us
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Import job not found.")
     return result
 
+@app.get("/admin/imports")
+def list_import_results(page: int = Query(1, ge=1), page_size: int = Query(25, ge=1, le=100), user: Annotated[User, Depends(admin_user)] = None) -> dict:
+    if customer_db is not None:
+        items, total = customer_db.import_jobs(user.id, page, page_size)
+    else:
+        owned = [item for (actor_id, _), item in repo.imports.items() if actor_id == user.id]
+        total = len(owned); start = (page - 1) * page_size; items = owned[start:start + page_size]
+    return {"items": items, "page": page, "page_size": page_size, "total": total}
+
 @app.get("/admin/assignment-rules")
 def list_assignment_rules(_: Annotated[User, Depends(admin_user)]) -> list[dict]:
     return repo.rules

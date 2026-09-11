@@ -155,6 +155,21 @@ def test_real_http_admin_sales_journey() -> None:
     assert client.post(f"/customers/009990/follow-ups/{followup.json()['id']}/complete", json={"outcome": "Attempt", "submissionId": "journey-complete"}, headers=origin).status_code == 200
     assert client.post("/customers/000125/interactions", json={"outcome": "Attempt", "submissionId": "foreign"}, headers=origin).status_code == 403
 
+def test_import_preserves_source_columns_and_operational_phone_history() -> None:
+    repo.reset()
+    admin = provision_user(type("P", (), {"name": "Admin", "email": "admin@example.test", "role": "Admin", "password": "correct horse battery staple"})())
+    repo.customers["000123"]["ownerId"] = "sales-owner"
+    repo.customers["000123"]["phones"] = ["old-primary", "independent"]
+    client = TestClient(app, base_url="http://localhost")
+    assert client.post("/session/login", json={"email": admin.email, "password": "correct horse battery staple"}).status_code == 200
+    workbook = Workbook(); workbook.active.append(["bcn", "customer_name", "propensity_score", "LAST_PURCHASE_DATE"]); workbook.active.append(["000123", "Updated", 0.875, datetime(2025, 1, 2)])
+    payload = BytesIO(); workbook.save(payload)
+    response = client.post("/admin/imports?submission_id=source-columns", files={"file": ("source.xlsx", payload.getvalue(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")}, headers={"origin": "http://localhost:3000"})
+    assert response.status_code == 201
+    row = repo.customers["000123"]
+    assert row["ownerId"] == "sales-owner" and row["phones"] == ["independent"]
+    assert row["source"]["propensity_score"] == 0.875 and row["source"]["LAST_PURCHASE_DATE"].startswith("2025-01-02")
+
 def test_mutation_routes_bind_json_bodies() -> None:
     paths = {route.path: {field.name for field in route.dependant.body_params} for route in app.routes if getattr(route, "dependant", None)}
     assert paths["/customers/{bcn}/interactions"] == {"body"}

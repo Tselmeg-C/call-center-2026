@@ -62,7 +62,7 @@ def test_health_endpoints_are_minimal_and_safe() -> None:
     assert live.status_code == 200 and live.json() == {"status": "ok"}
     assert ready.status_code == 200 and ready.json()["storage"] == "memory"
     from .main import ALEMBIC_HEAD
-    assert ALEMBIC_HEAD == "018_activity_customer_fks"
+    assert ALEMBIC_HEAD == "019_assignment_run_fingerprint"
 
 def test_postgres_readiness_rejects_stale_migration(monkeypatch) -> None:
     from .main import health_ready
@@ -149,6 +149,10 @@ def test_assignment_run_retry_returns_persisted_result() -> None:
     database = AssignmentDatabase("sqlite+pysqlite:///:memory:")
     assert database.save_run(actor_id="admin", submission_id="same", scope="all", result={"assigned": 1}) == {"assigned": 1}
     assert database.save_run(actor_id="admin", submission_id="same", scope="all", result={"assigned": 99}) == {"assigned": 1}
+    database.save_run(actor_id="admin", submission_id="scoped", scope="all", result={"assigned": 1}, payload="all")
+    try: database.get_run("admin", "scoped", "unassigned")
+    except ValueError as exc: assert "already used" in str(exc)
+    else: assert False
 
 def test_activity_idempotency_replays_and_rejects_payload_reuse() -> None:
     database = ActivityDatabase("sqlite+pysqlite:///:memory:")

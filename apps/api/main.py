@@ -31,7 +31,7 @@ ALLOWED_ORIGINS = [os.environ["FRONTEND_ORIGIN"]] if os.environ.get("FRONTEND_OR
 app.add_middleware(CORSMiddleware, allow_origins=ALLOWED_ORIGINS, allow_credentials=True, allow_methods=["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"], allow_headers=["*"])
 password_hash = PasswordHash.recommended()
 SESSION_SECONDS = 8 * 60 * 60
-ALEMBIC_HEAD = "018_activity_customer_fks"
+ALEMBIC_HEAD = "019_assignment_run_fingerprint"
 
 
 @app.exception_handler(StorageError)
@@ -860,11 +860,16 @@ def get_assignment_version(_: Annotated[User, Depends(admin_user)]) -> int:
 
 @app.post("/admin/assignment-runs")
 def run_assignment(body: AssignmentRunRequest, _: Annotated[User, Depends(admin_user)]) -> dict:
+    payload = body.scope
     if assignment_db is not None:
-        persisted = assignment_db.get_run(_.id, body.submissionId)
+        try: persisted = assignment_db.get_run(_.id, body.submissionId, payload)
+        except ValueError as exc: raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
         if persisted: return persisted
     run_key = (_.id, body.submissionId)
-    if run_key in repo.assignment_runs: return repo.assignment_runs[run_key]
+    if run_key in repo.assignment_runs:
+        persisted = repo.assignment_runs[run_key]
+        if persisted.get("scope") != body.scope: raise HTTPException(status.HTTP_409_CONFLICT, "Submission already used.")
+        return persisted
     if body.scope not in {"unassigned", "all-open"}: raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Invalid assignment scope.")
     source_rows = readable_rows()
     candidates = [row for row in source_rows if row["status"] == "Open" and (body.scope == "all-open" or row["ownerId"] is None)]
@@ -881,7 +886,7 @@ def run_assignment(body: AssignmentRunRequest, _: Annotated[User, Depends(admin_
             append_audit(_.id, "Customer assigned", row["bcn"], {"oldOwner": old_owner, "newOwner": owner, "source": "bulk"})
     result = {"submissionId": body.submissionId, "scope": body.scope, "candidates": len(candidates), "assigned": assigned, "skipped": len(candidates) - assigned}
     repo.assignment_runs[run_key] = result
-    if assignment_db is not None: assignment_db.save_run(actor_id=_.id, submission_id=body.submissionId, scope=body.scope, result=result)
+    if assignment_db is not None: assignment_db.save_run(actor_id=_.id, submission_id=body.submissionId, scope=body.scope, result=result, payload=payload)
     return result
 
 @app.get("/admin/assignments")

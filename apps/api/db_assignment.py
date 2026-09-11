@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+from hashlib import sha256
 from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, UniqueConstraint, create_engine, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
@@ -34,7 +35,7 @@ class AssignmentRunRow(AssignmentBase):
     __table_args__ = (UniqueConstraint("actor_id", "submission_id", name="uq_assignment_actor_submission"),)
     actor_id: Mapped[str] = mapped_column(String(120), primary_key=True)
     submission_id: Mapped[str] = mapped_column(String(120), primary_key=True)
-    scope: Mapped[str] = mapped_column(String(32)); result: Mapped[dict] = mapped_column(JSON); created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    scope: Mapped[str] = mapped_column(String(32)); fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True); result: Mapped[dict] = mapped_column(JSON); created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 class AssignmentSettingRow(AssignmentBase):
     __tablename__ = "assignment_settings"
@@ -82,11 +83,14 @@ class AssignmentDatabase:
         with Session(self.engine) as session:
             session.add(AssignmentHistoryRow(bcn=bcn, actor_id=actor_id, old_owner_id=old_owner_id, new_owner_id=new_owner_id, reason=reason, created_at=datetime.now(timezone.utc))); session.commit()
 
-    def save_run(self, *, actor_id: str, submission_id: str, scope: str, result: dict) -> dict:
+    def save_run(self, *, actor_id: str, submission_id: str, scope: str, result: dict, payload: str | None = None) -> dict:
+        digest = sha256(payload.encode()).hexdigest() if payload is not None else None
         with Session(self.engine) as session:
             row = session.get(AssignmentRunRow, (actor_id, submission_id))
-            if row: return row.result
-            session.add(AssignmentRunRow(actor_id=actor_id, submission_id=submission_id, scope=scope, result=result, created_at=datetime.now(timezone.utc)))
+            if row:
+                if digest is not None and row.fingerprint not in (None, digest): raise ValueError("submission already used")
+                return row.result
+            session.add(AssignmentRunRow(actor_id=actor_id, submission_id=submission_id, scope=scope, fingerprint=digest, result=result, created_at=datetime.now(timezone.utc)))
             try:
                 session.commit()
             except IntegrityError:
@@ -96,9 +100,10 @@ class AssignmentDatabase:
                 raise
             return result
 
-    def get_run(self, actor_id: str, submission_id: str) -> dict | None:
+    def get_run(self, actor_id: str, submission_id: str, payload: str | None = None) -> dict | None:
         with Session(self.engine) as session:
             row = session.get(AssignmentRunRow, (actor_id, submission_id))
+            if row and payload is not None and row.fingerprint not in (None, sha256(payload.encode()).hexdigest()): raise ValueError("submission already used")
             return row.result if row else None
 
     def get_setting(self, key: str) -> dict | None:

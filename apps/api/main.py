@@ -389,7 +389,7 @@ def writable_customer(bcn: str, user: User, *, cache: bool = True) -> dict:
 
 @app.post("/customers/{bcn}/interactions")
 def create_interaction(bcn: str, body: InteractionCreate, user: Annotated[User, Depends(current_user)], *, persist: bool = True) -> dict:
-    row = writable_customer(bcn, user); key = f"{user.id}:{bcn}:interaction:{body.submissionId}"
+    row = writable_customer(bcn, user, cache=False); key = f"{user.id}:{bcn}:interaction:{body.submissionId}"
     payload = f"{bcn}|{body.outcome}|{body.note or ''}"
     if persist and activity_db is not None:
         try: persisted = activity_db.get_idempotent(actor_id=user.id, operation="interaction", submission_id=body.submissionId, payload=payload)
@@ -401,15 +401,18 @@ def create_interaction(bcn: str, body: InteractionCreate, user: Annotated[User, 
         return prior
     if body.outcome not in {"Attempt", "Contact"}: raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Invalid outcome.")
     record = {"id": f"interaction-{uuid4()}", "bcn": bcn, "kind": "Interaction", "outcome": body.outcome, "note": body.note, "actor": user.name, "actorId": user.id, "timestamp": datetime.now(timezone.utc).isoformat(), "deleted": False}
-    repo.interactions[key] = record; row["histories"].append(record)
-    if persist:
-        persist_activity(record)
-        if activity_db is not None: activity_db.save_idempotent(actor_id=user.id, operation="interaction", submission_id=body.submissionId, payload=payload, result=record)
-    append_audit(user.id, "Interaction created", bcn, {"outcome": body.outcome}); return record
+    if persist and activity_db is not None:
+        try: record = activity_db.create_activity(record, operation="interaction", submission_id=body.submissionId, payload=payload)
+        except ValueError as exc: raise HTTPException(status.HTTP_409_CONFLICT, "Submission already used.") from exc
+    else: append_audit(user.id, "Interaction created", bcn, {"outcome": body.outcome})
+    repo.interactions[key] = record
+    if not any(item.get("id") == record["id"] for item in row["histories"]): row["histories"].append(record)
+    repo.customers[bcn] = row
+    return record
 
 @app.post("/customers/{bcn}/notes")
 def create_note(bcn: str, body: NoteCreate, user: Annotated[User, Depends(current_user)]) -> dict:
-    row = writable_customer(bcn, user); key = f"{user.id}:{bcn}:note:{body.submissionId}"
+    row = writable_customer(bcn, user, cache=False); key = f"{user.id}:{bcn}:note:{body.submissionId}"
     payload = f"{bcn}|{body.text}"
     if activity_db is not None:
         try: persisted = activity_db.get_idempotent(actor_id=user.id, operation="note", submission_id=body.submissionId, payload=payload)
@@ -420,9 +423,14 @@ def create_note(bcn: str, body: NoteCreate, user: Annotated[User, Depends(curren
         if prior["text"] != body.text: raise HTTPException(status.HTTP_409_CONFLICT, "Submission already used.")
         return prior
     record = {"id": f"note-{uuid4()}", "bcn": bcn, "kind": "Standalone note", "text": body.text, "actor": user.name, "actorId": user.id, "timestamp": datetime.now(timezone.utc).isoformat(), "deleted": False}
-    repo.notes[key] = record; row["histories"].append(record); persist_activity(record)
-    if activity_db is not None: activity_db.save_idempotent(actor_id=user.id, operation="note", submission_id=body.submissionId, payload=payload, result=record)
-    append_audit(user.id, "Note created", bcn, {}); return record
+    if activity_db is not None:
+        try: record = activity_db.create_activity(record, operation="note", submission_id=body.submissionId, payload=payload)
+        except ValueError as exc: raise HTTPException(status.HTTP_409_CONFLICT, "Submission already used.") from exc
+    else: append_audit(user.id, "Note created", bcn, {})
+    repo.notes[key] = record
+    if not any(item.get("id") == record["id"] for item in row["histories"]): row["histories"].append(record)
+    repo.customers[bcn] = row
+    return record
 
 @app.delete("/customers/{bcn}/history/{record_id}")
 def delete_history(bcn: str, record_id: str, user: Annotated[User, Depends(current_user)]) -> dict:

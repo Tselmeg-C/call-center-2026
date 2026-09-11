@@ -26,23 +26,31 @@ from .db_auth import AuthDatabase, SessionRow, UserRow, digest, StorageError
 ORIGIN = {"origin": "http://localhost:3000"}
 
 
-def test_followup_creation_is_atomic_and_replays(tmp_path, monkeypatch):
+@pytest.mark.parametrize("operation", ["followup", "interaction", "note"])
+def test_activity_creation_is_atomic_and_replays(operation, tmp_path, monkeypatch):
     from fastapi import HTTPException
     from .db_activity import ActivityDatabase, FollowUpRow, ActivityRow, IdempotencyRow
     from .db_customers import CustomerDatabase
+    from .db_assignment import AssignmentDatabase, AuditRow
 
     url = f"sqlite+pysqlite:///{tmp_path / 'followup.db'}"
     activities = ActivityDatabase(url)
     customers = CustomerDatabase(url)
+    assignments = AssignmentDatabase(url)
     monkeypatch.setattr(main, "activity_db", activities)
     monkeypatch.setattr(main, "customer_db", customers)
+    monkeypatch.setattr(main, "assignment_db", assignments)
     main.repo.reset()
     try:
         customers.upsert_source(bcn="000001", name="Synthetic", source={})
         customers.save_operational(bcn="000001", owner_id="sales", status="Open", version=0)
         main.repo.customers.clear()
         actor = main.User(id="sales", name="Sales", email="sales@example.test", role="Sales")
-        body = main.FollowUpCreate(type="Reminder", due=None, note="Synthetic reminder", submissionId="followup")
+        create, body, cache, tables = {
+            "followup": (main.create_followup, main.FollowUpCreate(type="Reminder", due=None, note="Synthetic reminder", submissionId="create"), main.repo.followups, (FollowUpRow, ActivityRow, IdempotencyRow)),
+            "interaction": (main.create_interaction, main.InteractionCreate(outcome="Contact", note="Synthetic contact", submissionId="create"), main.repo.interactions, (ActivityRow, IdempotencyRow, AuditRow)),
+            "note": (main.create_note, main.NoteCreate(text="Synthetic note", submissionId="create"), main.repo.notes, (ActivityRow, IdempotencyRow, AuditRow)),
+        }[operation]
         def fail_commit(session):
             if session.bind is activities.engine:
                 session.flush()
@@ -50,29 +58,29 @@ def test_followup_creation_is_atomic_and_replays(tmp_path, monkeypatch):
         event.listen(Session, "before_commit", fail_commit)
         try:
             with pytest.raises(RuntimeError, match="Injected failure"):
-                main.create_followup("000001", body, actor)
+                create("000001", body, actor)
         finally:
             event.remove(Session, "before_commit", fail_commit)
-        assert main.repo.customers == {} and main.repo.followups == {}
+        assert main.repo.customers == {} and cache == {}
         with Session(activities.engine) as session:
-            assert all(session.scalar(select(table)) is None for table in (FollowUpRow, ActivityRow, IdempotencyRow))
-        result = main.create_followup("000001", body, actor)
-        assert main.create_followup("000001", body, actor) == result
+            assert all(session.scalar(select(table)) is None for table in tables)
+        result = create("000001", body, actor)
+        assert create("000001", body, actor) == result
         with pytest.raises(HTTPException) as conflict:
-            main.create_followup("000001", body.model_copy(update={"note": "Different reminder"}), actor)
+            create("000001", body.model_copy(update={"text" if operation == "note" else "note": "Different content"}), actor)
         assert conflict.value.status_code == 409
-        assert len(main.repo.followups) == 1 and len(main.repo.customers["000001"]["histories"]) == 1
+        assert len(cache) == 1 and len(main.repo.customers["000001"]["histories"]) == 1
         with Session(activities.engine) as session:
-            assert all(len(list(session.scalars(select(table)))) == 1 for table in (FollowUpRow, ActivityRow, IdempotencyRow))
+            assert all(len(list(session.scalars(select(table)))) == 1 for table in tables)
         with pytest.raises(HTTPException) as forbidden:
-            main.create_followup("000001", body, actor.model_copy(update={"id": "other"}))
+            create("000001", body, actor.model_copy(update={"id": "other"}))
         assert forbidden.value.status_code == 403
         main.repo.customers["000001"]["status"] = "Closed"
         with pytest.raises(HTTPException) as closed:
-            main.create_followup("000001", body.model_copy(update={"submissionId": "closed"}), actor)
+            create("000001", body.model_copy(update={"submissionId": "closed"}), actor)
         assert closed.value.status_code == 409
     finally:
-        activities.engine.dispose(); customers.engine.dispose()
+        activities.engine.dispose(); customers.engine.dispose(); assignments.engine.dispose()
         main.repo.reset()
 
 

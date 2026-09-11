@@ -5,6 +5,7 @@ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
 from sqlalchemy.pool import StaticPool
 from .db_auth import StorageError
+from .db_assignment import AuditRow
 
 class ActivityBase(DeclarativeBase): pass
 
@@ -92,6 +93,22 @@ class ActivityDatabase:
     def save_activity(self, *, record_id: str, bcn: str, actor_id: str, kind: str, outcome: str | None, text: str | None) -> None:
         with Session(self.engine) as session:
             session.add(ActivityRow(id=record_id, bcn=bcn, actor_id=actor_id, kind=kind, outcome=outcome, text=text, created_at=datetime.now(timezone.utc))); session.commit()
+
+    def create_activity(self, record: dict, *, operation: str, submission_id: str, payload: str) -> dict:
+        try:
+            with Session(self.engine) as session, session.begin():
+                now = datetime.fromisoformat(record["timestamp"])
+                session.add(IdempotencyRow(actor_id=record["actorId"], operation=operation, submission_id=submission_id, fingerprint=fingerprint(payload), result=record, completed_at=now))
+                session.flush()
+                session.add(ActivityRow(id=record["id"], bcn=record["bcn"], actor_id=record["actorId"], kind=record["kind"], outcome=record.get("outcome"), text=record.get("text") or record.get("note"), created_at=now))
+                session.add(AuditRow(actor_id=record["actorId"], action="Interaction created" if operation == "interaction" else "Note created", target=record["bcn"], details={"outcome": record["outcome"]} if operation == "interaction" else {}, created_at=now))
+            return record
+        except IntegrityError:
+            prior = self.get_idempotent(actor_id=record["actorId"], operation=operation, submission_id=submission_id, payload=payload)
+            if prior is not None: return prior
+            raise StorageError("Storage operation failed.") from None
+        except SQLAlchemyError:
+            raise StorageError("Storage operation failed.") from None
 
     def save_followup(self, record: dict) -> None:
         with Session(self.engine) as session:

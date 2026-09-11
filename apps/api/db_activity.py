@@ -90,6 +90,21 @@ class ActivityDatabase:
             if not row: return False
             row.deleted_at = datetime.now(timezone.utc); row.deleted_by = actor_id; session.commit(); return True
 
+    def delete_history(self, record_id: str, bcn: str, actor_id: str) -> dict | None:
+        try:
+            with Session(self.engine) as session, session.begin():
+                row = session.scalar(select(ActivityRow).where(ActivityRow.id == record_id, ActivityRow.bcn == bcn).with_for_update())
+                if row is None: return None
+                if row.deleted_at is None:
+                    row.deleted_at = datetime.now(timezone.utc); row.deleted_by = actor_id
+                    session.add(AuditRow(actor_id=actor_id, action="History deleted", target=bcn, details={"recordId": record_id}, created_at=row.deleted_at))
+                deleted_at = row.deleted_at
+                if deleted_at.tzinfo is None: deleted_at = deleted_at.replace(tzinfo=timezone.utc)
+                result = {"id": record_id, "deleted": True, "deletedBy": row.deleted_by, "deletedAt": deleted_at.astimezone(timezone.utc).isoformat()}
+            return result
+        except SQLAlchemyError:
+            raise StorageError("Storage operation failed.") from None
+
     def save_activity(self, *, record_id: str, bcn: str, actor_id: str, kind: str, outcome: str | None, text: str | None) -> None:
         with Session(self.engine) as session:
             session.add(ActivityRow(id=record_id, bcn=bcn, actor_id=actor_id, kind=kind, outcome=outcome, text=text, created_at=datetime.now(timezone.utc))); session.commit()

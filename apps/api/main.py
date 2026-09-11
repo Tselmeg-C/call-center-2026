@@ -439,14 +439,19 @@ def delete_history(bcn: str, record_id: str, user: Annotated[User, Depends(curre
         stored = customer_db.get(bcn)
         if stored:
             events = [{"id": item.id, "bcn": item.bcn, "kind": item.kind, "outcome": item.outcome, "text": item.text, "actorId": item.actor_id, "timestamp": item.created_at.isoformat(), "deleted": item.deleted_at is not None} for item in (activity_db.history(bcn, 1, 10000)[0] if activity_db is not None else [])]
-            row = {"bcn": stored.bcn, "name": stored.name, "ownerId": stored.owner_id, "ownerName": repo.users.get(stored.owner_id or "", {}).get("name"), "status": stored.status, "phones": customer_db.phones(bcn), "source": stored.source, "version": stored.version, "histories": events}; repo.customers[bcn] = row
+            row = {"bcn": stored.bcn, "name": stored.name, "ownerId": stored.owner_id, "ownerName": repo.users.get(stored.owner_id or "", {}).get("name"), "status": stored.status, "phones": customer_db.phones(bcn), "source": stored.source, "version": stored.version, "histories": events}
     if not row: raise HTTPException(status.HTTP_404_NOT_FOUND, "Customer not found.")
     record = next((item for item in row["histories"] if item.get("id") == record_id), None)
     if not record: raise HTTPException(status.HTTP_404_NOT_FOUND, "Record not found.")
     if user.role != "Admin" and row.get("ownerId") != user.id: raise HTTPException(status.HTTP_403_FORBIDDEN, "Record access denied.")
+    if activity_db is not None:
+        result = activity_db.delete_history(record_id, bcn, user.id)
+        if result is None: raise HTTPException(status.HTTP_404_NOT_FOUND, "Record not found.")
+        record.update(result)
+        repo.customers[bcn] = row
+        return result
     if record.get("deleted"): return {"id": record_id, "deleted": True, "deletedBy": record.get("deletedBy"), "deletedAt": record.get("deletedAt")}
     record.update(deleted=True, deletedBy=user.id, deletedAt=datetime.now(timezone.utc).isoformat())
-    if activity_db is not None: activity_db.soft_delete(record_id, user.id)
     append_audit(user.id, "History deleted", bcn, {"recordId": record_id})
     return {"id": record_id, "deleted": True, "deletedBy": user.id, "deletedAt": record["deletedAt"]}
 

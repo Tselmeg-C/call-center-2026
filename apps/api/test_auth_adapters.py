@@ -26,6 +26,56 @@ from .db_auth import AuthDatabase, SessionRow, UserRow, digest, StorageError
 ORIGIN = {"origin": "http://localhost:3000"}
 
 
+def test_history_delete_is_atomic_authorized_and_idempotent(tmp_path, monkeypatch):
+    from fastapi import HTTPException
+    from .db_activity import ActivityDatabase, ActivityRow
+    from .db_assignment import AssignmentDatabase, AuditRow
+    from .db_customers import CustomerDatabase
+
+    url = f"sqlite+pysqlite:///{tmp_path / 'delete.db'}"
+    activities = ActivityDatabase(url)
+    assignments = AssignmentDatabase(url)
+    customers = CustomerDatabase(url)
+    monkeypatch.setattr(main, "activity_db", activities)
+    monkeypatch.setattr(main, "assignment_db", assignments)
+    monkeypatch.setattr(main, "customer_db", customers)
+    main.repo.reset()
+    try:
+        customers.upsert_source(bcn="000001", name="Synthetic", source={})
+        customers.save_operational(bcn="000001", owner_id="sales", status="Open", version=0)
+        activities.save_activity(record_id="note", bcn="000001", actor_id="sales", kind="Standalone note", outcome=None, text="Synthetic note")
+        main.repo.customers.clear()
+        actor = main.User(id="sales", name="Sales", email="sales@example.test", role="Sales")
+        with pytest.raises(HTTPException) as forbidden:
+            main.delete_history("000001", "note", actor.model_copy(update={"id": "other"}))
+        assert forbidden.value.status_code == 403 and main.repo.customers == {}
+        def fail_commit(session):
+            if session.bind is activities.engine:
+                session.flush()
+                raise RuntimeError("Injected failure")
+        event.listen(Session, "before_commit", fail_commit)
+        try:
+            with pytest.raises(RuntimeError, match="Injected failure"):
+                main.delete_history("000001", "note", actor)
+        finally:
+            event.remove(Session, "before_commit", fail_commit)
+        assert main.repo.customers == {}
+        with Session(activities.engine) as session:
+            assert session.get(ActivityRow, "note").deleted_at is None
+            assert session.scalar(select(AuditRow)) is None
+        result = main.delete_history("000001", "note", actor)
+        assert result["deleted"] is True and result["deletedBy"] == actor.id
+        assert main.repo.customers["000001"]["histories"][0]["deleted"] is True
+        main.repo.customers.clear()
+        assert main.delete_history("000001", "note", actor.model_copy(update={"id": "admin", "role": "Admin"})) == result
+        with Session(activities.engine) as session:
+            assert session.get(ActivityRow, "note").deleted_by == actor.id
+            assert len(list(session.scalars(select(AuditRow)))) == 1
+    finally:
+        for database in (activities, assignments, customers): database.engine.dispose()
+        main.repo.reset()
+
+
 @pytest.mark.parametrize("operation", ["followup", "interaction", "note"])
 def test_activity_creation_is_atomic_and_replays(operation, tmp_path, monkeypatch):
     from fastapi import HTTPException

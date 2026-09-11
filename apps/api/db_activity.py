@@ -9,7 +9,7 @@ class ActivityBase(DeclarativeBase): pass
 class ActivityRow(ActivityBase):
     __tablename__ = "activities"
     id: Mapped[str] = mapped_column(String(120), primary_key=True)
-    bcn: Mapped[str] = mapped_column(String(64))
+    bcn: Mapped[str] = mapped_column(String(128))
     actor_id: Mapped[str] = mapped_column(String(120))
     kind: Mapped[str] = mapped_column(String(32))
     outcome: Mapped[str | None] = mapped_column(String(32), nullable=True)
@@ -21,7 +21,7 @@ class ActivityRow(ActivityBase):
 class FollowUpRow(ActivityBase):
     __tablename__ = "follow_ups"
     id: Mapped[str] = mapped_column(String(120), primary_key=True)
-    bcn: Mapped[str] = mapped_column(String(64)); actor_id: Mapped[str] = mapped_column(String(120))
+    bcn: Mapped[str] = mapped_column(String(128)); actor_id: Mapped[str] = mapped_column(String(120))
     type: Mapped[str] = mapped_column(String(32)); due: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True); status: Mapped[str] = mapped_column(String(16)); note: Mapped[str | None] = mapped_column(Text, nullable=True)
     version: Mapped[int] = mapped_column(Integer, default=0); created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True)); updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 

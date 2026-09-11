@@ -16,7 +16,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from pwdlib import PasswordHash
 from .storage import mode
-from .db_auth import AuthDatabase
+from .db_auth import AuthDatabase, StorageError, utcnow
 from .db_customers import CustomerDatabase
 from .db_assignment import AssignmentDatabase
 from .db_activity import ActivityDatabase
@@ -28,7 +28,12 @@ ALLOWED_ORIGINS = [os.environ["FRONTEND_ORIGIN"]] if os.environ.get("FRONTEND_OR
 app.add_middleware(CORSMiddleware, allow_origins=ALLOWED_ORIGINS, allow_credentials=True, allow_methods=["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"], allow_headers=["*"])
 password_hash = PasswordHash.recommended()
 SESSION_SECONDS = 8 * 60 * 60
-ALEMBIC_HEAD = "008_assignment_settings"
+ALEMBIC_HEAD = "009_auth_constraints"
+
+
+@app.exception_handler(StorageError)
+async def storage_error(_: Request, __: StorageError) -> JSONResponse:
+    return JSONResponse({"detail": "Storage operation failed."}, status_code=503)
 
 
 @app.exception_handler(RequestValidationError)
@@ -71,7 +76,7 @@ class AssignmentRequest(BaseModel):
 
 
 class Login(BaseModel):
-    email: str
+    email: str = Field(min_length=3, max_length=254)
     password: str = Field(min_length=12, max_length=128)
 
 class InteractionCreate(BaseModel):
@@ -224,7 +229,7 @@ def current_user(session: Annotated[str | None, Cookie(alias="call_center_sessio
     if not session or session not in repo.sessions:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Authentication required.")
     user_id, expires = repo.sessions[session]
-    if datetime.now(timezone.utc) >= expires or not repo.users.get(user_id, {}).get("active", False):
+    if utcnow() >= expires or not repo.users.get(user_id, {}).get("active", False):
         repo.sessions.pop(session, None)
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Authentication required.")
     return User.model_validate(repo.users[user_id])
@@ -232,7 +237,7 @@ def current_user(session: Annotated[str | None, Cookie(alias="call_center_sessio
 
 @app.post("/session/login", response_model=User)
 def login(body: Login, request: Request, response: Response) -> User:
-    now = datetime.now(timezone.utc); ip = request.client.host if request.client else "unknown"; key = (safe_email(body.email), ip)
+    now = utcnow(); ip = request.client.host if request.client else "unknown"; key = (safe_email(body.email), ip)
     recent = [stamp for stamp in repo.login_failures.get(key, []) if now - stamp < timedelta(minutes=15)]
     ip_recent = [stamp for stamp in repo.login_failures_by_ip.get(ip, []) if now - stamp < timedelta(minutes=15)]
     if len(ip_recent) >= 50 or len(recent) >= 5:
@@ -250,7 +255,7 @@ def login(body: Login, request: Request, response: Response) -> User:
         repo.login_failures_by_ip[ip] = ip_recent + [now]
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Unable to sign in.")
     repo.login_failures.pop(key, None)
-    token = token_urlsafe(32); repo.sessions[token] = (record["id"], datetime.now(timezone.utc) + timedelta(seconds=SESSION_SECONDS))
+    token = token_urlsafe(32); repo.sessions[token] = (record["id"], utcnow() + timedelta(seconds=SESSION_SECONDS))
     response.set_cookie("call_center_session", token, httponly=True, samesite="lax", secure=request.url.hostname not in {"localhost", "127.0.0.1"}, path="/", max_age=SESSION_SECONDS)
     return User.model_validate(record)
 
@@ -573,6 +578,7 @@ class AssignmentRunRequest(BaseModel):
 
 
 def provision_user(data: Provision) -> User:
+    data = Provision.model_validate({key: getattr(data, key) for key in ("name", "email", "role", "password")})
     email = safe_email(data.email)
     if auth_db is not None:
         if auth_db.user_by_email(email): raise ValueError("normalized identity already exists")
@@ -610,12 +616,12 @@ def update_user(user_id: str, patch: UserPatch, actor: Annotated[User, Depends(a
     if changes.get("email"): changes["email"] = safe_email(changes["email"])
     prior_active = record["active"]; prior_role = record["role"]; record.update(changes)
     if auth_db is not None:
-        updated = auth_db.update_user(user_id, changes)
-        if updated and ((prior_active and not updated.active) or prior_role != updated.role): auth_db.revoke_user_sessions(user_id)
+        auth_db.update_user(user_id, changes)
     append_audit(actor.id, "User changed", user_id, {key: value for key, value in changes.items() if key in {"name", "role", "active"}})
-    if prior_active and (record["active"] is False or record["role"] != "Sales"):
+    if prior_role != record["role"] or prior_active != record["active"]:
         for token, (owner, _) in list(repo.sessions.items()):
             if owner == user_id: repo.sessions.pop(token, None)
+    if prior_active and (record["active"] is False or record["role"] != "Sales"):
         for row in repo.customers.values():
             if row["ownerId"] == user_id and row["status"] == "Open": row.update(ownerId=None, ownerName=None, version=row["version"] + 1)
         if customer_db is not None: customer_db.release_open_owner(user_id)
@@ -849,7 +855,6 @@ def admin_audit(actor: str | None = None, action: str | None = None, bcn: str | 
     return {"items": events[start:start + page_size], "page": page, "page_size": page_size, "total": len(events)}
 
 
-@app.post("/operator/provision", response_model=User, include_in_schema=False)
 def operator_provision(data: Provision) -> User:
     if repo.users or (auth_db is not None and auth_db.all_users()):
         raise HTTPException(status.HTTP_409_CONFLICT, "Initial Admin already provisioned.")
@@ -859,7 +864,6 @@ def operator_provision(data: Provision) -> User:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
 
 
-@app.post("/operator/reset-password/{user_id}", response_model=User, include_in_schema=False)
 def operator_reset_password(user_id: str, data: ResetPassword) -> User:
     if auth_db is not None:
         row = auth_db.reset_password(user_id, password_hash.hash(data.password))
@@ -872,3 +876,8 @@ def operator_reset_password(user_id: str, data: ResetPassword) -> User:
     for token, (owner, _) in list(repo.sessions.items()):
         if owner == user_id: repo.sessions.pop(token, None)
     return User.model_validate(record)
+
+
+if storage_mode == "memory":
+    app.post("/operator/provision", response_model=User, include_in_schema=False)(operator_provision)
+    app.post("/operator/reset-password/{user_id}", response_model=User, include_in_schema=False)(operator_reset_password)

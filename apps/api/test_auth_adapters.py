@@ -1,0 +1,323 @@
+"""Shared auth contract plus isolated, migration-managed PostgreSQL acceptance checks.
+
+Use --tb=no so even unexpected assertion failures cannot print credentials.
+"""
+import os
+import secrets
+import subprocess
+import sys
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta, timezone
+from threading import Barrier
+from uuid import uuid4
+
+import pytest
+from alembic import command
+from alembic.config import Config
+from fastapi.testclient import TestClient
+from sqlalchemy import create_engine, event, select, text
+from sqlalchemy.engine import make_url
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
+
+from . import main, db_auth
+from .db_auth import AuthDatabase, SessionRow, UserRow, digest, StorageError
+
+ORIGIN = {"origin": "http://localhost:3000"}
+
+
+@pytest.fixture
+def postgres_url(monkeypatch):
+    raw = os.getenv("TEST_DATABASE_URL")
+    if not raw:
+        pytest.skip("TEST_DATABASE_URL required for real PostgreSQL checks")
+    url = make_url(raw)
+    if url.get_backend_name() != "postgresql" or not (url.database or "").endswith(("_test", "_ci")):
+        pytest.fail("Use a dedicated PostgreSQL database ending in _test or _ci", pytrace=False)
+    engine = create_engine(url, hide_parameters=True)
+    schema = "auth_test_" + uuid4().hex
+    with engine.begin() as connection:
+        connection.execute(text(f'CREATE SCHEMA "{schema}"'))
+    isolated = url.update_query_dict({"options": f"-csearch_path={schema}"}).render_as_string(hide_password=False)
+    monkeypatch.setenv("DATABASE_URL", isolated)
+    try:
+        yield isolated
+    finally:
+        with engine.begin() as connection:
+            connection.execute(text(f'DROP SCHEMA "{schema}" CASCADE'))
+        engine.dispose()
+
+
+def migrate(revision="head"):
+    command.upgrade(Config("apps/api/alembic.ini"), revision)
+
+
+@pytest.fixture(params=["memory", "postgres"])
+def adapter(request, monkeypatch):
+    database = None
+    if request.param == "postgres":
+        url = request.getfixturevalue("postgres_url")
+        migrate()
+        database = AuthDatabase(url, create_schema=False)
+    main.repo.reset()
+    monkeypatch.setattr(main, "auth_db", database)
+    for name in ("customer_db", "assignment_db", "activity_db"):
+        monkeypatch.setattr(main, name, None)
+    try:
+        yield database
+    finally:
+        if database:
+            assert database.engine.pool.checkedout() == 0
+            database.engine.dispose()
+        main.repo.reset()
+
+
+def provision(email="admin@example.test", role="Admin", password=None):
+    secret = password or secrets.token_urlsafe(24)
+    user = main.provision_user(main.Provision(name="Synthetic", email=email, role=role, password=secret))
+    return user, secret
+
+
+def sign_in(client, email, secret):
+    return client.post("/session/login", json={"email": email, "password": secret})
+
+
+def test_shared_identity_validation_and_safe_failures(adapter):
+    user, secret = provision("  STRAẞE@example.test  ")
+    assert user.email == "strasse@example.test"
+    with pytest.raises(ValueError, match="normalized identity already exists"):
+        provision(" STRASSE@EXAMPLE.TEST ")
+    with TestClient(main.app, base_url="http://localhost") as client:
+        unknown = sign_in(client, "unknown@example.test", secrets.token_urlsafe(24))
+        wrong = sign_in(client, user.email, secrets.token_urlsafe(24))
+        if adapter:
+            adapter.update_user(user.id, {"active": False})
+        else:
+            main.repo.users[user.id]["active"] = False
+        inactive = sign_in(client, user.email, secret)
+        assert all(response.status_code == 401 for response in (unknown, wrong, inactive))
+        assert unknown.json() == wrong.json() == inactive.json() == {"detail": "Unable to sign in."}
+        assert all("set-cookie" not in response.headers for response in (unknown, wrong, inactive))
+        for payload in ({"email": "x" * 255, "password": secret}, {"email": user.email, "password": "x" * 11}, {"email": user.email, "password": "x" * 129}, {"email": [], "password": secret}):
+            response = client.post("/session/login", json=payload)
+            assert response.status_code == 422 and response.json() == {"detail": "Invalid request."}
+    with pytest.raises(ValueError):
+        provision("short@example.test", password=secrets.token_hex(5))
+
+
+def test_shared_password_boundaries_and_transport(adapter, caplog):
+    for length in (12, 128):
+        secret = " " + secrets.token_hex(100)[:length - 3] + "界 "
+        user, _ = provision(f"length-{length}@example.test", password=secret)
+        with TestClient(main.app, base_url="https://api.example.test") as client:
+            response = sign_in(client, user.email, secret)
+            assert response.status_code == 200
+            assert set(response.json()) == {"id", "name", "email", "role", "active"}
+            cookie = response.headers["set-cookie"].lower()
+            assert all(value in cookie for value in ("httponly", "secure", "samesite=lax", "path=/", "max-age=28800"))
+            token = client.cookies.get("call_center_session")
+            assert secret not in response.text and token not in response.text
+            assert client.post("/session/logout").status_code == 403
+            assert client.post("/session/logout", headers={"origin": "https://foreign.example"}).status_code == 403
+            assert client.post("/session/logout", headers={"referer": "http://localhost:3000/settings"}).status_code == 204
+            assert secret not in caplog.text and token not in caplog.text
+        with TestClient(main.app, base_url="http://localhost") as client:
+            response = client.options("/session/me", headers={"origin": "http://localhost:3000", "access-control-request-method": "GET"})
+            assert response.headers["access-control-allow-origin"] == "http://localhost:3000"
+            assert response.headers["access-control-allow-credentials"] == "true"
+            response = client.options("/session/me", headers={"origin": "http://localhost:3000.evil.test", "access-control-request-method": "GET"})
+            assert "access-control-allow-origin" not in response.headers
+
+
+def test_shared_session_clock_logout_recovery_and_role(adapter, monkeypatch):
+    clock = [datetime(2030, 1, 1, tzinfo=timezone.utc)]
+    monkeypatch.setattr(main, "utcnow", lambda: clock[0])
+    monkeypatch.setattr(db_auth, "utcnow", lambda: clock[0])
+    user, secret = provision()
+    with TestClient(main.app, base_url="http://localhost") as client:
+        assert sign_in(client, user.email, secret).status_code == 200
+        clock[0] += timedelta(hours=8) - timedelta(microseconds=1)
+        assert client.get("/session/me").status_code == 200
+        clock[0] += timedelta(microseconds=1)
+        assert client.get("/session/me").status_code == 401
+        assert client.post("/admin/users", headers=ORIGIN, json={"name": "Other", "email": "other@example.test", "password": secret}).status_code == 401
+        assert sign_in(client, user.email, secret).status_code == 200
+        response = client.post("/session/logout", headers=ORIGIN)
+        assert response.status_code == 204 and "Max-Age=0" in response.headers["set-cookie"]
+        assert client.get("/session/me").status_code == 401
+        assert client.post("/session/logout", headers=ORIGIN).status_code == 204
+        assert sign_in(client, user.email, secret).status_code == 200
+        new_secret = secrets.token_urlsafe(24)
+        main.operator_reset_password(user.id, main.ResetPassword(password=new_secret))
+        assert client.get("/session/me").status_code == 401
+        assert sign_in(client, user.email, secret).status_code == 401
+        assert sign_in(client, user.email, new_secret).status_code == 200
+        if adapter:
+            adapter.update_user(user.id, {"role": "Sales"})
+        else:
+            main.repo.users[user.id]["role"] = "Sales"
+        assert client.get("/admin/users").status_code in (401, 403)
+        assert sign_in(client, user.email, new_secret).json()["role"] == "Sales"
+        if adapter:
+            adapter.update_user(user.id, {"active": False})
+        else:
+            main.repo.users[user.id]["active"] = False
+        assert client.get("/session/me").status_code == 401
+
+
+def test_postgres_migrations_constraints_and_rollback(postgres_url, monkeypatch):
+    migrate("008_assignment_settings")
+    migrate()
+    migrate()
+    database = AuthDatabase(postgres_url, create_schema=False)
+    secret = secrets.token_urlsafe(24)
+    hashed = main.password_hash.hash(secret)
+    kwargs = dict(user_id="persisted", name="Synthetic", email="persisted@example.test", role="Admin", password_hash=hashed)
+    database.create_user(**kwargs)
+    token, _ = database.issue("persisted")
+    with database.transaction() as session:
+        assert session.scalar(text("SELECT version_num FROM alembic_version")) == main.ALEMBIC_HEAD
+        stored = session.get(SessionRow, digest(token))
+        assert stored.digest != token and stored.digest == digest(token)
+    # Actual PostgreSQL constraint violations, each rolled back independently.
+    for changes in ({"role": "Other"}, {"email": " Upper@example.test "}, {"email": "straße@example.test"}, {"email": "\ttrim@example.test\n"}, {"password_hash": secrets.token_urlsafe(24)}, {"name": " "}, {"active": None}):
+        row = dict(id=uuid4().hex, name="Synthetic", email=uuid4().hex + "@example.test", role="Admin", active=True, password_hash=hashed) | changes
+        with pytest.raises(IntegrityError):
+            with Session(database.engine) as session, session.begin():
+                session.execute(UserRow.__table__.insert().values(**row))
+    now = datetime.now(timezone.utc)
+    for changes in ({"digest": secrets.token_urlsafe(24)}, {"user_id": "missing"}, {"expires_at": now}, {"revoked_at": now - timedelta(seconds=1)}):
+        row = dict(digest=digest(secrets.token_urlsafe(24)), user_id="persisted", issued_at=now, expires_at=now + timedelta(hours=8)) | changes
+        with pytest.raises(IntegrityError):
+            with Session(database.engine) as session, session.begin():
+                session.add(SessionRow(**row)); session.flush()
+    barrier = Barrier(2)
+    def create_same(index):
+        barrier.wait()
+        try:
+            database.create_user(**(kwargs | {"user_id": f"race-{index}", "email": (" Race@Example.Test " if index else "race@example.test")}))
+            return "created"
+        except ValueError as exc:
+            assert str(exc) == "normalized identity already exists"
+            return "conflict"
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        assert sorted(pool.map(create_same, range(2))) == ["conflict", "created"]
+    assert len([user for user in database.all_users() if user.email == "race@example.test"]) == 1
+    def fail_before_commit(session):
+        if session.bind is database.engine:
+            raise RuntimeError("Injected failure")
+    event.listen(Session, "before_commit", fail_before_commit)
+    try:
+        with pytest.raises(RuntimeError, match="Injected failure"):
+            database.create_user(**(kwargs | {"user_id": "rolled-back", "email": "rollback@example.test"}))
+        with pytest.raises(RuntimeError, match="Injected failure"):
+            database.reset_password("persisted", main.password_hash.hash(secrets.token_urlsafe(24)))
+    finally:
+        event.remove(Session, "before_commit", fail_before_commit)
+    assert database.user_by_email("rollback@example.test") is None
+    assert database.user_by_email("persisted@example.test").password_hash == hashed
+    assert database.user_for_session(token).id == "persisted"
+    before = len(database.all_users())
+    assert database.reset_password("missing", hashed) is None
+    assert len(database.all_users()) == before and database.user_for_session(token).id == "persisted"
+    # UoW rollback includes identity and session rows in the same transaction.
+    with pytest.raises(RuntimeError, match="Injected failure"):
+        with database.transaction() as session:
+            session.get(UserRow, "persisted").name = "Changed"
+            session.get(SessionRow, digest(token)).revoked_at = now
+            session.flush()
+            raise RuntimeError("Injected failure")
+    assert database.user_by_email("persisted@example.test").name == "Synthetic"
+    assert database.user_for_session(token).id == "persisted"
+    def unavailable(*args):
+        from sqlalchemy.exc import OperationalError
+        raise OperationalError("private connection", {}, Exception(secrets.token_urlsafe(24)))
+    event.listen(database.engine, "before_cursor_execute", unavailable)
+    try:
+        with pytest.raises(StorageError, match=r"^Storage operation failed\.$"):
+            database.all_users()
+        monkeypatch.setattr(main, "auth_db", database)
+        with TestClient(main.app, base_url="http://localhost") as client:
+            response = client.get("/session/me")
+            assert response.status_code == 503 and response.json() == {"detail": "Storage operation failed."}
+    finally:
+        event.remove(database.engine, "before_cursor_execute", unavailable)
+    assert database.engine.pool.checkedout() == 0
+    database.engine.dispose()
+
+
+def test_postgres_process_restart(postgres_url):
+    migrate()
+    # Transport synthetic cookies only over anonymous process pipes, never args/files/output.
+    seed = '''
+import json, secrets
+from datetime import timedelta
+from apps.api.main import app, provision_user, Provision, auth_db
+from apps.api import db_auth
+from fastapi.testclient import TestClient
+secret = secrets.token_urlsafe(24)
+user = provision_user(Provision(name="Restart", email="restart@example.test", password=secret))
+client = TestClient(app, base_url="http://localhost")
+assert client.post("/session/login", json={"email": user.email, "password": secret}).status_code == 200
+valid = client.cookies.get("call_center_session")
+revoked, _ = auth_db.issue(user.id)
+auth_db.revoke(revoked)
+now = db_auth.utcnow()
+db_auth.utcnow = lambda: now - timedelta(hours=9)
+expired, _ = auth_db.issue(user.id)
+print(json.dumps([valid, revoked, expired]))
+'''
+    verify = '''
+import json, sys
+from fastapi.testclient import TestClient
+from apps.api.main import app, auth_db
+from apps.api.db_auth import SessionRow, digest
+from sqlalchemy import select
+cookies = json.load(sys.stdin)
+with auth_db.transaction() as session:
+    records = list(session.scalars(select(SessionRow)))
+    assert len(records) == 3
+    assert {row.digest for row in records} == {digest(token) for token in cookies}
+    assert all(row.digest not in cookies for row in records)
+for token, status in zip(cookies, [200, 401, 401]):
+    with TestClient(app, base_url="http://localhost") as client:
+        client.cookies.set("call_center_session", token)
+        assert client.get("/session/me").status_code == status
+with TestClient(app, base_url="http://localhost") as client:
+    assert client.post("/operator/reset-password/anything", headers={"origin": "http://localhost:3000"}, json={}).status_code == 404
+'''
+    env = os.environ | {"CALL_CENTER_STORAGE": "postgres", "DATABASE_URL": postgres_url}
+    first = subprocess.run([sys.executable, "-c", seed], env=env, capture_output=True)
+    assert first.returncode == 0
+    second = subprocess.run([sys.executable, "-c", verify], env=env, input=first.stdout, capture_output=True)
+    assert second.returncode == 0
+
+
+def test_postgres_operator_console(postgres_url, monkeypatch, capsys):
+    migrate()
+    from . import operator
+    database = AuthDatabase(postgres_url, create_schema=False)
+    monkeypatch.setattr(main, "auth_db", database)
+    monkeypatch.setattr(main, "storage_mode", "postgres")
+    secret = secrets.token_urlsafe(24)
+    monkeypatch.setattr(operator, "getpass", lambda _: secret)
+    answers = iter(["provision", "Synthetic", " Console@example.test "])
+    monkeypatch.setattr("builtins.input", lambda _: next(answers))
+    operator.main()
+    user = database.user_by_email("console@example.test")
+    token, _ = database.issue(user.id)
+    answers = iter(["provision", "Duplicate", "CONSOLE@example.test"])
+    with pytest.raises(SystemExit, match="Operator request rejected"):
+        operator.main()
+    secret = secrets.token_urlsafe(24)
+    answers = iter(["reset", user.id])
+    operator.main()
+    assert database.user_for_session(token) is None
+    assert main.password_hash.verify(secret, database.user_by_email(user.email).password_hash)
+    answers = iter(["reset", "missing"])
+    with pytest.raises(SystemExit, match="Operator request rejected"):
+        operator.main()
+    output = capsys.readouterr()
+    assert output.out == "Operator request completed.\n" * 2 and output.err == ""
+    assert database.engine.pool.checkedout() == 0
+    database.engine.dispose()

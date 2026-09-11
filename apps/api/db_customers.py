@@ -18,7 +18,7 @@ class PhoneRow(CustomerBase):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     bcn: Mapped[str] = mapped_column(ForeignKey("customers.bcn", ondelete="CASCADE"))
     phone: Mapped[str] = mapped_column(String(64))
-    primary: Mapped[bool] = mapped_column(default=False)
+    primary: Mapped[bool] = mapped_column("is_primary", default=False)
 
 class CustomerDatabase:
     def __init__(self, url: str, *, create_schema: bool = True):

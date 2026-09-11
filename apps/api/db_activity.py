@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 from hashlib import sha256
 from sqlalchemy import DateTime, ForeignKey, Integer, JSON, String, Text, create_engine, select, func
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
 from sqlalchemy.pool import StaticPool
 
@@ -50,7 +51,16 @@ class ActivityDatabase:
             if row:
                 if row.fingerprint != fingerprint(payload): raise ValueError("submission already used")
                 return row.result
-            session.add(IdempotencyRow(actor_id=actor_id, operation=operation, submission_id=submission_id, fingerprint=fingerprint(payload), result=result, completed_at=datetime.now(timezone.utc))); session.commit(); return result
+            session.add(IdempotencyRow(actor_id=actor_id, operation=operation, submission_id=submission_id, fingerprint=fingerprint(payload), result=result, completed_at=datetime.now(timezone.utc)))
+            try:
+                session.commit()
+            except IntegrityError:
+                session.rollback(); row = session.get(IdempotencyRow, (actor_id, operation, submission_id))
+                if row is not None:
+                    if row.fingerprint != fingerprint(payload): raise ValueError("submission already used")
+                    return row.result
+                raise
+            return result
 
     def get_idempotent(self, *, actor_id: str, operation: str, submission_id: str, payload: str | bytes) -> dict | None:
         with Session(self.engine) as session:

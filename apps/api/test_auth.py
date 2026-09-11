@@ -169,6 +169,69 @@ def test_assignment_run_retry_returns_persisted_result() -> None:
     except ValueError as exc: assert "already used" in str(exc)
     else: assert False
 
+def test_assignment_run_concurrent_winner_replays_or_conflicts(tmp_path, monkeypatch) -> None:
+    from hashlib import sha256
+    from sqlalchemy import event
+    from . import main
+    from .db_assignment import AssignmentRunRow
+
+    database = AssignmentDatabase(f"sqlite+pysqlite:///{tmp_path / 'assignment.db'}")
+    monkeypatch.setattr(main, "assignment_db", database)
+    monkeypatch.setattr(main, "customer_db", None)
+    actor = main.User(id="admin", name="Admin", email="admin@example.test", role="Admin")
+    monkeypatch.setitem(app.dependency_overrides, main.admin_user, lambda: actor)
+    try:
+        for scope, expected_status in (("unassigned", 200), ("all-open", 409)):
+            repo.reset()
+            winner = {"submissionId": scope, "scope": "unassigned", "assigned": 7}
+            def commit_winner(session, *_):
+                if session.bind is database.engine:
+                    with database.engine.begin() as connection:
+                        connection.execute(AssignmentRunRow.__table__.insert().values(actor_id=actor.id, submission_id=scope, scope="unassigned", fingerprint=sha256(b"unassigned").hexdigest(), result=winner, created_at=datetime.now(timezone.utc)))
+            # Commit another request after save_run's read, before its INSERT.
+            event.listen(Session, "before_flush", commit_winner)
+            try:
+                with TestClient(app, base_url="http://localhost") as client:
+                    response = client.post("/admin/assignments/run", json={"scope": scope, "submissionId": scope}, headers={"origin": "http://localhost:3000"})
+            finally:
+                event.remove(Session, "before_flush", commit_winner)
+            assert response.status_code == expected_status
+            assert database.get_run(actor.id, scope) == winner
+            if expected_status == 200:
+                assert response.json() == winner and repo.assignment_runs[(actor.id, scope)] == winner
+            else:
+                assert response.json() == {"detail": "submission already used"}
+                assert (actor.id, scope) not in repo.assignment_runs
+    finally:
+        database.engine.dispose()
+        repo.reset()
+
+def test_assignment_order_fallback_and_unchanged_owner(monkeypatch) -> None:
+    from . import main
+    monkeypatch.setattr(main, "assignment_db", None)
+    monkeypatch.setattr(main, "customer_db", None)
+    repo.reset()
+    try:
+        for user_id in ("first", "second", "inactive"):
+            repo.users[user_id] = {"id": user_id, "name": user_id, "role": "Sales", "active": user_id != "inactive"}
+        repo.customers = {"000001": {"bcn": "000001", "ownerId": "first", "ownerName": "first", "status": "Open", "version": 4}, "000002": {"bcn": "000002", "ownerId": None, "status": "Open", "version": 0}}
+        repo.rules = [{"ownerId": "second", "active": True, "order": 2}, {"ownerId": "first", "active": True, "order": 1}]
+        repo.fallback_sales = ["inactive", "second", "first"]
+        actor = main.User(id="admin", name="Admin", email="admin@example.test", role="Admin")
+        result = main.run_assignment(main.AssignmentRunRequest(scope="all-open", submissionId="ordered"), actor)
+        assert result["assigned"] == 1 and result["skipped"] == 1
+        assert repo.customers["000001"]["version"] == 4
+        assert repo.customers["000002"]["ownerId"] == "first"
+        repo.rules[0]["active"] = repo.rules[1]["active"] = False
+        result = main.run_assignment(main.AssignmentRunRequest(scope="all-open", submissionId="fallback"), actor)
+        assert result["assigned"] == 2
+        assert all(row["ownerId"] == "second" for row in repo.customers.values())
+        result = main.run_assignment(main.AssignmentRunRequest(scope="all-open", submissionId="unchanged"), actor)
+        assert result["assigned"] == 0 and result["skipped"] == 2
+        assert repo.customers["000001"]["version"] == 5
+    finally:
+        repo.reset()
+
 def test_activity_idempotency_replays_and_rejects_payload_reuse() -> None:
     database = ActivityDatabase("sqlite+pysqlite:///:memory:")
     assert database.save_idempotent(actor_id="u1", operation="note", submission_id="s1", payload="hello", result={"id": "n1"}) == {"id": "n1"}

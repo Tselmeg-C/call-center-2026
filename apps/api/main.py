@@ -933,20 +933,23 @@ def run_assignment(body: AssignmentRunRequest, _: Annotated[User, Depends(admin_
     if body.scope not in {"unassigned", "all-open"}: raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Invalid assignment scope.")
     source_rows = readable_rows()
     candidates = [row for row in source_rows if row["status"] == "Open" and (body.scope == "all-open" or row["ownerId"] is None)]
-    counts = {item["id"]: sum(1 for row in source_rows if row["ownerId"] == item["id"] and row["status"] == "Open") for item in repo.users.values() if item["role"] == "Sales" and item["active"]}
+    eligible_owners = {item["id"] for item in repo.users.values() if item["role"] == "Sales" and item["active"]}
+    owners = [rule["ownerId"] for rule in sorted(repo.rules, key=lambda item: item["order"]) if rule["active"] and rule["ownerId"] in eligible_owners]
+    if not owners: owners = [owner for owner in repo.fallback_sales if owner in eligible_owners]
     assigned = 0
     for row in sorted(candidates, key=lambda item: item["bcn"]):
-        eligible = [rule for rule in sorted(repo.rules, key=lambda item: item["order"]) if rule["active"] and rule["ownerId"] in counts]
-        if not eligible: continue
-        owner = min((rule["ownerId"] for rule in eligible), key=lambda user_id: (counts[user_id], user_id))
-        old_owner = row["ownerId"]; row.update(ownerId=owner, ownerName=repo.users[owner]["name"], version=row["version"] + 1); counts[owner] += 1; assigned += 1
+        if not owners or row["ownerId"] == owners[0]: continue
+        owner = owners[0]
+        old_owner = row["ownerId"]; row.update(ownerId=owner, ownerName=repo.users[owner]["name"], version=row["version"] + 1); assigned += 1
         if customer_db is not None:
             customer_db.save_operational(bcn=row["bcn"], owner_id=owner, status=row["status"], version=row["version"])
             if assignment_db is not None: assignment_db.append_assignment(bcn=row["bcn"], actor_id=_.id, old_owner_id=old_owner, new_owner_id=owner, reason="Bulk assignment")
             append_audit(_.id, "Customer assigned", row["bcn"], {"oldOwner": old_owner, "newOwner": owner, "source": "bulk"})
     result = {"submissionId": body.submissionId, "scope": body.scope, "candidates": len(candidates), "assigned": assigned, "skipped": len(candidates) - assigned}
+    if assignment_db is not None:
+        try: result = assignment_db.save_run(actor_id=_.id, submission_id=body.submissionId, scope=body.scope, result=result, payload=payload)
+        except ValueError as exc: raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
     repo.assignment_runs[run_key] = result
-    if assignment_db is not None: assignment_db.save_run(actor_id=_.id, submission_id=body.submissionId, scope=body.scope, result=result, payload=payload)
     return result
 
 @app.get("/admin/assignments")

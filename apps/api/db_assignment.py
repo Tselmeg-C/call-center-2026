@@ -96,7 +96,9 @@ class AssignmentDatabase:
             except IntegrityError:
                 session.rollback()
                 row = session.get(AssignmentRunRow, (actor_id, submission_id))
-                if row is not None: return row.result
+                if row is not None:
+                    if digest is not None and row.fingerprint not in (None, digest): raise ValueError("submission already used")
+                    return row.result
                 raise
             return result
 

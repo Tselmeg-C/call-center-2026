@@ -26,6 +26,64 @@ from .db_auth import AuthDatabase, SessionRow, UserRow, digest, StorageError
 ORIGIN = {"origin": "http://localhost:3000"}
 
 
+@pytest.mark.parametrize("changes", [{"active": False}, {"role": "Admin"}])
+def test_owner_identity_change_rolls_back_and_releases_only_open(changes, tmp_path, monkeypatch):
+    from copy import deepcopy
+    from fastapi import HTTPException
+    from .db_assignment import AssignmentDatabase, AssignmentHistoryRow, AuditRow
+    from .db_customers import CustomerDatabase
+
+    url = f"sqlite+pysqlite:///{tmp_path / 'owner.db'}"
+    auth = AuthDatabase(url)
+    customers = CustomerDatabase(url)
+    assignments = AssignmentDatabase(url)
+    for name, database in (("auth_db", auth), ("customer_db", customers), ("assignment_db", assignments)):
+        monkeypatch.setattr(main, name, database)
+    main.repo.reset()
+    try:
+        auth.create_user(user_id="sales", name="Sales", email="sales@example.test", role="Sales", password_hash=main.password_hash.hash(secrets.token_urlsafe(24)))
+        token, expires = auth.issue("sales")
+        main.repo.users = {"sales": {"id": "sales", "name": "Sales", "email": "sales@example.test", "role": "Sales", "active": True}}
+        main.repo.sessions[token] = ("sales", expires)
+        main.repo.customers = {}
+        for bcn, status in (("000001", "Open"), ("000002", "Closed")):
+            customers.upsert_source(bcn=bcn, name="Synthetic", source={})
+            customers.save_operational(bcn=bcn, owner_id="sales", status=status, version=3)
+            main.repo.customers[bcn] = {"bcn": bcn, "ownerId": "sales", "ownerName": "Sales", "status": status, "version": 3, "histories": []}
+        before = deepcopy((main.repo.users, main.repo.customers, main.repo.sessions))
+        actor = main.User(id="admin", name="Admin", email="admin@example.test", role="Admin")
+        def fail_commit(session):
+            if session.bind is assignments.engine:
+                session.flush()
+                raise RuntimeError("Injected failure")
+        event.listen(Session, "before_commit", fail_commit)
+        try:
+            with pytest.raises(RuntimeError, match="Injected failure"):
+                main.update_user("sales", main.UserPatch(**changes), actor)
+        finally:
+            event.remove(Session, "before_commit", fail_commit)
+        assert before == (main.repo.users, main.repo.customers, main.repo.sessions)
+        assert auth.user_for_session(token).active
+        assert auth.user_by_email("sales@example.test").role == "Sales"
+        assert all(row.owner_id == "sales" and row.version == 3 for row in customers.all())
+        with Session(assignments.engine) as session:
+            assert session.scalar(select(AssignmentHistoryRow)) is None and session.scalar(select(AuditRow)) is None
+        main.update_user("sales", main.UserPatch(**changes), actor)
+        assert auth.user_for_session(token) is None and token not in main.repo.sessions
+        assert customers.get("000001").owner_id is None and customers.get("000001").version == 4
+        assert customers.get("000002").owner_id == "sales" and customers.get("000002").version == 3
+        assert main.repo.customers["000001"]["ownerId"] is None and main.repo.customers["000002"]["ownerId"] == "sales"
+        with Session(assignments.engine) as session:
+            assert len(list(session.scalars(select(AssignmentHistoryRow)))) == 1
+            assert len(list(session.scalars(select(AuditRow)))) == 2
+        with pytest.raises(HTTPException) as blocked:
+            main.update_user("sales", main.UserPatch(active=False), main.User(**main.repo.users["sales"]))
+        assert blocked.value.status_code == 422
+    finally:
+        for database in (auth, customers, assignments): database.engine.dispose()
+        main.repo.reset()
+
+
 @pytest.mark.parametrize("backend", ["sqlite", "postgres"])
 def test_bulk_assignment_atomic_rollback_and_retry(backend, request, tmp_path, monkeypatch):
     from .db_assignment import AssignmentDatabase, AssignmentHistoryRow, AssignmentRunRow, AuditRow

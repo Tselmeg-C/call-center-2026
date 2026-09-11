@@ -5,7 +5,7 @@ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
 from sqlalchemy.pool import StaticPool
 from .db_customers import CustomerRow
-from .db_auth import StorageError
+from .db_auth import StorageError, UserRow, SessionRow
 
 class AssignmentBase(DeclarativeBase): pass
 
@@ -129,6 +129,32 @@ class AssignmentDatabase:
             persisted = self.get_run(actor_id, submission_id, scope)
             if persisted is not None: return persisted, []
             raise StorageError("Storage operation failed.") from None
+        except SQLAlchemyError:
+            raise StorageError("Storage operation failed.") from None
+
+    def update_identity(self, user_id: str, changes: dict, actor_id: str) -> tuple[dict, list[dict]] | None:
+        try:
+            with Session(self.engine) as session, session.begin():
+                user = session.scalar(select(UserRow).where(UserRow.id == user_id).with_for_update())
+                if user is None: return None
+                was_sales = user.active and user.role == "Sales"
+                now = datetime.now(timezone.utc)
+                if any(key in changes and changes[key] != getattr(user, key) for key in ("role", "active")):
+                    for token in session.scalars(select(SessionRow).where(SessionRow.user_id == user_id, SessionRow.revoked_at.is_(None))):
+                        token.revoked_at = now
+                for key in ("name", "role", "active"):
+                    if key in changes: setattr(user, key, changes[key])
+                released = []
+                if was_sales and (not user.active or user.role != "Sales"):
+                    rows = session.scalars(select(CustomerRow).where(CustomerRow.owner_id == user_id, CustomerRow.status == "Open").order_by(CustomerRow.bcn).with_for_update())
+                    for row in rows:
+                        row.owner_id = None; row.version += 1
+                        released.append({"bcn": row.bcn, "version": row.version})
+                        session.add(AssignmentHistoryRow(bcn=row.bcn, actor_id=actor_id, old_owner_id=user_id, new_owner_id=None, reason="Owner deactivated", created_at=now))
+                        session.add(AuditRow(actor_id=actor_id, action="Customer ownership released", target=row.bcn, details={"oldOwner": user_id, "newOwner": None, "reason": "Owner deactivated"}, created_at=now))
+                session.add(AuditRow(actor_id=actor_id, action="User changed", target=user_id, details={key: changes[key] for key in ("name", "role", "active") if key in changes}, created_at=now))
+                result = {key: getattr(user, key) for key in ("id", "name", "email", "role", "active")}
+            return result, released
         except SQLAlchemyError:
             raise StorageError("Storage operation failed.") from None
 

@@ -701,6 +701,20 @@ def update_user(user_id: str, patch: UserPatch, actor: Annotated[User, Depends(a
     if user_id == actor.id and (changes.get("active") is False or changes.get("role") == "Sales"): raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Cannot disable or demote yourself.")
     if changes.get("role") not in {None, "Admin", "Sales"}: raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Invalid role.")
     if changes.get("email"): changes["email"] = safe_email(changes["email"])
+    if auth_db is not None and customer_db is not None and assignment_db is not None:
+        persisted = assignment_db.update_identity(user_id, changes, actor.id)
+        if persisted is None: raise HTTPException(status.HTTP_404_NOT_FOUND, "User not found.")
+        updated, released = persisted
+        if record["role"] != updated["role"] or record["active"] != updated["active"]:
+            for token, (owner, _) in list(repo.sessions.items()):
+                if owner == user_id: repo.sessions.pop(token, None)
+        record.update(updated)
+        for item in released:
+            if item["bcn"] in repo.customers:
+                row = repo.customers[item["bcn"]]
+                row.update(ownerId=None, ownerName=None, version=item["version"])
+                row.setdefault("histories", []).append({"kind": "Assignment", "actor": actor.name, "actorId": actor.id, "oldOwner": user_id, "newOwner": None, "reason": "Owner deactivated", "timestamp": datetime.now(timezone.utc).isoformat()})
+        return User.model_validate(record)
     prior_active = record["active"]; prior_role = record["role"]; record.update(changes)
     if auth_db is not None:
         auth_db.update_user(user_id, changes)

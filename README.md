@@ -2,7 +2,7 @@
 
 Capstone project for AI Dev Zoomcamp 2026: a Sales customer-contact management application.
 
-The mock prototype uses Next.js App Router, TypeScript and Ant Design in `apps/web`. No backend, database, secrets, or real account is needed.
+The active frontend lives in `apps/frontend` and uses TanStack Start with the supplied customer-contact design.
 
 ## Local setup
 
@@ -15,11 +15,11 @@ npm ci
 npm run dev
 ```
 
-Open http://localhost:3000. The app sends you to `/login`.
+Open http://localhost:3000.
 
-## Mock prototype
+## Frontend
 
-Select Alex Admin (Admin), River Sales (Sales), or Sky Sales (Sales), then Sign in. No password is requested. Admin lands on All Customers; Sales lands on Dashboard. Navigation destinations are explicitly labeled placeholders. Sales opening an Admin URL sees Access denied. The service-status panel shows synthetic demonstration records only; workload data is documented separately.
+The TanStack frontend in `apps/frontend` is the active application. Its routes cover the dashboard, customer browsing, administration, imports, assignments, reports and audit views.
 
 Mock controls are available on sign-in and application pages:
 
@@ -32,7 +32,7 @@ Mock controls are available on sign-in and application pages:
 
 Session and fixture state live only in memory, survive navigation, and reset on a full browser reload. Separate tabs have independent mock state. Logout, expiry, and reset invalidate pending requests; no durable browser storage is used. Mock role guards demonstrate behavior and are not a production security boundary.
 
-Typed asynchronous application services live in `apps/web/services/types.ts`. The resettable mock adapter is `apps/web/services/mock.ts`; select or replace the adapter at the single composition point in `apps/web/services/provider.tsx`. UI components consume service interfaces, while scenario/reset controls use a separate mock-only interface. Full business screens and production authentication follow in later backlog tasks.
+Backlog work should extend the routes and services under `apps/frontend`; the former Next prototype is retired.
 
 Customer browsing decisions and display rules are documented in [`_docs/customer-browsing.md`](_docs/customer-browsing.md).
 Sales workload bucket definitions, UTC behavior, and the boundary fixture table are documented in [`_docs/workload.md`](_docs/workload.md).
@@ -53,9 +53,9 @@ npm test
 npm run build
 ```
 
-Vitest and React Testing Library cover sign-in/logout, route restrictions, retry, reset, deterministic fixtures, and stale responses after session removal. For watch mode, run `npm run test:watch --workspace @call-center/web`.
+The frontend workspace type-checks the route tree during CI; add focused tests alongside future backlog behavior.
 
-GitHub Actions runs installation, linting, type checking, the test, and a production build on pushes and pull requests. Type checking generates Next.js route types first, so it also works on a fresh checkout.
+GitHub Actions runs installation, linting, type checking, and a production build on pushes and pull requests.
 
 ## Production build locally
 
@@ -64,4 +64,4 @@ npm run build
 npm start
 ```
 
-Open http://localhost:3000. The root npm workspace scripts delegate to `apps/web`; dependencies are locked in the root `package-lock.json`.
+Open http://localhost:3000. The root npm workspace scripts delegate to `apps/frontend`; dependencies are locked in the root `package-lock.json`.

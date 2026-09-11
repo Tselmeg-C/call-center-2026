@@ -6,6 +6,9 @@ venv/
 # Frontend dependencies and generated output
 node_modules/
 .next/
+dist/
+.output/
+.tanstack/
 out/
 coverage/
 *.tsbuildinfo

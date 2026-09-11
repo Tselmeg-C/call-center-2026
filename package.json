@@ -2,20 +2,20 @@
   "name": "call-center-2026",
   "private": true,
   "workspaces": [
-    "apps/web"
+    "apps/frontend"
   ],
   "engines": {
     "node": ">=24 <25"
   },
   "scripts": {
-    "dev": "npm run dev --workspace @call-center/web",
-    "build": "npm run build --workspace @call-center/web",
-    "start": "npm run start --workspace @call-center/web",
-    "lint": "npm run lint --workspace @call-center/web",
-    "typecheck": "npm run typecheck --workspace @call-center/web",
-    "test": "npm run test --workspace @call-center/web",
-    "contract:check": "node packages/shared/validate-openapi.mjs"
-    ,"benchmark:api": "python -m apps.api.benchmark"
+    "dev": "npm run dev --workspace @call-center/frontend",
+    "build": "npm run build --workspace @call-center/frontend",
+    "start": "npm run start --workspace @call-center/frontend",
+    "lint": "npm run lint --workspace @call-center/frontend",
+    "typecheck": "npm run typecheck --workspace @call-center/frontend",
+    "test": "npm run typecheck --workspace @call-center/frontend",
+    "contract:check": "node packages/shared/validate-openapi.mjs",
+    "benchmark:api": "python -m apps.api.benchmark"
   },
   "devDependencies": {
     "typescript": "5.8.3"

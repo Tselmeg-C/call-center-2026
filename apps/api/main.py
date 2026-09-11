@@ -398,7 +398,7 @@ def create_interaction(bcn: str, body: InteractionCreate, user: Annotated[User, 
         if prior["outcome"] != body.outcome or prior.get("note") != body.note: raise HTTPException(status.HTTP_409_CONFLICT, "Submission already used.")
         return prior
     if body.outcome not in {"Attempt", "Contact"}: raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Invalid outcome.")
-    record = {"id": f"interaction-{len(repo.interactions)+1}", "bcn": bcn, "kind": "Interaction", "outcome": body.outcome, "note": body.note, "actor": user.name, "actorId": user.id, "timestamp": datetime.now(timezone.utc).isoformat(), "deleted": False}
+    record = {"id": f"interaction-{uuid4()}", "bcn": bcn, "kind": "Interaction", "outcome": body.outcome, "note": body.note, "actor": user.name, "actorId": user.id, "timestamp": datetime.now(timezone.utc).isoformat(), "deleted": False}
     repo.interactions[key] = record; row["histories"].append(record)
     if persist:
         persist_activity(record)
@@ -417,7 +417,7 @@ def create_note(bcn: str, body: NoteCreate, user: Annotated[User, Depends(curren
     if prior:
         if prior["text"] != body.text: raise HTTPException(status.HTTP_409_CONFLICT, "Submission already used.")
         return prior
-    record = {"id": f"note-{len(repo.notes)+1}", "bcn": bcn, "kind": "Standalone note", "text": body.text, "actor": user.name, "actorId": user.id, "timestamp": datetime.now(timezone.utc).isoformat(), "deleted": False}
+    record = {"id": f"note-{uuid4()}", "bcn": bcn, "kind": "Standalone note", "text": body.text, "actor": user.name, "actorId": user.id, "timestamp": datetime.now(timezone.utc).isoformat(), "deleted": False}
     repo.notes[key] = record; row["histories"].append(record); persist_activity(record)
     if activity_db is not None: activity_db.save_idempotent(actor_id=user.id, operation="note", submission_id=body.submissionId, payload=payload, result=record)
     append_audit(user.id, "Note created", bcn, {}); return record
@@ -454,7 +454,7 @@ def create_followup(bcn: str, body: FollowUpCreate, user: Annotated[User, Depend
             raise HTTPException(status.HTTP_409_CONFLICT, "Submission already used.")
         return prior
     if body.type not in {"Appointment", "Reminder"}: raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Invalid follow-up type.")
-    record = {"id": f"followup-{len(repo.followups)+1}", "bcn": bcn, "type": body.type, "due": body.due, "note": body.note, "status": "Open", "actor": user.name, "actorId": user.id, "createdAt": datetime.now(timezone.utc).isoformat()}
+    record = {"id": f"followup-{uuid4()}", "bcn": bcn, "type": body.type, "due": body.due, "note": body.note, "status": "Open", "actor": user.name, "actorId": user.id, "createdAt": datetime.now(timezone.utc).isoformat()}
     repo.followups[key] = record; row["histories"].append({**record, "kind": "Follow-up"}); persist_followup(record)
     if activity_db is not None: activity_db.save_idempotent(actor_id=user.id, operation="followup", submission_id=body.submissionId, payload=payload, result=record)
     return record

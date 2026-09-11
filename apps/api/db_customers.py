@@ -185,6 +185,15 @@ class CustomerDatabase:
             rows = session.scalars(query.offset((page - 1) * page_size).limit(page_size)).all()
             return [self.import_job(actor_id, row.submission_id) for row in rows], total
 
+    def import_errors(self, actor_id: str, submission_id: str, page: int, page_size: int) -> tuple[list[dict], int] | None:
+        with Session(self.engine) as session:
+            job = session.scalar(select(ImportJobRow).where(ImportJobRow.actor_id == actor_id, ImportJobRow.submission_id == submission_id))
+            if job is None: return None
+            query = select(ImportErrorRow).where(ImportErrorRow.job_id == job.id).order_by(ImportErrorRow.id)
+            total = session.scalar(select(func.count()).select_from(query.subquery())) or 0
+            rows = session.scalars(query.offset((page - 1) * page_size).limit(page_size))
+            return ([{"row": item.row_number, "field": item.field, "reason": item.reason} for item in rows], total)
+
     def save_import_job(self, result: dict) -> None:
         with Session(self.engine) as session:
             if session.scalar(select(ImportJobRow).where(ImportJobRow.actor_id == result["actorId"], ImportJobRow.submission_id == result["submissionId"])):

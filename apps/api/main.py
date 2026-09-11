@@ -822,10 +822,15 @@ def get_import_result(submission_id: str, user: Annotated[User, Depends(admin_us
 
 @app.get("/admin/imports/{submission_id}/errors")
 def list_import_errors(submission_id: str, page: int = Query(1, ge=1), page_size: int = Query(25, ge=1, le=100), user: Annotated[User, Depends(admin_user)] = None) -> dict:
-    result = customer_db.import_job(user.id, submission_id) if customer_db is not None else repo.imports.get((user.id, submission_id))
-    if result is None: raise HTTPException(status.HTTP_404_NOT_FOUND, "Import job not found.")
-    errors = result.get("errors", []); start = (page - 1) * page_size
-    return {"items": errors[start:start + page_size], "page": page, "page_size": page_size, "total": len(errors)}
+    if customer_db is not None:
+        result = customer_db.import_errors(user.id, submission_id, page, page_size)
+        if result is None: raise HTTPException(status.HTTP_404_NOT_FOUND, "Import job not found.")
+        errors, total = result
+    else:
+        result = repo.imports.get((user.id, submission_id))
+        if result is None: raise HTTPException(status.HTTP_404_NOT_FOUND, "Import job not found.")
+        all_errors = result.get("errors", []); start = (page - 1) * page_size; errors, total = all_errors[start:start + page_size], len(all_errors)
+    return {"items": errors, "page": page, "page_size": page_size, "total": total}
 
 @app.get("/admin/imports")
 def list_import_results(page: int = Query(1, ge=1), page_size: int = Query(25, ge=1, le=100), user: Annotated[User, Depends(admin_user)] = None) -> dict:

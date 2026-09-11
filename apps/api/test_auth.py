@@ -247,6 +247,12 @@ def test_import_errors_are_paginated() -> None:
     response = client.get("/admin/imports/errors/errors?page=2&page_size=2")
     assert response.status_code == 200 and response.json()["total"] == 3 and len(response.json()["items"]) == 1
 
+def test_database_import_errors_are_paginated_in_query() -> None:
+    database = CustomerDatabase("sqlite+pysqlite:///:memory:")
+    database.save_import_job({"jobId": "job-errors", "submissionId": "errors", "filename": "x.xlsx", "processed": 2, "created": 0, "updated": 0, "errorRows": 2, "status": "Partial", "errors": [{"row": 2, "field": "bcn", "reason": "bad"}, {"row": 3, "field": "bcn", "reason": "bad"}], "actorId": "admin"})
+    items, total = database.import_errors("admin", "errors", 2, 1)
+    assert total == 2 and items == [{"row": 3, "field": "bcn", "reason": "bad"}]
+
 def test_import_storage_failure_restores_in_memory_staging(monkeypatch) -> None:
     from . import main
     repo.reset(); admin = provision_user(type("P", (), {"name": "Admin", "email": "admin@example.test", "role": "Admin", "password": "correct horse battery staple"})())

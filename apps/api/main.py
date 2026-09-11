@@ -5,6 +5,7 @@ from secrets import token_urlsafe
 from uuid import uuid4
 import re
 import logging
+from hashlib import sha256
 import os
 from time import perf_counter
 from typing import Annotated
@@ -116,10 +117,11 @@ class MemoryRepo:
         self.login_failures: dict[tuple[str, str], list[datetime]] = {}
         self.login_failures_by_ip: dict[str, list[datetime]] = {}
         self.imports: dict[str, dict] = {}
+        self.import_payloads: dict[tuple[str, str], str] = {}
         self.reset()
 
     def reset(self) -> None:
-        self.users.clear(); self.sessions.clear(); self.submissions.clear(); self.interactions.clear(); self.notes.clear(); self.followups.clear(); self.imports.clear(); self.rules.clear(); self.assignment_runs.clear(); self.fallback_sales.clear(); self.assignment_version = 1; self.login_failures.clear(); self.login_failures_by_ip.clear(); self.reasons = {"closure-1": {"id": "closure-1", "label": "Won", "active": True}}
+        self.users.clear(); self.sessions.clear(); self.submissions.clear(); self.interactions.clear(); self.notes.clear(); self.followups.clear(); self.imports.clear(); self.import_payloads.clear(); self.rules.clear(); self.assignment_runs.clear(); self.fallback_sales.clear(); self.assignment_version = 1; self.login_failures.clear(); self.login_failures_by_ip.clear(); self.reasons = {"closure-1": {"id": "closure-1", "label": "Won", "active": True}}
         self.customers = {
             "000123": {"bcn": "000123", "name": "Acme North", "ownerId": "sales-river", "ownerName": "River Sales", "status": "Open", "phones": ["(555) 010-0101"], "source": {"propensity_score": 0.98}, "version": 0, "histories": []},
             "000124": {"bcn": "000124", "name": "Acme North", "ownerId": "sales-sky", "ownerName": "Sky Sales", "status": "Closed", "phones": ["555 010 0103"], "source": {"propensity_score": 0.7}, "version": 0, "histories": []},
@@ -671,14 +673,19 @@ def update_reason(reason_id: str, patch: ClosureReasonPatch, _: Annotated[User, 
 async def import_customers(file: UploadFile = File(...), submission_id: str = Query(..., min_length=1), user: Annotated[User, Depends(admin_user)] = None) -> dict:
     if not file.filename or not file.filename.casefold().endswith(".xlsx"):
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Upload an .xlsx workbook.")
-    if submission_id in repo.imports: return repo.imports[submission_id]
+    payload = await file.read()
+    if len(payload) > 10 * 1024 * 1024: raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, "Workbook is too large.")
+    fingerprint = sha256(payload).hexdigest()
+    local_key = (user.id, submission_id)
+    if submission_id in repo.imports:
+        if repo.import_payloads.get(local_key) != fingerprint: raise HTTPException(status.HTTP_409_CONFLICT, "Submission already used.")
+        return repo.imports[submission_id]
     if customer_db is not None:
         persisted_job = customer_db.import_job(user.id, submission_id)
         if persisted_job:
             repo.imports[submission_id] = persisted_job
+            repo.import_payloads[local_key] = fingerprint
             return persisted_job
-    payload = await file.read()
-    if len(payload) > 10 * 1024 * 1024: raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, "Workbook is too large.")
     if activity_db is not None:
         try:
             persisted = activity_db.get_idempotent(actor_id=user.id, operation="import", submission_id=submission_id, payload=payload)
@@ -733,6 +740,7 @@ async def import_customers(file: UploadFile = File(...), submission_id: str = Qu
         if customer_db is not None:
             customer_db.ingest_sources(source_rows, result)
         repo.imports[submission_id] = result
+        repo.import_payloads[local_key] = fingerprint
         if activity_db is not None: activity_db.save_idempotent(actor_id=user.id, operation="import", submission_id=submission_id, payload=payload, result=result)
         append_audit(user.id, "Import completed", result["jobId"], {"created": created, "updated": updated, "errors": len(errors)}); return result
     except HTTPException:

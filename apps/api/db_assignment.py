@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
-from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, UniqueConstraint, create_engine, func, select
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, UniqueConstraint, create_engine, func, select, update
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
 from sqlalchemy.pool import StaticPool
@@ -54,13 +54,22 @@ class AssignmentDatabase:
         with Session(self.engine) as session:
             row = RuleRow(id=rule_id, name=name, position=position, active=True, version=0, owner_id=owner_id); session.add(row); session.add(AuditRow(actor_id=actor_id, action="Assignment rule created", target=rule_id, details={"name": name, "ownerId": owner_id}, created_at=datetime.now(timezone.utc))); session.commit(); session.refresh(row); return row
 
-    def update_rule(self, rule_id: str, patch: dict, actor_id: str) -> RuleRow | None:
-        with Session(self.engine) as session:
-            row = session.get(RuleRow, rule_id)
-            if not row: return None
-            for key in ("name", "position", "active", "owner_id"):
-                if key in patch: setattr(row, key, patch[key])
-            row.version += 1; session.add(AuditRow(actor_id=actor_id, action="Assignment rule changed", target=rule_id, details={key: patch[key] for key in patch if key in {"name", "position", "active"}}, created_at=datetime.now(timezone.utc))); session.commit(); session.refresh(row); return row
+    def update_rule(self, rule_id: str, patch: dict, actor_id: str, expected_version: int) -> RuleRow | None:
+        try:
+            with Session(self.engine, expire_on_commit=False) as session, session.begin():
+                row = session.get(RuleRow, rule_id)
+                if not row: return None
+                changed = session.execute(update(AssignmentSettingRow).where(AssignmentSettingRow.key == "assignment_version", AssignmentSettingRow.value["value"].as_integer() == expected_version).values(value={"value": expected_version + 1}))
+                if changed.rowcount != 1: raise ValueError("Assignment configuration is stale.")
+                for key in ("name", "position", "active", "owner_id"):
+                    if key in patch: setattr(row, key, patch[key])
+                row.version += 1
+                session.add(AuditRow(actor_id=actor_id, action="Assignment rule changed", target=rule_id, details={key: patch[key] for key in patch if key in {"name", "position", "active"}}, created_at=datetime.now(timezone.utc)))
+            return row
+        except IntegrityError:
+            raise ValueError("Rule already exists.") from None
+        except SQLAlchemyError:
+            raise StorageError("Storage operation failed.") from None
 
     def ordered_rules(self) -> list[RuleRow]:
         with Session(self.engine) as session: return list(session.scalars(select(RuleRow).order_by(RuleRow.position, RuleRow.id)))

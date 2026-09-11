@@ -26,6 +26,51 @@ from .db_auth import AuthDatabase, SessionRow, UserRow, digest, StorageError
 ORIGIN = {"origin": "http://localhost:3000"}
 
 
+def test_rule_updates_compare_persisted_version_and_rollback(tmp_path, monkeypatch):
+    from copy import deepcopy
+    from fastapi import HTTPException
+    from .db_assignment import AssignmentDatabase
+
+    database = AssignmentDatabase(f"sqlite+pysqlite:///{tmp_path / 'rules.db'}")
+    monkeypatch.setattr(main, "assignment_db", database)
+    main.repo.reset()
+    try:
+        database.create_rule(rule_id="rule", name="Original", position=1, actor_id="admin")
+        database.set_setting("assignment_version", {"value": 2})
+        main.repo.rules = [{"id": "rule", "name": "Original", "order": 1, "ownerId": None, "active": True}]
+        main.repo.assignment_version = 2
+        actor = main.User(id="admin", name="Admin", email="admin@example.test", role="Admin")
+        # Another request wins after this process cached configuration version 2.
+        database.update_rule("rule", {"name": "Winner"}, actor.id, 2)
+        before = deepcopy(main.repo.rules)
+        with pytest.raises(HTTPException) as stale:
+            main.update_assignment_rule("rule", {"name": "Loser", "version": 2}, actor)
+        assert stale.value.status_code == 409
+        assert main.repo.rules == before and main.repo.assignment_version == 2
+        assert database.ordered_rules()[0].name == "Winner" and database.get_setting("assignment_version") == {"value": 3}
+        assert database.audit()[1] == 2
+        result = main.update_assignment_rule("rule", {"active": False, "version": 3}, actor)
+        assert result["name"] == "Winner" and result["active"] is False
+        assert main.repo.assignment_version == 4
+        before = deepcopy(main.repo.rules)
+        def fail_commit(session):
+            if session.bind is database.engine:
+                session.flush()
+                raise RuntimeError("Injected failure")
+        event.listen(Session, "before_commit", fail_commit)
+        try:
+            with pytest.raises(RuntimeError, match="Injected failure"):
+                main.update_assignment_rule("rule", {"name": "Rolled back", "version": 4}, actor)
+        finally:
+            event.remove(Session, "before_commit", fail_commit)
+        assert main.repo.rules == before and main.repo.assignment_version == 4
+        assert database.ordered_rules()[0].name == "Winner" and database.get_setting("assignment_version") == {"value": 4}
+        assert database.audit()[1] == 3
+    finally:
+        database.engine.dispose()
+        main.repo.reset()
+
+
 def test_manual_assignment_commit_and_rollback(tmp_path, monkeypatch):
     from .db_assignment import AssignmentDatabase, AssignmentHistoryRow, AuditRow
     from .db_customers import CustomerDatabase

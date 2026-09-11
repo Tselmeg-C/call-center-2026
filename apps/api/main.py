@@ -914,14 +914,22 @@ def create_assignment_rule(body: AssignmentRuleDraft, _: Annotated[User, Depends
 def update_assignment_rule(rule_id: str, patch: dict, _: Annotated[User, Depends(admin_user)]) -> dict:
     rule = next((item for item in repo.rules if item["id"] == rule_id), None)
     if not rule: raise HTTPException(status.HTTP_404_NOT_FOUND, "Rule not found.")
-    if "version" in patch and patch["version"] != repo.assignment_version: raise HTTPException(status.HTTP_409_CONFLICT, "Assignment configuration is stale.")
+    if assignment_db is None and "version" in patch and patch["version"] != repo.assignment_version: raise HTTPException(status.HTTP_409_CONFLICT, "Assignment configuration is stale.")
     if "name" in patch and any(item["id"] != rule_id and item["name"].casefold() == str(patch["name"]).strip().casefold() for item in repo.rules): raise HTTPException(status.HTTP_409_CONFLICT, "Rule already exists.")
+    if assignment_db is not None:
+        expected_version = patch.get("version", repo.assignment_version)
+        if type(expected_version) is not int or expected_version < 1: raise HTTPException(status.HTTP_409_CONFLICT, "Assignment configuration is stale.")
+        updates = {("position" if key == "order" else key): patch[key] for key in ("name", "active", "order") if key in patch}
+        try: stored = assignment_db.update_rule(rule_id, updates, _.id, expected_version)
+        except ValueError as exc: raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+        if stored is None: raise HTTPException(status.HTTP_404_NOT_FOUND, "Rule not found.")
+        rule.update(name=stored.name, active=stored.active, order=stored.position, ownerId=stored.owner_id)
+        repo.rules.sort(key=lambda item: item["order"])
+        repo.assignment_version = expected_version + 1
+        return rule
     for key in ("name", "active", "order"):
         if key in patch: rule[key] = patch[key]
     repo.rules.sort(key=lambda item: item["order"]); repo.assignment_version += 1
-    if assignment_db is not None:
-        assignment_db.update_rule(rule_id, {"name": rule["name"], "active": rule["active"], "position": rule["order"], "owner_id": rule["ownerId"]}, _.id)
-        assignment_db.set_setting("assignment_version", {"value": repo.assignment_version})
     return rule
 
 @app.get("/admin/assignment-fallback")

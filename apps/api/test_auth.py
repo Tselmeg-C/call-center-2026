@@ -234,6 +234,16 @@ def test_memory_import_retry_rejects_changed_workbook() -> None:
     second = client.post("/admin/imports?submission_id=same-import", files={"file": ("source.xlsx", workbook("Two"), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")}, headers=origin)
     assert first.status_code == 201 and second.status_code == 409
 
+def test_import_result_can_be_read_by_owner() -> None:
+    repo.reset()
+    admin = provision_user(type("P", (), {"name": "Admin", "email": "admin@example.test", "role": "Admin", "password": "correct horse battery staple"})())
+    client = TestClient(app, base_url="http://localhost"); client.post("/session/login", json={"email": admin.email, "password": "correct horse battery staple"})
+    book = Workbook(); book.active.append(["bcn", "customer_name"]); book.active.append(["991002", "Readback"]); payload = BytesIO(); book.save(payload)
+    origin = {"origin": "http://localhost:3000"}
+    assert client.post("/admin/imports?submission_id=readback", files={"file": ("source.xlsx", payload.getvalue(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")}, headers=origin).status_code == 201
+    result = client.get("/admin/imports/readback")
+    assert result.status_code == 200 and result.json()["submissionId"] == "readback"
+
 def test_mutation_routes_bind_json_bodies() -> None:
     paths = {route.path: {field.name for field in route.dependant.body_params} for route in app.routes if getattr(route, "dependant", None)}
     assert paths["/customers/{bcn}/interactions"] == {"body"}

@@ -748,6 +748,17 @@ async def import_customers(file: UploadFile = File(...), submission_id: str = Qu
     except Exception as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Workbook could not be processed.") from exc
 
+@app.get("/admin/imports/{submission_id}")
+def get_import_result(submission_id: str, user: Annotated[User, Depends(admin_user)]) -> dict:
+    if customer_db is not None:
+        result = customer_db.import_job(user.id, submission_id)
+        if result is not None:
+            return result
+    result = repo.imports.get(submission_id)
+    if result is None or result.get("actorId") != user.id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Import job not found.")
+    return result
+
 @app.get("/admin/assignment-rules")
 def list_assignment_rules(_: Annotated[User, Depends(admin_user)]) -> list[dict]:
     return repo.rules

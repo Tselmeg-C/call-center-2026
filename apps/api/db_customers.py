@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from sqlalchemy import JSON, ForeignKey, Integer, String, DateTime, create_engine, select, func, or_
+from sqlalchemy import JSON, ForeignKey, Integer, String, DateTime, UniqueConstraint, create_engine, select, func, or_
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
 from sqlalchemy.pool import StaticPool
 
@@ -23,8 +23,9 @@ class PhoneRow(CustomerBase):
 
 class ImportJobRow(CustomerBase):
     __tablename__ = "import_jobs"
+    __table_args__ = (UniqueConstraint("actor_id", "submission_id", name="uq_import_actor_submission"),)
     id: Mapped[str] = mapped_column(String(120), primary_key=True)
-    submission_id: Mapped[str] = mapped_column(String(120), unique=True)
+    submission_id: Mapped[str] = mapped_column(String(120))
     actor_id: Mapped[str] = mapped_column(String(120))
     filename: Mapped[str] = mapped_column(String(255))
     processed: Mapped[int] = mapped_column(Integer)
@@ -136,9 +137,9 @@ class CustomerDatabase:
             for row in rows: row.owner_id = None; row.version += 1
             session.commit()
 
-    def import_job(self, submission_id: str) -> dict | None:
+    def import_job(self, actor_id: str, submission_id: str) -> dict | None:
         with Session(self.engine) as session:
-            row = session.scalar(select(ImportJobRow).where(ImportJobRow.submission_id == submission_id))
+            row = session.scalar(select(ImportJobRow).where(ImportJobRow.actor_id == actor_id, ImportJobRow.submission_id == submission_id))
             if row is None:
                 return None
             errors = session.scalars(select(ImportErrorRow).where(ImportErrorRow.job_id == row.id).order_by(ImportErrorRow.id))
@@ -146,7 +147,7 @@ class CustomerDatabase:
 
     def save_import_job(self, result: dict) -> None:
         with Session(self.engine) as session:
-            if session.scalar(select(ImportJobRow).where(ImportJobRow.submission_id == result["submissionId"])):
+            if session.scalar(select(ImportJobRow).where(ImportJobRow.actor_id == result["actorId"], ImportJobRow.submission_id == result["submissionId"])):
                 return
             job = ImportJobRow(id=result["jobId"], submission_id=result["submissionId"], actor_id=result["actorId"], filename=result["filename"], processed=result["processed"], created=result["created"], updated=result["updated"], error_rows=result["errorRows"], status=result["status"], created_at=datetime.now(timezone.utc))
             session.add(job); session.flush()

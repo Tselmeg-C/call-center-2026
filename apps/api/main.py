@@ -657,7 +657,7 @@ async def import_customers(file: UploadFile = File(...), submission_id: str = Qu
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Upload an .xlsx workbook.")
     if submission_id in repo.imports: return repo.imports[submission_id]
     if customer_db is not None:
-        persisted_job = customer_db.import_job(submission_id)
+        persisted_job = customer_db.import_job(user.id, submission_id)
         if persisted_job:
             repo.imports[submission_id] = persisted_job
             return persisted_job

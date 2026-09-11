@@ -170,6 +170,15 @@ def test_import_preserves_source_columns_and_operational_phone_history() -> None
     assert row["ownerId"] == "sales-owner" and row["phones"] == ["independent"]
     assert row["source"]["propensity_score"] == 0.875 and row["source"]["LAST_PURCHASE_DATE"].startswith("2025-01-02")
 
+def test_import_retry_key_is_scoped_to_actor() -> None:
+    database = CustomerDatabase("sqlite+pysqlite:///:memory:")
+    result = {"jobId": "job-1", "submissionId": "same", "filename": "a.xlsx", "processed": 0, "created": 0, "updated": 0, "errorRows": 0, "status": "Completed", "errors": [], "actorId": "u1"}
+    database.save_import_job(result)
+    other = {**result, "jobId": "job-2", "actorId": "u2"}
+    database.save_import_job(other)
+    assert database.import_job("u1", "same")["jobId"] == "job-1"
+    assert database.import_job("u2", "same")["jobId"] == "job-2"
+
 def test_mutation_routes_bind_json_bodies() -> None:
     paths = {route.path: {field.name for field in route.dependant.body_params} for route in app.routes if getattr(route, "dependant", None)}
     assert paths["/customers/{bcn}/interactions"] == {"body"}

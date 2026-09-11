@@ -32,7 +32,7 @@ ALLOWED_ORIGINS = [os.environ["FRONTEND_ORIGIN"]] if os.environ.get("FRONTEND_OR
 app.add_middleware(CORSMiddleware, allow_origins=ALLOWED_ORIGINS, allow_credentials=True, allow_methods=["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"], allow_headers=["*"])
 password_hash = PasswordHash.recommended()
 SESSION_SECONDS = 8 * 60 * 60
-ALEMBIC_HEAD = "027_retry_actor_fks"
+ALEMBIC_HEAD = "028_import_fingerprint"
 
 
 @app.exception_handler(StorageError)
@@ -751,6 +751,7 @@ async def import_customers(file: UploadFile = File(...), submission_id: str = Qu
     if customer_db is not None:
         persisted_job = customer_db.import_job(user.id, submission_id)
         if persisted_job:
+            if persisted_job.get("fingerprint") and persisted_job["fingerprint"] != fingerprint: raise HTTPException(status.HTTP_409_CONFLICT, "Submission already used.")
             repo.imports[local_key] = persisted_job
             repo.import_payloads[local_key] = fingerprint
             return persisted_job
@@ -811,7 +812,7 @@ async def import_customers(file: UploadFile = File(...), submission_id: str = Qu
                     updated += 1
                 else:
                     repo.customers[bcn] = {"bcn": bcn, "name": name or bcn, "ownerId": None, "ownerName": None, "status": "Open", "phones": [phone] if phone else [], "source": source, "version": 0, "histories": []}; created += 1
-        result = {"jobId": f"import-{uuid4()}", "submissionId": submission_id, "filename": file.filename, "completedAt": datetime.now(timezone.utc).isoformat(), "status": "Partial" if errors else "Completed", "created": created, "updated": updated, "errors": errors, "errorRows": len(errors), "processed": created + updated + len(errors), "actorId": user.id}
+        result = {"jobId": f"import-{uuid4()}", "submissionId": submission_id, "filename": file.filename, "completedAt": datetime.now(timezone.utc).isoformat(), "status": "Partial" if errors else "Completed", "created": created, "updated": updated, "errors": errors, "errorRows": len(errors), "processed": created + updated + len(errors), "actorId": user.id, "fingerprint": fingerprint}
         if customer_db is not None:
             try:
                 customer_db.ingest_sources(source_rows, result)

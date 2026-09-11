@@ -63,6 +63,7 @@ class ImportJobRow(CustomerBase):
     created: Mapped[int] = mapped_column(Integer)
     updated: Mapped[int] = mapped_column(Integer)
     error_rows: Mapped[int] = mapped_column(Integer)
+    fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
     status: Mapped[str] = mapped_column(String(16))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
@@ -180,7 +181,7 @@ class CustomerDatabase:
     @staticmethod
     def _import_job_result(session: Session, row: ImportJobRow) -> dict:
         errors = session.scalars(select(ImportErrorRow).where(ImportErrorRow.job_id == row.id).order_by(ImportErrorRow.id))
-        return {"jobId": row.id, "submissionId": row.submission_id, "filename": row.filename, "completedAt": row.created_at.isoformat(), "status": row.status, "created": row.created, "updated": row.updated, "processed": row.processed, "errorRows": row.error_rows, "errors": [{"row": item.row_number, "field": item.field, "reason": item.reason} for item in errors], "actorId": row.actor_id}
+        return {"jobId": row.id, "submissionId": row.submission_id, "filename": row.filename, "completedAt": row.created_at.isoformat(), "status": row.status, "created": row.created, "updated": row.updated, "processed": row.processed, "errorRows": row.error_rows, "errors": [{"row": item.row_number, "field": item.field, "reason": item.reason} for item in errors], "actorId": row.actor_id, "fingerprint": row.fingerprint}
 
     def import_jobs(self, actor_id: str, page: int, page_size: int) -> tuple[list[dict], int]:
         with Session(self.engine) as session:
@@ -202,7 +203,7 @@ class CustomerDatabase:
         with Session(self.engine) as session:
             if session.scalar(select(ImportJobRow).where(ImportJobRow.actor_id == result["actorId"], ImportJobRow.submission_id == result["submissionId"])):
                 return
-            job = ImportJobRow(id=result["jobId"], submission_id=result["submissionId"], actor_id=result["actorId"], filename=result["filename"], processed=result["processed"], created=result["created"], updated=result["updated"], error_rows=result["errorRows"], status=result["status"], created_at=datetime.now(timezone.utc))
+            job = ImportJobRow(id=result["jobId"], submission_id=result["submissionId"], actor_id=result["actorId"], filename=result["filename"], processed=result["processed"], created=result["created"], updated=result["updated"], error_rows=result["errorRows"], status=result["status"], fingerprint=result.get("fingerprint"), created_at=datetime.now(timezone.utc))
             session.add(job); session.flush()
             session.add_all(ImportErrorRow(job_id=job.id, row_number=item["row"], field=item["field"], reason=item["reason"]) for item in result["errors"])
             session.commit()
@@ -228,7 +229,7 @@ class CustomerDatabase:
                     else: session.add(PhoneRow(bcn=record["bcn"], phone=phone, primary=True))
                 elif existing:
                     session.delete(existing)
-            job = ImportJobRow(id=result["jobId"], submission_id=result["submissionId"], actor_id=result["actorId"], filename=result["filename"], processed=result["processed"], created=result["created"], updated=result["updated"], error_rows=result["errorRows"], status=result["status"], created_at=datetime.now(timezone.utc))
+            job = ImportJobRow(id=result["jobId"], submission_id=result["submissionId"], actor_id=result["actorId"], filename=result["filename"], processed=result["processed"], created=result["created"], updated=result["updated"], error_rows=result["errorRows"], status=result["status"], fingerprint=result.get("fingerprint"), created_at=datetime.now(timezone.utc))
             session.add(job); session.flush()
             session.add_all(ImportErrorRow(job_id=job.id, row_number=item["row"], field=item["field"], reason=item["reason"]) for item in result["errors"])
             session.commit()

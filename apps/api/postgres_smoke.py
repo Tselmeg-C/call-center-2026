@@ -22,6 +22,7 @@ workbook = Workbook(); workbook.active.append(["bcn", "customer_name"]); workboo
 payload = BytesIO(); workbook.save(payload)
 imported = client.post("/admin/imports?submission_id=smoke-import", files={"file": ("smoke.xlsx", payload.getvalue(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")}, headers=origin)
 assert imported.status_code == 201 and imported.json()["created"] == 1
+assert client.get("/admin/imports/smoke-import/errors?page=1&page_size=25").json()["total"] == 0
 assigned = client.post("/admin/assignments/manual/009990", json={"ownerId": sales_id, "submissionId": "smoke-assignment"}, headers=origin)
 assert assigned.status_code == 200
 assert client.post("/session/logout", headers=origin).status_code == 204
@@ -33,6 +34,9 @@ followup = client.post("/customers/009990/follow-ups", json={"type": "Reminder",
 assert followup.status_code == 200
 completed = client.post(f"/customers/009990/follow-ups/{followup.json()['id']}/complete", json={"outcome": "Attempt", "submissionId": "smoke-complete"}, headers=origin)
 assert completed.status_code == 200
+assert completed.json()["interactionId"].startswith("interaction-")
+detail = client.get("/customers/009990")
+assert detail.status_code == 200 and detail.json()["followUps"][0]["interactionId"] == completed.json()["interactionId"]
 assert client.get("/workload").status_code == 200
 assert client.post("/session/logout", headers=origin).status_code == 204
 assert client.post("/session/login", json={"email": "smoke-admin@example.test", "password": password}).status_code == 200

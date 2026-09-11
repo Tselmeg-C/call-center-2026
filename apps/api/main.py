@@ -931,11 +931,19 @@ def run_assignment(body: AssignmentRunRequest, _: Annotated[User, Depends(admin_
         if persisted.get("scope") != body.scope: raise HTTPException(status.HTTP_409_CONFLICT, "Submission already used.")
         return persisted
     if body.scope not in {"unassigned", "all-open"}: raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Invalid assignment scope.")
-    source_rows = readable_rows()
-    candidates = [row for row in source_rows if row["status"] == "Open" and (body.scope == "all-open" or row["ownerId"] is None)]
     eligible_owners = {item["id"] for item in repo.users.values() if item["role"] == "Sales" and item["active"]}
     owners = [rule["ownerId"] for rule in sorted(repo.rules, key=lambda item: item["order"]) if rule["active"] and rule["ownerId"] in eligible_owners]
     if not owners: owners = [owner for owner in repo.fallback_sales if owner in eligible_owners]
+    if assignment_db is not None and customer_db is not None:
+        try: result, changes = assignment_db.run_bulk(actor_id=_.id, submission_id=body.submissionId, scope=body.scope, owner_id=owners[0] if owners else None)
+        except ValueError as exc: raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+        for change in changes:
+            if change["bcn"] in repo.customers:
+                repo.customers[change["bcn"]].update(change, ownerName=repo.users[change["ownerId"]]["name"])
+        repo.assignment_runs[run_key] = result
+        return result
+    source_rows = readable_rows()
+    candidates = [row for row in source_rows if row["status"] == "Open" and (body.scope == "all-open" or row["ownerId"] is None)]
     assigned = 0
     for row in sorted(candidates, key=lambda item: item["bcn"]):
         if not owners or row["ownerId"] == owners[0]: continue

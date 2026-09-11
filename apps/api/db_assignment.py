@@ -1,9 +1,11 @@
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, UniqueConstraint, create_engine, func, select
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
 from sqlalchemy.pool import StaticPool
+from .db_customers import CustomerRow
+from .db_auth import StorageError
 
 class AssignmentBase(DeclarativeBase): pass
 
@@ -101,6 +103,34 @@ class AssignmentDatabase:
                     return row.result
                 raise
             return result
+
+    def run_bulk(self, *, actor_id: str, submission_id: str, scope: str, owner_id: str | None) -> tuple[dict, list[dict]]:
+        try:
+            with Session(self.engine) as session, session.begin():
+                run = AssignmentRunRow(actor_id=actor_id, submission_id=submission_id, scope=scope, fingerprint=sha256(scope.encode()).hexdigest(), result={}, created_at=datetime.now(timezone.utc))
+                session.add(run)
+                # The unique run key serializes retries before any customer mutation.
+                session.flush()
+                query = select(CustomerRow).where(CustomerRow.status == "Open")
+                if scope == "unassigned": query = query.where(CustomerRow.owner_id.is_(None))
+                rows = list(session.scalars(query.order_by(CustomerRow.bcn).with_for_update()))
+                changes = []
+                for row in rows:
+                    if owner_id is None or row.owner_id == owner_id: continue
+                    old_owner = row.owner_id
+                    row.owner_id = owner_id; row.version += 1
+                    changes.append({"bcn": row.bcn, "ownerId": owner_id, "version": row.version})
+                    session.add(AssignmentHistoryRow(bcn=row.bcn, actor_id=actor_id, old_owner_id=old_owner, new_owner_id=owner_id, reason="Bulk assignment", created_at=run.created_at))
+                    session.add(AuditRow(actor_id=actor_id, action="Customer assigned", target=row.bcn, details={"oldOwner": old_owner, "newOwner": owner_id, "source": "bulk"}, created_at=run.created_at))
+                result = {"submissionId": submission_id, "scope": scope, "candidates": len(rows), "assigned": len(changes), "skipped": len(rows) - len(changes)}
+                run.result = result
+            return result, changes
+        except IntegrityError:
+            persisted = self.get_run(actor_id, submission_id, scope)
+            if persisted is not None: return persisted, []
+            raise StorageError("Storage operation failed.") from None
+        except SQLAlchemyError:
+            raise StorageError("Storage operation failed.") from None
 
     def get_run(self, actor_id: str, submission_id: str, payload: str | None = None) -> dict | None:
         with Session(self.engine) as session:

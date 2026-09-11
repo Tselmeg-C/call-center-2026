@@ -26,6 +26,62 @@ from .db_auth import AuthDatabase, SessionRow, UserRow, digest, StorageError
 ORIGIN = {"origin": "http://localhost:3000"}
 
 
+@pytest.mark.parametrize("backend", ["sqlite", "postgres"])
+def test_bulk_assignment_atomic_rollback_and_retry(backend, request, tmp_path, monkeypatch):
+    from .db_assignment import AssignmentDatabase, AssignmentHistoryRow, AssignmentRunRow, AuditRow
+    from .db_customers import CustomerDatabase
+    from fastapi import HTTPException
+
+    url = request.getfixturevalue("postgres_url") if backend == "postgres" else f"sqlite+pysqlite:///{tmp_path / 'bulk.db'}"
+    if backend == "postgres": migrate()
+    auth = AuthDatabase(url, create_schema=backend == "sqlite")
+    customers = CustomerDatabase(url, create_schema=backend == "sqlite")
+    assignments = AssignmentDatabase(url, create_schema=backend == "sqlite")
+    monkeypatch.setattr(main, "customer_db", customers)
+    monkeypatch.setattr(main, "assignment_db", assignments)
+    main.repo.reset()
+    try:
+        hashed = main.password_hash.hash(secrets.token_urlsafe(24))
+        for user_id, role in (("admin", "Admin"), ("sales", "Sales")):
+            auth.create_user(user_id=user_id, name=user_id, email=user_id + "@example.test", role=role, password_hash=hashed)
+            main.repo.users[user_id] = {"id": user_id, "name": user_id, "role": role, "active": True}
+        for bcn in ("000002", "000001"):
+            customers.upsert_source(bcn=bcn, name="Synthetic", source={})
+        main.repo.customers = {"000001": {"bcn": "000001", "ownerId": None, "version": 0}}
+        main.repo.fallback_sales = ["sales"]
+        actor = main.User(id="admin", name="admin", email="admin@example.test", role="Admin")
+        body = main.AssignmentRunRequest(scope="unassigned", submissionId="atomic")
+        def fail_commit(session):
+            if session.bind is assignments.engine:
+                session.flush()
+                raise RuntimeError("Injected failure")
+        event.listen(Session, "before_commit", fail_commit)
+        try:
+            with pytest.raises(RuntimeError, match="Injected failure"):
+                main.run_assignment(body, actor)
+        finally:
+            event.remove(Session, "before_commit", fail_commit)
+        assert all(row.owner_id is None and row.version == 0 for row in customers.all())
+        assert main.repo.customers["000001"]["ownerId"] is None and main.repo.assignment_runs == {}
+        with Session(assignments.engine) as session:
+            assert all(session.scalar(select(table)) is None for table in (AssignmentHistoryRow, AuditRow, AssignmentRunRow))
+        result = main.run_assignment(body, actor)
+        assert result["assigned"] == 2
+        assert main.repo.customers["000001"]["ownerId"] == "sales"
+        assert main.run_assignment(body, actor) == result
+        with pytest.raises(HTTPException) as conflict:
+            main.run_assignment(main.AssignmentRunRequest(scope="all-open", submissionId="atomic"), actor)
+        assert conflict.value.status_code == 409
+        assert all(row.owner_id == "sales" and row.version == 1 for row in customers.all())
+        with Session(assignments.engine) as session:
+            assert len(list(session.scalars(select(AssignmentHistoryRow)))) == 2
+            assert len(list(session.scalars(select(AuditRow)))) == 2
+            assert len(list(session.scalars(select(AssignmentRunRow)))) == 1
+    finally:
+        for database in (auth, customers, assignments): database.engine.dispose()
+        main.repo.reset()
+
+
 @pytest.fixture
 def postgres_url(monkeypatch):
     raw = os.getenv("TEST_DATABASE_URL")

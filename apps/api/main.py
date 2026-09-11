@@ -789,7 +789,7 @@ async def import_customers(file: UploadFile = File(...), submission_id: str = Qu
                     updated += 1
                 else:
                     repo.customers[bcn] = {"bcn": bcn, "name": name or bcn, "ownerId": None, "ownerName": None, "status": "Open", "phones": [phone] if phone else [], "source": source, "version": 0, "histories": []}; created += 1
-        result = {"jobId": f"import-{len(repo.imports)+1}", "submissionId": submission_id, "filename": file.filename, "completedAt": datetime.now(timezone.utc).isoformat(), "status": "Partial" if errors else "Completed", "created": created, "updated": updated, "errors": errors, "errorRows": len(errors), "processed": created + updated + len(errors), "actorId": user.id}
+        result = {"jobId": f"import-{uuid4()}", "submissionId": submission_id, "filename": file.filename, "completedAt": datetime.now(timezone.utc).isoformat(), "status": "Partial" if errors else "Completed", "created": created, "updated": updated, "errors": errors, "errorRows": len(errors), "processed": created + updated + len(errors), "actorId": user.id}
         if customer_db is not None:
             try:
                 customer_db.ingest_sources(source_rows, result)

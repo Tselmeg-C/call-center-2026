@@ -235,23 +235,23 @@ def collection_import_values(headers: list[str], values: tuple[object, ...]) -> 
 @app.middleware("http")
 async def origin_guard(request: Request, call_next):
     started = perf_counter()
+    route = getattr(request.scope.get("route"), "path", request.url.path)
     candidate = request.headers.get("x-request-id", "")
     request_id = candidate if re.fullmatch(r"[A-Za-z0-9._-]{1,128}", candidate) else str(uuid4())
     if request.url.path == "/admin/imports":
         try: content_length = int(request.headers.get("content-length", "0"))
         except ValueError: content_length = 0
         if content_length > 11 * 1024 * 1024:
-            logger.warning("request id=%s method=%s route=%s status=413 duration_ms=%.3f error=upload_limit", request_id, request.method, request.url.path, (perf_counter() - started) * 1000)
+            logger.warning("request id=%s method=%s route=%s status=413 duration_ms=%.3f error=upload_limit", request_id, request.method, route, (perf_counter() - started) * 1000)
             return Response("Upload is too large.", status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, headers={"x-request-id": request_id}, media_type="application/json")
     if request.method in {"POST", "PATCH", "PUT", "DELETE"} and request.url.path != "/session/login":
         origin = request.headers.get("origin")
         referer = request.headers.get("referer", "")
         if origin not in set(ALLOWED_ORIGINS) and not any(referer.startswith(value + "/") for value in ALLOWED_ORIGINS):
-            logger.warning("request id=%s method=%s route=%s status=403 duration_ms=%.3f error=origin", request_id, request.method, request.url.path, (perf_counter() - started) * 1000)
+            logger.warning("request id=%s method=%s route=%s status=403 duration_ms=%.3f error=origin", request_id, request.method, route, (perf_counter() - started) * 1000)
             return Response("Origin not allowed.", status_code=403, headers={"x-request-id": request_id}, media_type="application/json")
     response = await call_next(request)
     response.headers["x-request-id"] = request_id
-    route = getattr(request.scope.get("route"), "path", request.url.path)
     logger.info("request id=%s method=%s route=%s status=%s duration_ms=%.3f error=%s", request_id, request.method, route, response.status_code, (perf_counter() - started) * 1000, "none" if response.status_code < 400 else "http_error")
     return response
 

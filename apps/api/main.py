@@ -711,11 +711,10 @@ async def import_customers(file: UploadFile = File(...), submission_id: str = Qu
                     updated += 1
                 else:
                     repo.customers[bcn] = {"bcn": bcn, "name": name or bcn, "ownerId": None, "ownerName": None, "status": "Open", "phones": [phone] if phone else [], "source": source, "version": 0, "histories": []}; created += 1
-        if customer_db is not None: customer_db.upsert_sources(source_rows)
         result = {"jobId": f"import-{len(repo.imports)+1}", "submissionId": submission_id, "filename": file.filename, "completedAt": datetime.now(timezone.utc).isoformat(), "status": "Partial" if errors else "Completed", "created": created, "updated": updated, "errors": errors, "errorRows": len(errors), "processed": created + updated + len(errors), "actorId": user.id}
-        repo.imports[submission_id] = result
         if customer_db is not None:
-            customer_db.save_import_job(result)
+            customer_db.ingest_sources(source_rows, result)
+        repo.imports[submission_id] = result
         if activity_db is not None: activity_db.save_idempotent(actor_id=user.id, operation="import", submission_id=submission_id, payload=payload, result=result)
         append_audit(user.id, "Import completed", result["jobId"], {"created": created, "updated": updated, "errors": len(errors)}); return result
     except HTTPException:

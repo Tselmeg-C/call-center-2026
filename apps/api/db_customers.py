@@ -152,3 +152,25 @@ class CustomerDatabase:
             session.add(job); session.flush()
             session.add_all(ImportErrorRow(job_id=job.id, row_number=item["row"], field=item["field"], reason=item["reason"]) for item in result["errors"])
             session.commit()
+
+    def ingest_sources(self, records: list[dict], result: dict) -> None:
+        """Commit source rows, phones, import summary, and row errors together."""
+        with Session(self.engine) as session:
+            for record in records:
+                row = session.get(CustomerRow, record["bcn"])
+                if row is None:
+                    row = CustomerRow(bcn=record["bcn"], name=record["name"] or record["bcn"], status="Open", source={})
+                    session.add(row)
+                row.name = record["name"] or row.name
+                row.source = record["source"]
+                phone = record.get("primary_phone")
+                existing = session.scalars(select(PhoneRow).where(PhoneRow.bcn == record["bcn"], PhoneRow.primary.is_(True))).first()
+                if phone:
+                    if existing: existing.phone = phone
+                    else: session.add(PhoneRow(bcn=record["bcn"], phone=phone, primary=True))
+                elif existing:
+                    session.delete(existing)
+            job = ImportJobRow(id=result["jobId"], submission_id=result["submissionId"], actor_id=result["actorId"], filename=result["filename"], processed=result["processed"], created=result["created"], updated=result["updated"], error_rows=result["errorRows"], status=result["status"], created_at=datetime.now(timezone.utc))
+            session.add(job); session.flush()
+            session.add_all(ImportErrorRow(job_id=job.id, row_number=item["row"], field=item["field"], reason=item["reason"]) for item in result["errors"])
+            session.commit()

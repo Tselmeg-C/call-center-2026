@@ -240,6 +240,13 @@ def test_import_rejects_missing_required_customer_name() -> None:
     response = client.post("/admin/imports?submission_id=missing-name", files={"file": ("source.xlsx", payload.getvalue(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")}, headers={"origin": "http://localhost:3000"})
     assert response.status_code == 201 and response.json()["created"] == 0 and response.json()["errorRows"] == 1
 
+def test_import_errors_are_paginated() -> None:
+    repo.reset(); admin = provision_user(type("P", (), {"name": "Admin", "email": "admin@example.test", "role": "Admin", "password": "correct horse battery staple"})())
+    repo.imports[(admin.id, "errors")] = {"errors": [{"row": n, "field": "bcn", "reason": "Invalid bcn"} for n in range(2, 5)]}
+    client = TestClient(app, base_url="http://localhost"); client.post("/session/login", json={"email": admin.email, "password": "correct horse battery staple"})
+    response = client.get("/admin/imports/errors/errors?page=2&page_size=2")
+    assert response.status_code == 200 and response.json()["total"] == 3 and len(response.json()["items"]) == 1
+
 def test_import_storage_failure_restores_in_memory_staging(monkeypatch) -> None:
     from . import main
     repo.reset(); admin = provision_user(type("P", (), {"name": "Admin", "email": "admin@example.test", "role": "Admin", "password": "correct horse battery staple"})())

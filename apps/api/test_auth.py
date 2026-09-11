@@ -102,6 +102,13 @@ def test_database_customer_upsert_preserves_operational_owner() -> None:
     database.upsert_sources([{"bcn": "000123", "name": "Imported", "source": {}, "primary_phone": None}])
     assert database.phones("000123") == []
 
+def test_database_release_open_owner_returns_released_customers() -> None:
+    database = CustomerDatabase("sqlite+pysqlite:///:memory:")
+    database.upsert_source(bcn="000123", name="Open", source={})
+    database.save_operational(bcn="000123", owner_id="sales", status="Open", version=1)
+    assert database.release_open_owner("sales") == ["000123"]
+    assert database.get("000123").owner_id is None
+
 def test_database_customer_ingest_stores_typed_source_fields() -> None:
     from datetime import date
     from decimal import Decimal

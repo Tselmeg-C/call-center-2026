@@ -684,8 +684,14 @@ def update_user(user_id: str, patch: UserPatch, actor: Annotated[User, Depends(a
             if owner == user_id: repo.sessions.pop(token, None)
     if prior_active and (record["active"] is False or record["role"] != "Sales"):
         for row in repo.customers.values():
-            if row["ownerId"] == user_id and row["status"] == "Open": row.update(ownerId=None, ownerName=None, version=row["version"] + 1)
-        if customer_db is not None: customer_db.release_open_owner(user_id)
+            if row["ownerId"] == user_id and row["status"] == "Open":
+                old_version = row["version"]; row.update(ownerId=None, ownerName=None, version=old_version + 1)
+                row["histories"].append({"kind": "Assignment", "actor": actor.name, "actorId": actor.id, "oldOwner": user_id, "newOwner": None, "reason": "Owner deactivated", "timestamp": datetime.now(timezone.utc).isoformat()})
+        if customer_db is not None:
+            released = customer_db.release_open_owner(user_id)
+            for bcn in released:
+                if assignment_db is not None: assignment_db.append_assignment(bcn=bcn, actor_id=actor.id, old_owner_id=user_id, new_owner_id=None, reason="Owner deactivated")
+                append_audit(actor.id, "Customer ownership released", bcn, {"oldOwner": user_id, "newOwner": None, "reason": "Owner deactivated"})
     return User.model_validate(record)
 
 @app.get("/admin/closure-reasons", response_model=list[ClosureReason])

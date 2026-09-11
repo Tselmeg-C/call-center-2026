@@ -244,6 +244,14 @@ def test_import_result_can_be_read_by_owner() -> None:
     result = client.get("/admin/imports/readback")
     assert result.status_code == 200 and result.json()["submissionId"] == "readback"
 
+def test_memory_import_submission_is_scoped_to_actor() -> None:
+    repo.reset()
+    one = provision_user(type("P", (), {"name": "One", "email": "one@example.test", "role": "Admin", "password": "correct horse battery staple"})())
+    two = provision_user(type("P", (), {"name": "Two", "email": "two@example.test", "role": "Admin", "password": "correct horse battery staple"})())
+    repo.imports[(one.id, "shared")] = {"actorId": one.id, "submissionId": "shared"}
+    repo.imports[(two.id, "shared")] = {"actorId": two.id, "submissionId": "shared"}
+    assert repo.imports[(one.id, "shared")]["actorId"] != repo.imports[(two.id, "shared")]["actorId"]
+
 def test_mutation_routes_bind_json_bodies() -> None:
     paths = {route.path: {field.name for field in route.dependant.body_params} for route in app.routes if getattr(route, "dependant", None)}
     assert paths["/customers/{bcn}/interactions"] == {"body"}

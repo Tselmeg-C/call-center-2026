@@ -116,7 +116,7 @@ class MemoryRepo:
         self.assignment_version: int = 1
         self.login_failures: dict[tuple[str, str], list[datetime]] = {}
         self.login_failures_by_ip: dict[str, list[datetime]] = {}
-        self.imports: dict[str, dict] = {}
+        self.imports: dict[tuple[str, str], dict] = {}
         self.import_payloads: dict[tuple[str, str], str] = {}
         self.reset()
 
@@ -677,13 +677,13 @@ async def import_customers(file: UploadFile = File(...), submission_id: str = Qu
     if len(payload) > 10 * 1024 * 1024: raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, "Workbook is too large.")
     fingerprint = sha256(payload).hexdigest()
     local_key = (user.id, submission_id)
-    if submission_id in repo.imports:
+    if local_key in repo.imports:
         if repo.import_payloads.get(local_key) != fingerprint: raise HTTPException(status.HTTP_409_CONFLICT, "Submission already used.")
-        return repo.imports[submission_id]
+        return repo.imports[local_key]
     if customer_db is not None:
         persisted_job = customer_db.import_job(user.id, submission_id)
         if persisted_job:
-            repo.imports[submission_id] = persisted_job
+            repo.imports[local_key] = persisted_job
             repo.import_payloads[local_key] = fingerprint
             return persisted_job
     if activity_db is not None:
@@ -739,7 +739,7 @@ async def import_customers(file: UploadFile = File(...), submission_id: str = Qu
         result = {"jobId": f"import-{len(repo.imports)+1}", "submissionId": submission_id, "filename": file.filename, "completedAt": datetime.now(timezone.utc).isoformat(), "status": "Partial" if errors else "Completed", "created": created, "updated": updated, "errors": errors, "errorRows": len(errors), "processed": created + updated + len(errors), "actorId": user.id}
         if customer_db is not None:
             customer_db.ingest_sources(source_rows, result)
-        repo.imports[submission_id] = result
+        repo.imports[local_key] = result
         repo.import_payloads[local_key] = fingerprint
         if activity_db is not None: activity_db.save_idempotent(actor_id=user.id, operation="import", submission_id=submission_id, payload=payload, result=result)
         append_audit(user.id, "Import completed", result["jobId"], {"created": created, "updated": updated, "errors": len(errors)}); return result
@@ -754,8 +754,8 @@ def get_import_result(submission_id: str, user: Annotated[User, Depends(admin_us
         result = customer_db.import_job(user.id, submission_id)
         if result is not None:
             return result
-    result = repo.imports.get(submission_id)
-    if result is None or result.get("actorId") != user.id:
+    result = repo.imports.get((user.id, submission_id))
+    if result is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Import job not found.")
     return result
 

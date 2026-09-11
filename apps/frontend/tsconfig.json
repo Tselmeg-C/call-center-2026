@@ -1,11 +1,11 @@
 {
-  "include": ["src/**/*.ts", "src/**/*.tsx", "vite.config.ts", "eslint.config.js"],
+  "include": ["**/*.ts", "**/*.tsx", "vite-env.d.ts"],
   "compilerOptions": {
     "target": "ES2022",
     "jsx": "react-jsx",
     "module": "ESNext",
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
-    "types": ["vite/client"],
+    "types": ["vite/client", "node"],
 
     "moduleResolution": "Bundler",
     "allowImportingTsExtensions": true,
@@ -23,8 +23,7 @@
     "noUncheckedIndexedAccess": true,
     "exactOptionalPropertyTypes": true,
     "noUncheckedSideEffectImports": true,
-    "paths": {
-      "@/*": ["./src/*"]
-    }
+    "baseUrl": ".",
+    "paths": { "@/*": ["./*"] }
   }
 }

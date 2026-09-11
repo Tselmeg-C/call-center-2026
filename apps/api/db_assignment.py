@@ -1,5 +1,5 @@
 from datetime import datetime, timedelta, timezone
-from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, create_engine, func, select
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, UniqueConstraint, create_engine, func, select
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
 from sqlalchemy.pool import StaticPool
 
@@ -30,6 +30,8 @@ class AssignmentHistoryRow(AssignmentBase):
 
 class AssignmentRunRow(AssignmentBase):
     __tablename__ = "assignment_runs"
+    __table_args__ = (UniqueConstraint("actor_id", "submission_id", name="uq_assignment_actor_submission"),)
+    actor_id: Mapped[str] = mapped_column(String(120), primary_key=True)
     submission_id: Mapped[str] = mapped_column(String(120), primary_key=True)
     scope: Mapped[str] = mapped_column(String(32)); result: Mapped[dict] = mapped_column(JSON); created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
@@ -79,15 +81,15 @@ class AssignmentDatabase:
         with Session(self.engine) as session:
             session.add(AssignmentHistoryRow(bcn=bcn, actor_id=actor_id, old_owner_id=old_owner_id, new_owner_id=new_owner_id, reason=reason, created_at=datetime.now(timezone.utc))); session.commit()
 
-    def save_run(self, *, submission_id: str, scope: str, result: dict) -> dict:
+    def save_run(self, *, actor_id: str, submission_id: str, scope: str, result: dict) -> dict:
         with Session(self.engine) as session:
-            row = session.get(AssignmentRunRow, submission_id)
+            row = session.get(AssignmentRunRow, (actor_id, submission_id))
             if row: return row.result
-            session.add(AssignmentRunRow(submission_id=submission_id, scope=scope, result=result, created_at=datetime.now(timezone.utc))); session.commit(); return result
+            session.add(AssignmentRunRow(actor_id=actor_id, submission_id=submission_id, scope=scope, result=result, created_at=datetime.now(timezone.utc))); session.commit(); return result
 
-    def get_run(self, submission_id: str) -> dict | None:
+    def get_run(self, actor_id: str, submission_id: str) -> dict | None:
         with Session(self.engine) as session:
-            row = session.get(AssignmentRunRow, submission_id)
+            row = session.get(AssignmentRunRow, (actor_id, submission_id))
             return row.result if row else None
 
     def get_setting(self, key: str) -> dict | None:

@@ -117,8 +117,8 @@ def test_assignment_database_keeps_ordered_rules_and_audit() -> None:
     filtered, filtered_total = database.audit(actor="admin", action="created", page=1, page_size=1)
     assert filtered_total == 2 and len(filtered) == 1
     result = {"submissionId": "s1", "scope": "unassigned", "assigned": 1}
-    assert database.save_run(submission_id="s1", scope="unassigned", result=result) == result
-    assert database.get_run("s1") == result
+    assert database.save_run(actor_id="admin", submission_id="s1", scope="unassigned", result=result) == result
+    assert database.get_run("admin", "s1") == result
     database.set_setting("fallback_sales", {"ids": ["u1"]})
     assert database.get_setting("fallback_sales") == {"ids": ["u1"]}
 

@@ -201,6 +201,19 @@ def test_close_lifecycle_commits_cancellations_and_retry_record() -> None:
     database.close_lifecycle("000123", event, actor_id="u1", submission_id="close-1", payload="000123|close|r1", result={"status": "Closed"})
     assert database.followups("000123")[0].status == "Cancelled"
     assert database.get_idempotent(actor_id="u1", operation="close", submission_id="close-1", payload="000123|close|r1") == {"status": "Closed"}
+
+def test_close_lifecycle_rolls_back_on_activity_conflict() -> None:
+    from datetime import datetime, timezone
+    from sqlalchemy.exc import IntegrityError
+    from .db_activity import ActivityRow
+    database = ActivityDatabase("sqlite+pysqlite:///:memory:")
+    database.save_followup({"id": "f-rollback", "bcn": "000123", "actorId": "u1", "type": "Reminder", "due": None, "status": "Open", "note": "next"})
+    with database.engine.begin() as connection:
+        connection.execute(ActivityRow.__table__.insert().values(id="activity-f-rollback-cancel", bcn="000123", actor_id="u1", kind="Existing", created_at=datetime.now(timezone.utc)))
+    try: database.close_lifecycle("000123", {"id": "closure-rollback", "reason": "Done", "timestamp": datetime.now(timezone.utc).isoformat()}, actor_id="u1", submission_id="close-rollback", payload="p", result={})
+    except IntegrityError: pass
+    else: assert False
+    assert database.followups("000123")[0].status == "Open" and database.get_idempotent(actor_id="u1", operation="close", submission_id="close-rollback", payload="p") is None
 def test_real_http_admin_sales_journey() -> None:
     repo.reset()
     admin = provision_user(type("P", (), {"name": "Admin", "email": "admin@example.test", "role": "Admin", "password": "correct horse battery staple"})())

@@ -747,7 +747,14 @@ async def import_customers(file: UploadFile = File(...), submission_id: str = Qu
         if persisted: return persisted
     try:
         from io import BytesIO
+        from zipfile import BadZipFile, ZipFile
         from openpyxl import load_workbook
+        try:
+            with ZipFile(BytesIO(payload)) as archive:
+                if sum(max(0, item.file_size) for item in archive.infolist()) > 100 * 1024 * 1024:
+                    raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, "Workbook expands beyond the processing limit.")
+        except BadZipFile as exc:
+            raise ValueError("Invalid workbook archive") from exc
         workbook = load_workbook(BytesIO(payload), read_only=True, data_only=True, keep_links=False)
         sheet = workbook.worksheets[0]
         rows = sheet.iter_rows(values_only=True)

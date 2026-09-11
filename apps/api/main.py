@@ -24,6 +24,7 @@ from .db_customers import CustomerDatabase
 from .db_assignment import AssignmentDatabase
 from .db_activity import ActivityDatabase
 from sqlalchemy import inspect
+from sqlalchemy.exc import IntegrityError
 
 app = FastAPI(title="Call Center API", version="0.1.0")
 logger = logging.getLogger("call-center.api")
@@ -474,7 +475,9 @@ def close_customer(bcn: str, body: LifecycleRequest, user: Annotated[User, Depen
     row = writable_customer(bcn, user); reason = repo.reasons.get(body.reasonId or "")
     if not reason or not reason["active"]: raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Choose an active closure reason.")
     timestamp = datetime.now(timezone.utc).isoformat(); row["status"] = "Closed"; row["version"] += 1; event = {"id": f"closure-{bcn}-{row['version']}", "bcn": bcn, "kind": "Closure", "reasonId": reason["id"], "reason": reason["label"], "actor": user.name, "actorId": user.id, "timestamp": timestamp}; row["histories"].append(event)
-    if activity_db is not None: activity_db.close_lifecycle(bcn, event, actor_id=user.id, submission_id=body.submissionId, payload=payload, result=row)
+    if activity_db is not None:
+        try: activity_db.close_lifecycle(bcn, event, actor_id=user.id, submission_id=body.submissionId, payload=payload, result=row)
+        except IntegrityError as exc: raise HTTPException(status.HTTP_409_CONFLICT, "Customer close is already being processed.") from exc
     else: persist_activity({**event, "text": reason["label"]})
     append_audit(user.id, "Customer closed", bcn, {"reasonId": reason["id"], "reason": reason["label"]})
     if activity_db is not None:

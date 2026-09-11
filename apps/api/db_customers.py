@@ -1,4 +1,5 @@
-from sqlalchemy import JSON, ForeignKey, Integer, String, create_engine, select, func, or_
+from datetime import datetime, timezone
+from sqlalchemy import JSON, ForeignKey, Integer, String, DateTime, create_engine, select, func, or_
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
 from sqlalchemy.pool import StaticPool
 
@@ -19,6 +20,27 @@ class PhoneRow(CustomerBase):
     bcn: Mapped[str] = mapped_column(ForeignKey("customers.bcn", ondelete="CASCADE"))
     phone: Mapped[str] = mapped_column(String(64))
     primary: Mapped[bool] = mapped_column("is_primary", default=False)
+
+class ImportJobRow(CustomerBase):
+    __tablename__ = "import_jobs"
+    id: Mapped[str] = mapped_column(String(120), primary_key=True)
+    submission_id: Mapped[str] = mapped_column(String(120), unique=True)
+    actor_id: Mapped[str] = mapped_column(String(120))
+    filename: Mapped[str] = mapped_column(String(255))
+    processed: Mapped[int] = mapped_column(Integer)
+    created: Mapped[int] = mapped_column(Integer)
+    updated: Mapped[int] = mapped_column(Integer)
+    error_rows: Mapped[int] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(16))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+class ImportErrorRow(CustomerBase):
+    __tablename__ = "import_row_errors"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    job_id: Mapped[str] = mapped_column(String(120), ForeignKey("import_jobs.id", ondelete="CASCADE"))
+    row_number: Mapped[int] = mapped_column(Integer)
+    field: Mapped[str] = mapped_column(String(120))
+    reason: Mapped[str] = mapped_column(String(255))
 
 class CustomerDatabase:
     def __init__(self, url: str, *, create_schema: bool = True):
@@ -112,4 +134,21 @@ class CustomerDatabase:
         with Session(self.engine) as session:
             rows = session.scalars(select(CustomerRow).where(CustomerRow.owner_id == owner_id, CustomerRow.status == "Open")).all()
             for row in rows: row.owner_id = None; row.version += 1
+            session.commit()
+
+    def import_job(self, submission_id: str) -> dict | None:
+        with Session(self.engine) as session:
+            row = session.scalar(select(ImportJobRow).where(ImportJobRow.submission_id == submission_id))
+            if row is None:
+                return None
+            errors = session.scalars(select(ImportErrorRow).where(ImportErrorRow.job_id == row.id).order_by(ImportErrorRow.id))
+            return {"jobId": row.id, "submissionId": row.submission_id, "filename": row.filename, "completedAt": row.created_at.isoformat(), "status": row.status, "created": row.created, "updated": row.updated, "processed": row.processed, "errorRows": row.error_rows, "errors": [{"row": item.row_number, "field": item.field, "reason": item.reason} for item in errors], "actorId": row.actor_id}
+
+    def save_import_job(self, result: dict) -> None:
+        with Session(self.engine) as session:
+            if session.scalar(select(ImportJobRow).where(ImportJobRow.submission_id == result["submissionId"])):
+                return
+            job = ImportJobRow(id=result["jobId"], submission_id=result["submissionId"], actor_id=result["actorId"], filename=result["filename"], processed=result["processed"], created=result["created"], updated=result["updated"], error_rows=result["errorRows"], status=result["status"], created_at=datetime.now(timezone.utc))
+            session.add(job); session.flush()
+            session.add_all(ImportErrorRow(job_id=job.id, row_number=item["row"], field=item["field"], reason=item["reason"]) for item in result["errors"])
             session.commit()

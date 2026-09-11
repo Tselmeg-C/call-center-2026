@@ -31,7 +31,7 @@ ALLOWED_ORIGINS = [os.environ["FRONTEND_ORIGIN"]] if os.environ.get("FRONTEND_OR
 app.add_middleware(CORSMiddleware, allow_origins=ALLOWED_ORIGINS, allow_credentials=True, allow_methods=["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"], allow_headers=["*"])
 password_hash = PasswordHash.recommended()
 SESSION_SECONDS = 8 * 60 * 60
-ALEMBIC_HEAD = "019_assignment_run_fingerprint"
+ALEMBIC_HEAD = "020_assignment_identity_fks"
 
 
 @app.exception_handler(StorageError)

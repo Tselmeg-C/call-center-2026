@@ -8,16 +8,16 @@
 // You should NOT make any changes in this file as it will be overwritten.
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
-import { Route as rootRouteImport } from './../routes/__root'
-import { Route as IndexRouteImport } from './../routes/index'
-import { Route as AllCustomersRouteImport } from './../routes/all-customers'
-import { Route as MyCustomersRouteImport } from './../routes/my-customers'
-import { Route as AdminAssignmentRouteImport } from './../routes/admin.assignment'
-import { Route as AdminAuditRouteImport } from './../routes/admin.audit'
-import { Route as AdminImportRouteImport } from './../routes/admin.import'
-import { Route as AdminReportsRouteImport } from './../routes/admin.reports'
-import { Route as AdminUsersRouteImport } from './../routes/admin.users'
-import { Route as CustomerBcnRouteImport } from './../routes/customer.$bcn'
+import { Route as rootRouteImport } from './routes/__root'
+import { Route as IndexRouteImport } from './routes/index'
+import { Route as AllCustomersRouteImport } from './routes/all-customers'
+import { Route as MyCustomersRouteImport } from './routes/my-customers'
+import { Route as AdminAssignmentRouteImport } from './routes/admin.assignment'
+import { Route as AdminAuditRouteImport } from './routes/admin.audit'
+import { Route as AdminImportRouteImport } from './routes/admin.import'
+import { Route as AdminReportsRouteImport } from './routes/admin.reports'
+import { Route as AdminUsersRouteImport } from './routes/admin.users'
+import { Route as CustomerBcnRouteImport } from './routes/customer.$bcn'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -229,3 +229,13 @@ const rootRouteChildren: RootRouteChildren = {
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
   ._addFileTypes<FileRouteTypes>()
+
+import type { getRouter } from './router.tsx'
+import type { startInstance } from './start.ts'
+declare module '@tanstack/react-start' {
+  interface Register {
+    ssr: true
+    router: Awaited<ReturnType<typeof getRouter>>
+    config: Awaited<ReturnType<typeof startInstance.getOptions>>
+  }
+}

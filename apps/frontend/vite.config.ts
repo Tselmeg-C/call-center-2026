@@ -6,6 +6,11 @@ import { resolve } from "node:path";
 import { defineConfig } from "vite";
 
 export default defineConfig({
-  plugins: [tanstackStart({ srcDirectory: "." }), tanstackRouter({ target: "react", routesDirectory: "routes" }), react(), tailwindcss()],
-  resolve: { alias: { "@": resolve(process.cwd()) } },
+  plugins: [
+    tanstackStart(),
+    tanstackRouter({ target: "react" }),
+    react(),
+    tailwindcss(),
+  ],
+  resolve: { alias: { "@": resolve(process.cwd(), "src") } },
 });

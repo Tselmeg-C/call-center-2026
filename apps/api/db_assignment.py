@@ -26,7 +26,7 @@ class AuditRow(AssignmentBase):
 class AssignmentHistoryRow(AssignmentBase):
     __tablename__ = "assignment_history"
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    bcn: Mapped[str] = mapped_column(String(64)); actor_id: Mapped[str | None] = mapped_column(String(120), nullable=True); old_owner_id: Mapped[str | None] = mapped_column(String(120), nullable=True); new_owner_id: Mapped[str | None] = mapped_column(String(120), nullable=True); reason: Mapped[str] = mapped_column(String(255)); created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    bcn: Mapped[str] = mapped_column(String(128)); actor_id: Mapped[str | None] = mapped_column(String(120), nullable=True); old_owner_id: Mapped[str | None] = mapped_column(String(120), nullable=True); new_owner_id: Mapped[str | None] = mapped_column(String(120), nullable=True); reason: Mapped[str] = mapped_column(String(255)); created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 class AssignmentRunRow(AssignmentBase):
     __tablename__ = "assignment_runs"

@@ -193,6 +193,14 @@ def test_followup_completion_rejects_cross_customer_and_stale_links() -> None:
     except ValueError as exc: assert "no longer open" in str(exc)
     else: assert False
 
+def test_close_lifecycle_commits_cancellations_and_retry_record() -> None:
+    from datetime import datetime, timezone
+    database = ActivityDatabase("sqlite+pysqlite:///:memory:")
+    database.save_followup({"id": "f-close", "bcn": "000123", "actorId": "u1", "type": "Reminder", "due": None, "status": "Open", "note": "next"})
+    event = {"id": "closure-000123-1", "reason": "Completed", "timestamp": datetime.now(timezone.utc).isoformat()}
+    database.close_lifecycle("000123", event, actor_id="u1", submission_id="close-1", payload="000123|close|r1", result={"status": "Closed"})
+    assert database.followups("000123")[0].status == "Cancelled"
+    assert database.get_idempotent(actor_id="u1", operation="close", submission_id="close-1", payload="000123|close|r1") == {"status": "Closed"}
 def test_real_http_admin_sales_journey() -> None:
     repo.reset()
     admin = provision_user(type("P", (), {"name": "Admin", "email": "admin@example.test", "role": "Admin", "password": "correct horse battery staple"})())

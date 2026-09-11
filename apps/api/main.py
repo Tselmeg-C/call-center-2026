@@ -421,17 +421,17 @@ def create_followup(bcn: str, body: FollowUpCreate, user: Annotated[User, Depend
 @app.post("/customers/{bcn}/close")
 def close_customer(bcn: str, body: LifecycleRequest, user: Annotated[User, Depends(current_user)]) -> Customer:
     local_key = (user.id, bcn, "close", body.submissionId)
+    payload = f"{bcn}|close|{body.reasonId}"
     prior = repo.submissions.get(local_key)
     if prior:
-        if prior["payload"] != f"{bcn}|close|{body.reasonId}": raise HTTPException(status.HTTP_409_CONFLICT, "Submission already used.")
+        if prior["payload"] != payload: raise HTTPException(status.HTTP_409_CONFLICT, "Submission already used.")
         return Customer.model_validate(prior["result"])
-    row = writable_customer(bcn, user); reason = repo.reasons.get(body.reasonId or "")
-    if not reason or not reason["active"]: raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Choose an active closure reason.")
-    payload = f"{bcn}|close|{body.reasonId}"
     if activity_db is not None:
         try: persisted = activity_db.get_idempotent(actor_id=user.id, operation="close", submission_id=body.submissionId, payload=payload)
         except ValueError as exc: raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
-        if persisted: return Customer.model_validate(row)
+        if persisted: return get_customer(bcn, user)
+    row = writable_customer(bcn, user); reason = repo.reasons.get(body.reasonId or "")
+    if not reason or not reason["active"]: raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Choose an active closure reason.")
     timestamp = datetime.now(timezone.utc).isoformat(); row["status"] = "Closed"; row["version"] += 1; event = {"id": f"closure-{bcn}-{row['version']}", "bcn": bcn, "kind": "Closure", "reasonId": reason["id"], "reason": reason["label"], "actor": user.name, "actorId": user.id, "timestamp": timestamp}; row["histories"].append(event); persist_activity({**event, "text": reason["label"]}); append_audit(user.id, "Customer closed", bcn, {"reasonId": reason["id"], "reason": reason["label"]})
     if activity_db is not None:
         for stored in activity_db.followups(bcn):

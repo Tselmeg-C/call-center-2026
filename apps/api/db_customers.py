@@ -175,15 +175,19 @@ class CustomerDatabase:
             row = session.scalar(select(ImportJobRow).where(ImportJobRow.actor_id == actor_id, ImportJobRow.submission_id == submission_id))
             if row is None:
                 return None
-            errors = session.scalars(select(ImportErrorRow).where(ImportErrorRow.job_id == row.id).order_by(ImportErrorRow.id))
-            return {"jobId": row.id, "submissionId": row.submission_id, "filename": row.filename, "completedAt": row.created_at.isoformat(), "status": row.status, "created": row.created, "updated": row.updated, "processed": row.processed, "errorRows": row.error_rows, "errors": [{"row": item.row_number, "field": item.field, "reason": item.reason} for item in errors], "actorId": row.actor_id}
+            return self._import_job_result(session, row)
+
+    @staticmethod
+    def _import_job_result(session: Session, row: ImportJobRow) -> dict:
+        errors = session.scalars(select(ImportErrorRow).where(ImportErrorRow.job_id == row.id).order_by(ImportErrorRow.id))
+        return {"jobId": row.id, "submissionId": row.submission_id, "filename": row.filename, "completedAt": row.created_at.isoformat(), "status": row.status, "created": row.created, "updated": row.updated, "processed": row.processed, "errorRows": row.error_rows, "errors": [{"row": item.row_number, "field": item.field, "reason": item.reason} for item in errors], "actorId": row.actor_id}
 
     def import_jobs(self, actor_id: str, page: int, page_size: int) -> tuple[list[dict], int]:
         with Session(self.engine) as session:
             query = select(ImportJobRow).where(ImportJobRow.actor_id == actor_id).order_by(ImportJobRow.created_at.desc())
             total = session.scalar(select(func.count()).select_from(query.subquery())) or 0
             rows = session.scalars(query.offset((page - 1) * page_size).limit(page_size)).all()
-            return [self.import_job(actor_id, row.submission_id) for row in rows], total
+            return [self._import_job_result(session, row) for row in rows], total
 
     def import_errors(self, actor_id: str, submission_id: str, page: int, page_size: int) -> tuple[list[dict], int] | None:
         with Session(self.engine) as session:

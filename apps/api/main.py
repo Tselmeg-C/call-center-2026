@@ -739,7 +739,7 @@ async def import_customers(file: UploadFile = File(...), submission_id: str = Qu
         bcn_index = next(index for index, value in enumerate(headers) if value.casefold() == "bcn")
         name_index = next((index for index, value in enumerate(headers) if value.casefold() in {"customer_name", "name"}), None)
         phone_index = next((index for index, value in enumerate(headers) if value.casefold() == "phone"), None)
-        errors = []; created = updated = 0; nonblank_rows = 0; expanded_bytes = 0; source_rows = []; seen_bcns: set[str] = set()
+        errors = []; created = updated = 0; nonblank_rows = 0; expanded_bytes = 0; source_rows = []; seen_bcns: set[str] = set(); customer_snapshot = deepcopy(repo.customers) if customer_db is not None else None
         with repo.transaction():
             for row_number, values in enumerate(rows, 2):
                 expanded_bytes += sum(len(str(value).encode("utf-8")) for value in values if value is not None)
@@ -774,7 +774,11 @@ async def import_customers(file: UploadFile = File(...), submission_id: str = Qu
                     repo.customers[bcn] = {"bcn": bcn, "name": name or bcn, "ownerId": None, "ownerName": None, "status": "Open", "phones": [phone] if phone else [], "source": source, "version": 0, "histories": []}; created += 1
         result = {"jobId": f"import-{len(repo.imports)+1}", "submissionId": submission_id, "filename": file.filename, "completedAt": datetime.now(timezone.utc).isoformat(), "status": "Partial" if errors else "Completed", "created": created, "updated": updated, "errors": errors, "errorRows": len(errors), "processed": created + updated + len(errors), "actorId": user.id}
         if customer_db is not None:
-            customer_db.ingest_sources(source_rows, result)
+            try:
+                customer_db.ingest_sources(source_rows, result)
+            except Exception:
+                repo.customers.clear(); repo.customers.update(customer_snapshot or {})
+                raise
         repo.imports[local_key] = result
         repo.import_payloads[local_key] = fingerprint
         if activity_db is not None: activity_db.save_idempotent(actor_id=user.id, operation="import", submission_id=submission_id, payload=payload, result=result)

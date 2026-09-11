@@ -229,6 +229,19 @@ def test_import_rejects_missing_required_customer_name() -> None:
     response = client.post("/admin/imports?submission_id=missing-name", files={"file": ("source.xlsx", payload.getvalue(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")}, headers={"origin": "http://localhost:3000"})
     assert response.status_code == 201 and response.json()["created"] == 0 and response.json()["errorRows"] == 1
 
+def test_import_storage_failure_restores_in_memory_staging(monkeypatch) -> None:
+    from . import main
+    repo.reset(); admin = provision_user(type("P", (), {"name": "Admin", "email": "admin@example.test", "role": "Admin", "password": "correct horse battery staple"})())
+    client = TestClient(app, base_url="http://localhost"); client.post("/session/login", json={"email": admin.email, "password": "correct horse battery staple"})
+    workbook = Workbook(); workbook.active.append(["bcn", "customer_name"]); workbook.active.append(["999999", "Transient"])
+    payload = BytesIO(); workbook.save(payload)
+    class FailingCustomerDB:
+        def ingest_sources(self, *_): raise RuntimeError("database unavailable")
+        def import_job(self, *_): return None
+    monkeypatch.setattr(main, "customer_db", FailingCustomerDB())
+    response = client.post("/admin/imports?submission_id=rollback", files={"file": ("source.xlsx", payload.getvalue(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")}, headers={"origin": "http://localhost:3000"})
+    assert response.status_code == 422 and "999999" not in repo.customers
+
 def test_memory_assignment_retry_is_scoped_to_actor() -> None:
     repo.reset()
     admin_one = provision_user(type("P", (), {"name": "One", "email": "one@example.test", "role": "Admin", "password": "correct horse battery staple"})())

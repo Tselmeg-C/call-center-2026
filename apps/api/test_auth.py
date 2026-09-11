@@ -172,6 +172,7 @@ def test_activity_idempotency_replays_and_rejects_payload_reuse() -> None:
     database.save_activity(record_id="a1", bcn="000123", actor_id="u1", kind="Interaction", outcome="Attempt", text="x")
     assert database.soft_delete("a1", "u1") is True
     assert database.history("000123")[0][0].deleted_by == "u1"
+    assert database.history_map(["000123"])["000123"][0]["deletedBy"] == "u1"
 
 def test_followup_completion_rejects_cross_customer_and_stale_links() -> None:
     database = ActivityDatabase("sqlite+pysqlite:///:memory:")

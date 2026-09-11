@@ -16,8 +16,8 @@ The issue sequence defines acceptance ownership; it does not imply later adapter
 | Issue | Delivery stage | Current implementation |
 | --- | --- | --- |
 | #22 | Identities, sessions, local account recovery | PostgreSQL auth adapter; shared memory/PostgreSQL authentication checks |
-| #23 | Customers and imports | PostgreSQL adapters exist; acceptance verified separately |
-| #24 | Ownership, rules and audit | PostgreSQL adapters exist; acceptance verified separately |
+| #23 | Customers and imports | PostgreSQL adapters and durable import-job retry records exist; full acceptance remains in progress |
+| #24 | Ownership, rules and audit | PostgreSQL adapters and actor-scoped assignment retries exist; full acceptance remains in progress |
 | #25 | Activity, lifecycle and retries | PostgreSQL adapters exist; acceptance verified separately |
 | #26 | Normal full-app database switch and parity | `CALL_CENTER_STORAGE=postgres` selects all current adapters; full-app parity belongs to #26 |
 

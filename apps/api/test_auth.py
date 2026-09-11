@@ -243,6 +243,8 @@ def test_import_result_can_be_read_by_owner() -> None:
     assert client.post("/admin/imports?submission_id=readback", files={"file": ("source.xlsx", payload.getvalue(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")}, headers=origin).status_code == 201
     result = client.get("/admin/imports/readback")
     assert result.status_code == 200 and result.json()["submissionId"] == "readback"
+    page = client.get("/admin/imports?page=1&page_size=1")
+    assert page.status_code == 200 and page.json()["total"] == 1 and len(page.json()["items"]) == 1
 
 def test_memory_import_submission_is_scoped_to_actor() -> None:
     repo.reset()

@@ -179,6 +179,16 @@ def test_import_retry_key_is_scoped_to_actor() -> None:
     assert database.import_job("u1", "same")["jobId"] == "job-1"
     assert database.import_job("u2", "same")["jobId"] == "job-2"
 
+def test_import_rejects_missing_required_customer_name() -> None:
+    repo.reset()
+    admin = provision_user(type("P", (), {"name": "Admin", "email": "admin@example.test", "role": "Admin", "password": "correct horse battery staple"})())
+    client = TestClient(app, base_url="http://localhost")
+    client.post("/session/login", json={"email": admin.email, "password": "correct horse battery staple"})
+    workbook = Workbook(); workbook.active.append(["bcn", "customer_name"]); workbook.active.append(["123456", ""])
+    payload = BytesIO(); workbook.save(payload)
+    response = client.post("/admin/imports?submission_id=missing-name", files={"file": ("source.xlsx", payload.getvalue(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")}, headers={"origin": "http://localhost:3000"})
+    assert response.status_code == 201 and response.json()["created"] == 0 and response.json()["errorRows"] == 1
+
 def test_mutation_routes_bind_json_bodies() -> None:
     paths = {route.path: {field.name for field in route.dependant.body_params} for route in app.routes if getattr(route, "dependant", None)}
     assert paths["/customers/{bcn}/interactions"] == {"body"}

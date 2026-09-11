@@ -692,6 +692,8 @@ async def import_customers(file: UploadFile = File(...), submission_id: str = Qu
                 bcn = str(raw).strip() if raw is not None else ""
                 if not bcn or not bcn.isdigit(): errors.append({"row": row_number, "field": "bcn", "reason": "Invalid bcn"}); continue
                 bcn = bcn.zfill(6); name = str(values[name_index]).strip() if name_index is not None and name_index < len(values) and values[name_index] is not None else ""
+                if len(bcn) > 128: errors.append({"row": row_number, "field": "bcn", "reason": "BCN exceeds 128 characters"}); continue
+                if not name: errors.append({"row": row_number, "field": "customer_name", "reason": "Customer name is required"}); continue
                 phone = str(values[phone_index]).strip() if phone_index is not None and phone_index < len(values) and values[phone_index] is not None else None
                 if bcn in seen_bcns: errors.append({"row": row_number, "field": "bcn", "reason": "Duplicate bcn"}); continue
                 seen_bcns.add(bcn)

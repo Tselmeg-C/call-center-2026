@@ -189,6 +189,14 @@ def test_import_rejects_missing_required_customer_name() -> None:
     response = client.post("/admin/imports?submission_id=missing-name", files={"file": ("source.xlsx", payload.getvalue(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")}, headers={"origin": "http://localhost:3000"})
     assert response.status_code == 201 and response.json()["created"] == 0 and response.json()["errorRows"] == 1
 
+def test_memory_assignment_retry_is_scoped_to_actor() -> None:
+    repo.reset()
+    admin_one = provision_user(type("P", (), {"name": "One", "email": "one@example.test", "role": "Admin", "password": "correct horse battery staple"})())
+    admin_two = provision_user(type("P", (), {"name": "Two", "email": "two@example.test", "role": "Admin", "password": "correct horse battery staple"})())
+    repo.assignment_runs[(admin_one.id, "same-run")] = {"actorId": admin_one.id}
+    repo.assignment_runs[(admin_two.id, "same-run")] = {"actorId": admin_two.id}
+    assert repo.assignment_runs[(admin_one.id, "same-run")] != repo.assignment_runs[(admin_two.id, "same-run")]
+
 def test_mutation_routes_bind_json_bodies() -> None:
     paths = {route.path: {field.name for field in route.dependant.body_params} for route in app.routes if getattr(route, "dependant", None)}
     assert paths["/customers/{bcn}/interactions"] == {"body"}

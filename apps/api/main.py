@@ -97,6 +97,9 @@ class FollowUpCreate(BaseModel):
     note: str = Field(min_length=1, max_length=4000)
     submissionId: str = Field(min_length=1)
 
+class FollowUpCancel(BaseModel):
+    submissionId: str = Field(min_length=1)
+
 class LifecycleRequest(BaseModel):
     reasonId: str | None = None
     submissionId: str = Field(min_length=1)
@@ -534,15 +537,23 @@ def update_followup(bcn: str, followup_id: str, body: FollowUpCreate, user: Anno
     return item
 
 @app.post("/customers/{bcn}/follow-ups/{followup_id}/cancel")
-def cancel_followup(bcn: str, followup_id: str, user: Annotated[User, Depends(current_user)]) -> dict:
+def cancel_followup(bcn: str, followup_id: str, body: FollowUpCancel | None = None, user: Annotated[User, Depends(current_user)] = None) -> dict:
     item = find_followup(bcn, followup_id, user)
+    submission_id = body.submissionId if body else f"cancel:{followup_id}"
+    payload = f"{bcn}|{followup_id}"
+    if activity_db is not None:
+        try: persisted = activity_db.get_idempotent(actor_id=user.id, operation="followup-cancel", submission_id=submission_id, payload=payload)
+        except ValueError as exc: raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+        if persisted: return persisted
     if item["status"] == "Cancelled": return item
     if item["status"] == "Completed": raise HTTPException(status.HTTP_409_CONFLICT, "Follow-up is completed.")
-    item["status"] = "Cancelled"; item["updatedAt"] = datetime.now(timezone.utc).isoformat(); persist_followup(item); persist_activity({"id": f"activity-{uuid4()}", "bcn": bcn, "kind": "Follow-up cancel", "actorId": user.id, "text": None}); return item
+    item["status"] = "Cancelled"; item["updatedAt"] = datetime.now(timezone.utc).isoformat(); persist_followup(item); persist_activity({"id": f"activity-{uuid4()}", "bcn": bcn, "kind": "Follow-up cancel", "actorId": user.id, "text": None})
+    if activity_db is not None: activity_db.save_idempotent(actor_id=user.id, operation="followup-cancel", submission_id=submission_id, payload=payload, result=item)
+    return item
 
 @app.delete("/customers/{bcn}/follow-ups/{followup_id}")
 def cancel_followup_contract(bcn: str, followup_id: str, user: Annotated[User, Depends(current_user)]) -> dict:
-    return cancel_followup(bcn, followup_id, user)
+    return cancel_followup(bcn, followup_id, user=user)
 
 @app.post("/customers/{bcn}/follow-ups/{followup_id}/complete")
 def complete_followup(bcn: str, followup_id: str, body: InteractionCreate, user: Annotated[User, Depends(current_user)]) -> dict:

@@ -262,6 +262,11 @@ def test_import_retry_key_is_scoped_to_actor() -> None:
     assert database.import_job("u1", "same")["jobId"] == "job-1"
     assert database.import_job("u2", "same")["jobId"] == "job-2"
 
+def test_import_fingerprint_round_trips_with_durable_job() -> None:
+    database = CustomerDatabase("sqlite+pysqlite:///:memory:")
+    database.save_import_job({"jobId": "job-fingerprint", "submissionId": "fingerprint", "filename": "x.xlsx", "processed": 0, "created": 0, "updated": 0, "errorRows": 0, "status": "Completed", "errors": [], "actorId": "u1", "fingerprint": "a" * 64})
+    assert database.import_job("u1", "fingerprint")["fingerprint"] == "a" * 64
+
 def test_import_rejects_missing_required_customer_name() -> None:
     repo.reset()
     admin = provision_user(type("P", (), {"name": "Admin", "email": "admin@example.test", "role": "Admin", "password": "correct horse battery staple"})())

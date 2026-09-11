@@ -1,5 +1,7 @@
 from datetime import datetime, timedelta, timezone
 from io import BytesIO
+import os
+import subprocess
 from openpyxl import Workbook
 
 from fastapi.testclient import TestClient
@@ -41,6 +43,11 @@ def test_login_failure_ip_throttle_limits_identity_spraying() -> None:
     for index in range(50): assert client.post("/session/login", json={"email": f"unknown-{index}@example.test", "password": "wrong password"}).status_code == 401
     limited = client.post("/session/login", json={"email": "unknown-final@example.test", "password": "wrong password"})
     assert limited.status_code == 429 and limited.headers.get("retry-after") == "900"
+
+def test_start_rejects_multi_worker_rate_limit_topology() -> None:
+    env = os.environ.copy(); env["WEB_CONCURRENCY"] = "2"; env["CALL_CENTER_STORAGE"] = "memory"
+    result = subprocess.run(["sh", "apps/api/start.sh"], env=env, capture_output=True, text=True)
+    assert result.returncode == 78 and "WEB_CONCURRENCY must be 1" in result.stderr
 
 def test_request_id_rejects_malformed_client_value() -> None:
     response = TestClient(app, base_url="http://localhost").get("/health/live", headers={"x-request-id": "bad\nvalue"})

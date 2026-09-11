@@ -570,10 +570,9 @@ def complete_followup(bcn: str, followup_id: str, body: InteractionCreate, user:
     if item["status"] == "Completed": return item
     if item["status"] != "Open": raise HTTPException(status.HTTP_409_CONFLICT, "Follow-up is not open.")
     interaction = create_interaction(bcn, body, user, persist=activity_db is None); item["status"] = "Completed"; item["interactionId"] = interaction["id"]; item["updatedAt"] = datetime.now(timezone.utc).isoformat()
-    if activity_db is not None: activity_db.complete_followup(item, interaction)
+    if activity_db is not None: activity_db.complete_followup(item, interaction, idempotency={"actor_id": user.id, "operation": "followup-complete", "submission_id": body.submissionId, "payload": payload, "result": item})
     else: persist_followup(item)
     repo.submissions[key] = {"payload": payload, "result": item}
-    if activity_db is not None: activity_db.save_idempotent(actor_id=user.id, operation="followup-complete", submission_id=body.submissionId, payload=payload, result=item)
     return item
 
 

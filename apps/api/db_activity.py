@@ -87,7 +87,7 @@ class ActivityDatabase:
             row = session.get(FollowUpRow, record["id"]) or FollowUpRow(id=record["id"], bcn=record["bcn"], actor_id=record["actorId"], type=record["type"], due=datetime.fromisoformat(record["due"]) if record.get("due") else None, status=record["status"], note=record.get("note"), version=0, created_at=datetime.now(timezone.utc), updated_at=datetime.now(timezone.utc))
             row.type = record["type"]; row.due = datetime.fromisoformat(record["due"]) if record.get("due") else None; row.status = record["status"]; row.note = record.get("note"); row.version = record.get("version", row.version); row.updated_at = datetime.now(timezone.utc); session.add(row); session.commit()
 
-    def complete_followup(self, record: dict, interaction: dict) -> None:
+    def complete_followup(self, record: dict, interaction: dict, idempotency: dict | None = None) -> None:
         with Session(self.engine) as session:
             row = session.get(FollowUpRow, record["id"], with_for_update=True)
             if not row: raise ValueError("follow-up not found")
@@ -95,6 +95,8 @@ class ActivityDatabase:
             if row.status != "Open": raise ValueError("follow-up is no longer open")
             row.status = "Completed"; row.interaction_id = interaction["id"]; row.updated_at = datetime.now(timezone.utc)
             session.add(ActivityRow(id=interaction["id"], bcn=interaction["bcn"], actor_id=interaction["actorId"], kind="Interaction", outcome=interaction.get("outcome"), text=interaction.get("note"), created_at=datetime.now(timezone.utc)))
+            if idempotency:
+                session.add(IdempotencyRow(actor_id=idempotency["actor_id"], operation=idempotency["operation"], submission_id=idempotency["submission_id"], fingerprint=fingerprint(idempotency["payload"]), result=idempotency["result"], completed_at=datetime.now(timezone.utc)))
             session.add(row); session.commit()
 
     def followups(self, bcn: str) -> list[FollowUpRow]:

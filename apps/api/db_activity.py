@@ -99,6 +99,15 @@ class ActivityDatabase:
                 session.add(IdempotencyRow(actor_id=idempotency["actor_id"], operation=idempotency["operation"], submission_id=idempotency["submission_id"], fingerprint=fingerprint(idempotency["payload"]), result=idempotency["result"], completed_at=datetime.now(timezone.utc)))
             session.add(row); session.commit()
 
+    def close_lifecycle(self, bcn: str, event: dict, *, actor_id: str, submission_id: str, payload: str, result: dict) -> None:
+        with Session(self.engine) as session:
+            for row in session.scalars(select(FollowUpRow).where(FollowUpRow.bcn == bcn, FollowUpRow.status == "Open")):
+                row.status = "Cancelled"; row.updated_at = datetime.now(timezone.utc)
+                session.add(ActivityRow(id=f"activity-{row.id}-cancel", bcn=bcn, actor_id=actor_id, kind="Follow-up cancel", text="Customer closed", created_at=datetime.now(timezone.utc)))
+            session.add(ActivityRow(id=event["id"], bcn=bcn, actor_id=actor_id, kind="Closure", text=event["reason"], created_at=datetime.fromisoformat(event["timestamp"])))
+            session.add(IdempotencyRow(actor_id=actor_id, operation="close", submission_id=submission_id, fingerprint=fingerprint(payload), result=result, completed_at=datetime.now(timezone.utc)))
+            session.commit()
+
     def followups(self, bcn: str) -> list[FollowUpRow]:
         with Session(self.engine) as session: return list(session.scalars(select(FollowUpRow).where(FollowUpRow.bcn == bcn).order_by(FollowUpRow.created_at, FollowUpRow.id)))
 

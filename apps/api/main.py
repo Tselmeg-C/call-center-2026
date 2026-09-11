@@ -473,19 +473,21 @@ def close_customer(bcn: str, body: LifecycleRequest, user: Annotated[User, Depen
         if persisted: return get_customer(bcn, user)
     row = writable_customer(bcn, user); reason = repo.reasons.get(body.reasonId or "")
     if not reason or not reason["active"]: raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Choose an active closure reason.")
-    timestamp = datetime.now(timezone.utc).isoformat(); row["status"] = "Closed"; row["version"] += 1; event = {"id": f"closure-{bcn}-{row['version']}", "bcn": bcn, "kind": "Closure", "reasonId": reason["id"], "reason": reason["label"], "actor": user.name, "actorId": user.id, "timestamp": timestamp}; row["histories"].append(event); persist_activity({**event, "text": reason["label"]}); append_audit(user.id, "Customer closed", bcn, {"reasonId": reason["id"], "reason": reason["label"]})
+    timestamp = datetime.now(timezone.utc).isoformat(); row["status"] = "Closed"; row["version"] += 1; event = {"id": f"closure-{bcn}-{row['version']}", "bcn": bcn, "kind": "Closure", "reasonId": reason["id"], "reason": reason["label"], "actor": user.name, "actorId": user.id, "timestamp": timestamp}; row["histories"].append(event)
+    if activity_db is not None: activity_db.close_lifecycle(bcn, event, actor_id=user.id, submission_id=body.submissionId, payload=payload, result=row)
+    else: persist_activity({**event, "text": reason["label"]})
+    append_audit(user.id, "Customer closed", bcn, {"reasonId": reason["id"], "reason": reason["label"]})
     if activity_db is not None:
         for stored in activity_db.followups(bcn):
             key = f"{user.id}:{bcn}:followup:{stored.id}"
             repo.followups.setdefault(key, {"id": stored.id, "bcn": stored.bcn, "type": stored.type, "due": stored.due.isoformat() if stored.due else None, "note": stored.note, "status": stored.status, "actorId": stored.actor_id, "createdAt": stored.created_at.isoformat()})
-    for item in repo.followups.values():
-        if item["bcn"] == bcn and item["status"] == "Open":
-            item["status"] = "Cancelled"; item["updatedAt"] = datetime.now(timezone.utc).isoformat(); persist_followup(item)
-            persist_activity({"id": f"activity-{uuid4()}", "bcn": bcn, "kind": "Follow-up cancel", "actorId": user.id, "text": "Customer closed"})
+    if activity_db is None:
+        for item in repo.followups.values():
+            if item["bcn"] == bcn and item["status"] == "Open":
+                item["status"] = "Cancelled"; item["updatedAt"] = datetime.now(timezone.utc).isoformat(); persist_followup(item); persist_activity({"id": f"activity-{uuid4()}", "bcn": bcn, "kind": "Follow-up cancel", "actorId": user.id, "text": "Customer closed"})
     if customer_db is not None: customer_db.save_operational(bcn=bcn, owner_id=row["ownerId"], status=row["status"], version=row["version"])
     result = Customer.model_validate(row)
     repo.submissions[local_key] = {"payload": payload, "result": result.model_dump()}
-    if activity_db is not None: activity_db.save_idempotent(actor_id=user.id, operation="close", submission_id=body.submissionId, payload=payload, result=result.model_dump())
     return result
 
 @app.post("/customers/{bcn}/reopen")

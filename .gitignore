@@ -2,6 +2,8 @@ data/
 _docs/
 .env
 venv/
+__pycache__/
+*.py[cod]
 
 # Frontend dependencies and generated output
 node_modules/

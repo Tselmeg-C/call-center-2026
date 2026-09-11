@@ -373,14 +373,15 @@ def customer_history(bcn: str, user: Annotated[User, Depends(current_user)], pag
     events = row["histories"]; start = (page - 1) * page_size
     return {"items": events[start:start + page_size], "page": page, "page_size": page_size, "total": len(events)}
 
-def writable_customer(bcn: str, user: User) -> dict:
+def writable_customer(bcn: str, user: User, *, cache: bool = True) -> dict:
     row = repo.customers.get(bcn)
     if row is None and customer_db is not None:
         stored = customer_db.get(bcn)
         if stored:
             history = []
             if activity_db is not None: history = [{"id": item.id, "bcn": item.bcn, "kind": item.kind, "outcome": item.outcome, "note": None if item.deleted_at else item.text, "actorId": item.actor_id, "timestamp": item.created_at.isoformat(), "deleted": item.deleted_at is not None, "deletedBy": item.deleted_by, "deletedAt": item.deleted_at.isoformat() if item.deleted_at else None} for item in activity_db.history(bcn, 1, 10000)[0]]
-            row = {"bcn": stored.bcn, "name": stored.name, "ownerId": stored.owner_id, "ownerName": repo.users.get(stored.owner_id or "", {}).get("name"), "status": stored.status, "phones": customer_db.phones(bcn), "source": stored.source, "version": stored.version, "histories": history}; repo.customers[bcn] = row
+            row = {"bcn": stored.bcn, "name": stored.name, "ownerId": stored.owner_id, "ownerName": repo.users.get(stored.owner_id or "", {}).get("name"), "status": stored.status, "phones": customer_db.phones(bcn), "source": stored.source, "version": stored.version, "histories": history}
+            if cache: repo.customers[bcn] = row
     if not row: raise HTTPException(status.HTTP_404_NOT_FOUND, "Customer not found.")
     if row["status"] == "Closed": raise HTTPException(status.HTTP_409_CONFLICT, "Customer is closed.")
     if user.role != "Admin" and row["ownerId"] != user.id: raise HTTPException(status.HTTP_403_FORBIDDEN, "Customer access denied.")
@@ -443,7 +444,7 @@ def delete_history(bcn: str, record_id: str, user: Annotated[User, Depends(curre
 
 @app.post("/customers/{bcn}/follow-ups")
 def create_followup(bcn: str, body: FollowUpCreate, user: Annotated[User, Depends(current_user)]) -> dict:
-    row = writable_customer(bcn, user); key = f"{user.id}:{bcn}:followup:{body.submissionId}"
+    row = writable_customer(bcn, user, cache=False); key = f"{user.id}:{bcn}:followup:{body.submissionId}"
     payload = f"{bcn}|{body.type}|{body.due or ''}|{body.note}"
     if activity_db is not None:
         try: persisted = activity_db.get_idempotent(actor_id=user.id, operation="followup", submission_id=body.submissionId, payload=payload)
@@ -456,8 +457,12 @@ def create_followup(bcn: str, body: FollowUpCreate, user: Annotated[User, Depend
         return prior
     if body.type not in {"Appointment", "Reminder"}: raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Invalid follow-up type.")
     record = {"id": f"followup-{uuid4()}", "bcn": bcn, "type": body.type, "due": body.due, "note": body.note, "status": "Open", "actor": user.name, "actorId": user.id, "createdAt": datetime.now(timezone.utc).isoformat()}
-    repo.followups[key] = record; row["histories"].append({**record, "kind": "Follow-up"}); persist_followup(record)
-    if activity_db is not None: activity_db.save_idempotent(actor_id=user.id, operation="followup", submission_id=body.submissionId, payload=payload, result=record)
+    if activity_db is not None:
+        try: record = activity_db.create_followup(record, submission_id=body.submissionId, payload=payload)
+        except ValueError as exc: raise HTTPException(status.HTTP_409_CONFLICT, "Submission already used.") from exc
+    repo.followups[key] = record
+    if not any(item.get("id") == record["id"] for item in row["histories"]): row["histories"].append({**record, "kind": "Follow-up"})
+    repo.customers[bcn] = row
     return record
 
 @app.post("/customers/{bcn}/close")

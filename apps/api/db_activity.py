@@ -1,9 +1,10 @@
 from datetime import datetime, timezone
 from hashlib import sha256
 from sqlalchemy import DateTime, ForeignKey, Integer, JSON, String, Text, create_engine, select, func
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
 from sqlalchemy.pool import StaticPool
+from .db_auth import StorageError
 
 class ActivityBase(DeclarativeBase): pass
 
@@ -96,6 +97,22 @@ class ActivityDatabase:
         with Session(self.engine) as session:
             row = session.get(FollowUpRow, record["id"]) or FollowUpRow(id=record["id"], bcn=record["bcn"], actor_id=record["actorId"], type=record["type"], due=datetime.fromisoformat(record["due"]) if record.get("due") else None, status=record["status"], note=record.get("note"), version=0, created_at=datetime.now(timezone.utc), updated_at=datetime.now(timezone.utc))
             row.type = record["type"]; row.due = datetime.fromisoformat(record["due"]) if record.get("due") else None; row.status = record["status"]; row.note = record.get("note"); row.version = record.get("version", row.version); row.updated_at = datetime.now(timezone.utc); session.add(row); session.commit()
+
+    def create_followup(self, record: dict, *, submission_id: str, payload: str) -> dict:
+        try:
+            with Session(self.engine) as session, session.begin():
+                now = datetime.fromisoformat(record["createdAt"])
+                session.add(IdempotencyRow(actor_id=record["actorId"], operation="followup", submission_id=submission_id, fingerprint=fingerprint(payload), result=record, completed_at=now))
+                session.flush()
+                session.add(FollowUpRow(id=record["id"], bcn=record["bcn"], actor_id=record["actorId"], type=record["type"], due=datetime.fromisoformat(record["due"]) if record.get("due") else None, status=record["status"], note=record.get("note"), version=0, created_at=now, updated_at=now))
+                session.add(ActivityRow(id=record["id"], bcn=record["bcn"], actor_id=record["actorId"], kind="Follow-up", text=record.get("note"), created_at=now))
+            return record
+        except IntegrityError:
+            prior = self.get_idempotent(actor_id=record["actorId"], operation="followup", submission_id=submission_id, payload=payload)
+            if prior is not None: return prior
+            raise StorageError("Storage operation failed.") from None
+        except SQLAlchemyError:
+            raise StorageError("Storage operation failed.") from None
 
     def complete_followup(self, record: dict, interaction: dict, idempotency: dict | None = None) -> None:
         with Session(self.engine) as session:

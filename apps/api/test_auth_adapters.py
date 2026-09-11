@@ -26,6 +26,56 @@ from .db_auth import AuthDatabase, SessionRow, UserRow, digest, StorageError
 ORIGIN = {"origin": "http://localhost:3000"}
 
 
+def test_followup_creation_is_atomic_and_replays(tmp_path, monkeypatch):
+    from fastapi import HTTPException
+    from .db_activity import ActivityDatabase, FollowUpRow, ActivityRow, IdempotencyRow
+    from .db_customers import CustomerDatabase
+
+    url = f"sqlite+pysqlite:///{tmp_path / 'followup.db'}"
+    activities = ActivityDatabase(url)
+    customers = CustomerDatabase(url)
+    monkeypatch.setattr(main, "activity_db", activities)
+    monkeypatch.setattr(main, "customer_db", customers)
+    main.repo.reset()
+    try:
+        customers.upsert_source(bcn="000001", name="Synthetic", source={})
+        customers.save_operational(bcn="000001", owner_id="sales", status="Open", version=0)
+        main.repo.customers.clear()
+        actor = main.User(id="sales", name="Sales", email="sales@example.test", role="Sales")
+        body = main.FollowUpCreate(type="Reminder", due=None, note="Synthetic reminder", submissionId="followup")
+        def fail_commit(session):
+            if session.bind is activities.engine:
+                session.flush()
+                raise RuntimeError("Injected failure")
+        event.listen(Session, "before_commit", fail_commit)
+        try:
+            with pytest.raises(RuntimeError, match="Injected failure"):
+                main.create_followup("000001", body, actor)
+        finally:
+            event.remove(Session, "before_commit", fail_commit)
+        assert main.repo.customers == {} and main.repo.followups == {}
+        with Session(activities.engine) as session:
+            assert all(session.scalar(select(table)) is None for table in (FollowUpRow, ActivityRow, IdempotencyRow))
+        result = main.create_followup("000001", body, actor)
+        assert main.create_followup("000001", body, actor) == result
+        with pytest.raises(HTTPException) as conflict:
+            main.create_followup("000001", body.model_copy(update={"note": "Different reminder"}), actor)
+        assert conflict.value.status_code == 409
+        assert len(main.repo.followups) == 1 and len(main.repo.customers["000001"]["histories"]) == 1
+        with Session(activities.engine) as session:
+            assert all(len(list(session.scalars(select(table)))) == 1 for table in (FollowUpRow, ActivityRow, IdempotencyRow))
+        with pytest.raises(HTTPException) as forbidden:
+            main.create_followup("000001", body, actor.model_copy(update={"id": "other"}))
+        assert forbidden.value.status_code == 403
+        main.repo.customers["000001"]["status"] = "Closed"
+        with pytest.raises(HTTPException) as closed:
+            main.create_followup("000001", body.model_copy(update={"submissionId": "closed"}), actor)
+        assert closed.value.status_code == 409
+    finally:
+        activities.engine.dispose(); customers.engine.dispose()
+        main.repo.reset()
+
+
 def test_rule_updates_compare_persisted_version_and_rollback(tmp_path, monkeypatch):
     from copy import deepcopy
     from fastapi import HTTPException

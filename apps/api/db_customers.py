@@ -1,5 +1,5 @@
 from datetime import date, datetime, timezone
-from sqlalchemy import Boolean, Date, JSON, Numeric, ForeignKey, Integer, String, DateTime, UniqueConstraint, create_engine, select, func, or_
+from sqlalchemy import Boolean, Date, JSON, Numeric, ForeignKey, Integer, String, DateTime, UniqueConstraint, create_engine, select, func, or_, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
 from sqlalchemy.pool import StaticPool
 
@@ -96,6 +96,7 @@ class CustomerDatabase:
     def upsert_sources(self, records: list[dict]) -> None:
         with Session(self.engine) as session:
             for record in records:
+                if session.bind.dialect.name == "postgresql": session.execute(text("SELECT pg_advisory_xact_lock(hashtext(:bcn))"), {"bcn": record["bcn"]})
                 row = session.get(CustomerRow, record["bcn"])
                 if row is None: row = CustomerRow(bcn=record["bcn"], name=record["name"] or record["bcn"], status="Open", source={}); session.add(row)
                 row.name = record["name"] or row.name; row.source = record["source"]
@@ -197,6 +198,7 @@ class CustomerDatabase:
         """Commit source rows, phones, import summary, and row errors together."""
         with Session(self.engine) as session:
             for record in records:
+                if session.bind.dialect.name == "postgresql": session.execute(text("SELECT pg_advisory_xact_lock(hashtext(:bcn))"), {"bcn": record["bcn"]})
                 row = session.get(CustomerRow, record["bcn"])
                 if row is None:
                     row = CustomerRow(bcn=record["bcn"], name=record["name"] or record["bcn"], status="Open", source={})

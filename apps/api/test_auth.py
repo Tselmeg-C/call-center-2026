@@ -62,7 +62,7 @@ def test_health_endpoints_are_minimal_and_safe() -> None:
     assert live.status_code == 200 and live.json() == {"status": "ok"}
     assert ready.status_code == 200 and ready.json()["storage"] == "memory"
     from .main import ALEMBIC_HEAD
-    assert ALEMBIC_HEAD == "022_import_query_indexes"
+    assert ALEMBIC_HEAD == "023_append_only_audit"
 
 def test_postgres_readiness_rejects_stale_migration(monkeypatch) -> None:
     from .main import health_ready

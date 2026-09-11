@@ -12,10 +12,10 @@ Run all commands from the repository root:
 
 ```sh
 npm ci
-npm run dev
+npm run dev -- --port 4174
 ```
 
-Open http://localhost:3000.
+Open http://localhost:4174. Start the optional in-memory API separately with `apps/api/start.sh` (port 8000); the frontend proxies `/api` requests to it.
 
 ## Frontend
 

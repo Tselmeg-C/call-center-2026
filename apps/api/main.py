@@ -350,7 +350,7 @@ def get_customer(bcn: str, user: Annotated[User, Depends(current_user)]) -> Cust
         histories = []
         followups = []
         if activity_db is not None:
-            histories = [{"id": item.id, "bcn": item.bcn, "kind": item.kind, "outcome": item.outcome, "text": None if item.deleted_at else item.text, "actorId": item.actor_id, "timestamp": item.created_at.isoformat(), "deleted": item.deleted_at is not None} for item in activity_db.history(bcn, 1, 10000)[0]]
+            histories = [{"id": item.id, "bcn": item.bcn, "kind": item.kind, "outcome": item.outcome, "text": None if item.deleted_at else item.text, "actorId": item.actor_id, "timestamp": item.created_at.isoformat(), "deleted": item.deleted_at is not None, "deletedBy": item.deleted_by, "deletedAt": item.deleted_at.isoformat() if item.deleted_at else None} for item in activity_db.history(bcn, 1, 10000)[0]]
             followups = [{"id": item.id, "bcn": item.bcn, "type": item.type, "due": item.due.isoformat() if item.due else None, "note": item.note, "status": item.status, "actorId": item.actor_id, "createdAt": item.created_at.isoformat(), "updatedAt": item.updated_at.isoformat()} for item in activity_db.followups(bcn)]
         row = {"bcn": db_row.bcn, "name": db_row.name, "ownerId": db_row.owner_id, "ownerName": repo.users.get(db_row.owner_id or "", {}).get("name"), "status": db_row.status, "phones": customer_db.phones(bcn) if customer_db is not None else [], "source": db_row.source, "version": db_row.version, "histories": histories, "followUps": followups}
     else: row = repo.customers.get(bcn)
@@ -362,7 +362,7 @@ def get_customer(bcn: str, user: Annotated[User, Depends(current_user)]) -> Cust
 def customer_history(bcn: str, user: Annotated[User, Depends(current_user)], page: int = Query(1, ge=1), page_size: int = Query(25, ge=1, le=100)) -> dict:
     if activity_db is not None:
         rows, total = activity_db.history(bcn, page, page_size)
-        return {"items": [{"id": item.id, "bcn": item.bcn, "kind": item.kind, "outcome": item.outcome, "text": None if item.deleted_at else item.text, "actorId": item.actor_id, "timestamp": item.created_at.isoformat(), "deleted": item.deleted_at is not None} for item in rows], "page": page, "page_size": page_size, "total": total}
+        return {"items": [{"id": item.id, "bcn": item.bcn, "kind": item.kind, "outcome": item.outcome, "text": None if item.deleted_at else item.text, "actorId": item.actor_id, "timestamp": item.created_at.isoformat(), "deleted": item.deleted_at is not None, "deletedBy": item.deleted_by, "deletedAt": item.deleted_at.isoformat() if item.deleted_at else None} for item in rows], "page": page, "page_size": page_size, "total": total}
     row = repo.customers.get(bcn)
     if row is None and customer_db is not None:
         stored = customer_db.get(bcn)
@@ -378,7 +378,7 @@ def writable_customer(bcn: str, user: User) -> dict:
         stored = customer_db.get(bcn)
         if stored:
             history = []
-            if activity_db is not None: history = [{"id": item.id, "bcn": item.bcn, "kind": item.kind, "outcome": item.outcome, "note": item.text, "actorId": item.actor_id, "timestamp": item.created_at.isoformat(), "deleted": item.deleted_at is not None} for item in activity_db.history(bcn, 1, 10000)[0]]
+            if activity_db is not None: history = [{"id": item.id, "bcn": item.bcn, "kind": item.kind, "outcome": item.outcome, "note": None if item.deleted_at else item.text, "actorId": item.actor_id, "timestamp": item.created_at.isoformat(), "deleted": item.deleted_at is not None, "deletedBy": item.deleted_by, "deletedAt": item.deleted_at.isoformat() if item.deleted_at else None} for item in activity_db.history(bcn, 1, 10000)[0]]
             row = {"bcn": stored.bcn, "name": stored.name, "ownerId": stored.owner_id, "ownerName": repo.users.get(stored.owner_id or "", {}).get("name"), "status": stored.status, "phones": customer_db.phones(bcn), "source": stored.source, "version": stored.version, "histories": history}; repo.customers[bcn] = row
     if not row: raise HTTPException(status.HTTP_404_NOT_FOUND, "Customer not found.")
     if row["status"] == "Closed": raise HTTPException(status.HTTP_409_CONFLICT, "Customer is closed.")

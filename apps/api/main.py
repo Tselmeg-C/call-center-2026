@@ -31,7 +31,7 @@ ALLOWED_ORIGINS = [os.environ["FRONTEND_ORIGIN"]] if os.environ.get("FRONTEND_OR
 app.add_middleware(CORSMiddleware, allow_origins=ALLOWED_ORIGINS, allow_credentials=True, allow_methods=["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"], allow_headers=["*"])
 password_hash = PasswordHash.recommended()
 SESSION_SECONDS = 8 * 60 * 60
-ALEMBIC_HEAD = "024_collection_constraints"
+ALEMBIC_HEAD = "025_followup_interaction_link"
 
 
 @app.exception_handler(StorageError)
@@ -351,7 +351,7 @@ def get_customer(bcn: str, user: Annotated[User, Depends(current_user)]) -> Cust
         followups = []
         if activity_db is not None:
             histories = [{"id": item.id, "bcn": item.bcn, "kind": item.kind, "outcome": item.outcome, "text": None if item.deleted_at else item.text, "actorId": item.actor_id, "timestamp": item.created_at.isoformat(), "deleted": item.deleted_at is not None, "deletedBy": item.deleted_by, "deletedAt": item.deleted_at.isoformat() if item.deleted_at else None} for item in activity_db.history(bcn, 1, 10000)[0]]
-            followups = [{"id": item.id, "bcn": item.bcn, "type": item.type, "due": item.due.isoformat() if item.due else None, "note": item.note, "status": item.status, "actorId": item.actor_id, "createdAt": item.created_at.isoformat(), "updatedAt": item.updated_at.isoformat()} for item in activity_db.followups(bcn)]
+            followups = [{"id": item.id, "bcn": item.bcn, "type": item.type, "due": item.due.isoformat() if item.due else None, "note": item.note, "status": item.status, "interactionId": item.interaction_id, "actorId": item.actor_id, "createdAt": item.created_at.isoformat(), "updatedAt": item.updated_at.isoformat()} for item in activity_db.followups(bcn)]
         row = {"bcn": db_row.bcn, "name": db_row.name, "ownerId": db_row.owner_id, "ownerName": repo.users.get(db_row.owner_id or "", {}).get("name"), "status": db_row.status, "phones": customer_db.phones(bcn) if customer_db is not None else [], "source": db_row.source, "version": db_row.version, "histories": histories, "followUps": followups}
     else: row = repo.customers.get(bcn)
     if not row: raise HTTPException(status.HTTP_404_NOT_FOUND, "Customer not found.")

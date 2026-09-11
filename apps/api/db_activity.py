@@ -23,7 +23,7 @@ class FollowUpRow(ActivityBase):
     id: Mapped[str] = mapped_column(String(120), primary_key=True)
     bcn: Mapped[str] = mapped_column(String(128)); actor_id: Mapped[str] = mapped_column(String(120))
     type: Mapped[str] = mapped_column(String(32)); due: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True); status: Mapped[str] = mapped_column(String(16)); note: Mapped[str | None] = mapped_column(Text, nullable=True)
-    version: Mapped[int] = mapped_column(Integer, default=0); created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True)); updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    version: Mapped[int] = mapped_column(Integer, default=0); interaction_id: Mapped[str | None] = mapped_column(String(120), nullable=True, unique=True); created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True)); updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 class IdempotencyRow(ActivityBase):
     __tablename__ = "idempotency_records"
@@ -93,7 +93,7 @@ class ActivityDatabase:
             if not row: raise ValueError("follow-up not found")
             if row.bcn != interaction.get("bcn"): raise ValueError("interaction belongs to another customer")
             if row.status != "Open": raise ValueError("follow-up is no longer open")
-            row.status = "Completed"; row.updated_at = datetime.now(timezone.utc)
+            row.status = "Completed"; row.interaction_id = interaction["id"]; row.updated_at = datetime.now(timezone.utc)
             session.add(ActivityRow(id=interaction["id"], bcn=interaction["bcn"], actor_id=interaction["actorId"], kind="Interaction", outcome=interaction.get("outcome"), text=interaction.get("note"), created_at=datetime.now(timezone.utc)))
             session.add(row); session.commit()
 

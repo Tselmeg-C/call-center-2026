@@ -6,7 +6,7 @@ class CustomerBase(DeclarativeBase): pass
 
 class CustomerRow(CustomerBase):
     __tablename__ = "customers"
-    bcn: Mapped[str] = mapped_column(String(64), primary_key=True)
+    bcn: Mapped[str] = mapped_column(String(128), primary_key=True)
     name: Mapped[str] = mapped_column(String(255))
     status: Mapped[str] = mapped_column(String(16), default="Open")
     owner_id: Mapped[str | None] = mapped_column(String(120), nullable=True)

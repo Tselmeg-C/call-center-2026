@@ -299,6 +299,42 @@ def test_close_lifecycle_rolls_back_on_activity_conflict() -> None:
     except IntegrityError: pass
     else: assert False
     assert database.followups("000123")[0].status == "Open" and database.get_idempotent(actor_id="u1", operation="close", submission_id="close-rollback", payload="p") is None
+
+def test_reopen_customer_commits_owner_status_and_idempotency_atomically(tmp_path) -> None:
+    """Regression for the #25 QA bug: reopen used to be three independently committed writes
+    (activity event, customer operational row, idempotency record). reopen_customer must commit
+    all three together, and an injected failure must leave none of them applied."""
+    from datetime import datetime, timezone
+    from sqlalchemy.exc import IntegrityError
+    from .db_activity import ActivityRow
+    from .db_customers import CustomerDatabase
+
+    url = f"sqlite+pysqlite:///{tmp_path / 'reopen.db'}"
+    customers = CustomerDatabase(url)
+    activities = ActivityDatabase(url)
+    try:
+        customers.upsert_source(bcn="000123", name="Synthetic", source={})
+        customers.save_operational(bcn="000123", owner_id="sales", status="Closed", version=2)
+
+        activities.reopen_customer("000123", {"id": "reopen-000123-3", "timestamp": datetime.now(timezone.utc).isoformat()}, owner_id="sales", status="Open", version=3, actor_id="sales", submission_id="reopen-1", payload="000123|reopen", result={"status": "Open"})
+        assert (customers.get("000123").status, customers.get("000123").version, customers.get("000123").owner_id) == ("Open", 3, "sales")
+        assert activities.get_idempotent(actor_id="sales", operation="reopen", submission_id="reopen-1", payload="000123|reopen") == {"status": "Open"}
+        with Session(activities.engine) as session:
+            assert session.get(ActivityRow, "reopen-000123-3").kind == "Reopen"
+
+        # A conflicting activity id (simulating an injected failure partway through) rolls back the
+        # whole write: owner/status/version and the idempotency record stay unchanged together.
+        with activities.engine.begin() as connection:
+            connection.execute(ActivityRow.__table__.insert().values(id="reopen-000123-4", bcn="000123", actor_id="sales", kind="Existing", created_at=datetime.now(timezone.utc)))
+        try:
+            activities.reopen_customer("000123", {"id": "reopen-000123-4", "timestamp": datetime.now(timezone.utc).isoformat()}, owner_id=None, status="Open", version=4, actor_id="sales", submission_id="reopen-2", payload="p2", result={})
+        except IntegrityError: pass
+        else: assert False
+        assert (customers.get("000123").status, customers.get("000123").version, customers.get("000123").owner_id) == ("Open", 3, "sales")
+        assert activities.get_idempotent(actor_id="sales", operation="reopen", submission_id="reopen-2", payload="p2") is None
+    finally:
+        customers.engine.dispose(); activities.engine.dispose()
+
 def test_real_http_admin_sales_journey() -> None:
     repo.reset()
     admin = provision_user(type("P", (), {"name": "Admin", "email": "admin@example.test", "role": "Admin", "password": "correct horse battery staple"})())

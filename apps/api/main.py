@@ -532,11 +532,16 @@ def reopen_customer(bcn: str, body: LifecycleRequest, user: Annotated[User, Depe
         try: persisted = activity_db.get_idempotent(actor_id=user.id, operation="reopen", submission_id=body.submissionId, payload=payload)
         except ValueError as exc: raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
         if persisted: return Customer.model_validate(row)
-    timestamp = datetime.now(timezone.utc).isoformat(); row["status"] = "Open"; row["version"] += 1; event = {"id": f"reopen-{bcn}-{row['version']}", "bcn": bcn, "kind": "Reopen", "actor": user.name, "actorId": user.id, "timestamp": timestamp}; row["histories"].append(event); persist_activity({**event, "text": None}); append_audit(user.id, "Customer reopened", bcn, {})
-    if customer_db is not None: customer_db.save_operational(bcn=bcn, owner_id=row["ownerId"], status=row["status"], version=row["version"])
+    timestamp = datetime.now(timezone.utc).isoformat(); row["status"] = "Open"; row["version"] += 1; event = {"id": f"reopen-{bcn}-{row['version']}", "bcn": bcn, "kind": "Reopen", "actor": user.name, "actorId": user.id, "timestamp": timestamp}; row["histories"].append(event)
     result = Customer.model_validate(row)
+    if activity_db is not None:
+        try: activity_db.reopen_customer(bcn, event, owner_id=row["ownerId"], status=row["status"], version=row["version"], actor_id=user.id, submission_id=body.submissionId, payload=payload, result=result.model_dump())
+        except IntegrityError as exc: raise HTTPException(status.HTTP_409_CONFLICT, "Customer reopen is already being processed.") from exc
+    else:
+        persist_activity({**event, "text": None})
+        if customer_db is not None: customer_db.save_operational(bcn=bcn, owner_id=row["ownerId"], status=row["status"], version=row["version"])
+    append_audit(user.id, "Customer reopened", bcn, {})
     repo.submissions[local_key] = {"payload": payload, "result": result.model_dump()}
-    if activity_db is not None: activity_db.save_idempotent(actor_id=user.id, operation="reopen", submission_id=body.submissionId, payload=payload, result=result.model_dump())
     return result
 
 def find_followup(bcn: str, followup_id: str, user: User) -> dict:
@@ -596,7 +601,9 @@ def complete_followup(bcn: str, followup_id: str, body: InteractionCreate, user:
     if item["status"] == "Completed": return item
     if item["status"] != "Open": raise HTTPException(status.HTTP_409_CONFLICT, "Follow-up is not open.")
     interaction = create_interaction(bcn, body, user, persist=activity_db is None); item["status"] = "Completed"; item["interactionId"] = interaction["id"]; item["updatedAt"] = datetime.now(timezone.utc).isoformat()
-    if activity_db is not None: activity_db.complete_followup(item, interaction, idempotency={"actor_id": user.id, "operation": "followup-complete", "submission_id": body.submissionId, "payload": payload, "result": item})
+    if activity_db is not None:
+        try: activity_db.complete_followup(item, interaction, idempotency={"actor_id": user.id, "operation": "followup-complete", "submission_id": body.submissionId, "payload": payload, "result": item})
+        except ValueError as exc: raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
     else: persist_followup(item)
     repo.submissions[key] = {"payload": payload, "result": item}
     return item

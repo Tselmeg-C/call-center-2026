@@ -36,6 +36,9 @@ ALEMBIC_HEAD = "028_import_fingerprint"
 # Every key any append_audit/append_assignment caller writes today; the audit endpoint
 # strips anything else so a future detail field never leaks unreviewed (never a credential).
 AUDIT_DETAIL_KEYS = {"name", "ownerId", "position", "active", "oldOwner", "newOwner", "source", "reason", "role", "outcome", "recordId", "reasonId", "created", "updated", "errors", "label"}
+# The customer detail endpoint embeds only the most recent page of history (query-layer bounded,
+# never an unbounded dump); the full history is available paginated via /customers/{bcn}/history.
+DETAIL_HISTORY_PAGE_SIZE = 25
 
 
 @app.exception_handler(StorageError)
@@ -354,7 +357,7 @@ def get_customer(bcn: str, user: Annotated[User, Depends(current_user)]) -> Cust
         histories = []
         followups = []
         if activity_db is not None:
-            histories = [{"id": item.id, "bcn": item.bcn, "kind": item.kind, "outcome": item.outcome, "text": None if item.deleted_at else item.text, "actorId": item.actor_id, "timestamp": item.created_at.isoformat(), "deleted": item.deleted_at is not None, "deletedBy": item.deleted_by, "deletedAt": item.deleted_at.isoformat() if item.deleted_at else None} for item in activity_db.history(bcn, 1, 10000)[0]]
+            histories = [{"id": item.id, "bcn": item.bcn, "kind": item.kind, "outcome": item.outcome, "text": None if item.deleted_at else item.text, "actorId": item.actor_id, "timestamp": item.created_at.isoformat(), "deleted": item.deleted_at is not None, "deletedBy": item.deleted_by, "deletedAt": item.deleted_at.isoformat() if item.deleted_at else None} for item in activity_db.history(bcn, 1, DETAIL_HISTORY_PAGE_SIZE)[0]]
             followups = [{"id": item.id, "bcn": item.bcn, "type": item.type, "due": item.due.isoformat() if item.due else None, "note": item.note, "status": item.status, "interactionId": item.interaction_id, "actorId": item.actor_id, "createdAt": item.created_at.isoformat(), "updatedAt": item.updated_at.isoformat()} for item in activity_db.followups(bcn)]
         row = {"bcn": db_row.bcn, "name": db_row.name, "ownerId": db_row.owner_id, "ownerName": repo.users.get(db_row.owner_id or "", {}).get("name"), "status": db_row.status, "phones": customer_db.phones(bcn) if customer_db is not None else [], "source": db_row.source, "version": db_row.version, "histories": histories, "followUps": followups}
     else: row = repo.customers.get(bcn)
@@ -365,6 +368,7 @@ def get_customer(bcn: str, user: Annotated[User, Depends(current_user)]) -> Cust
 @app.get("/customers/{bcn}/history")
 def customer_history(bcn: str, user: Annotated[User, Depends(current_user)], page: int = Query(1, ge=1), page_size: int = Query(25, ge=1, le=100)) -> dict:
     if activity_db is not None:
+        if customer_db is not None and customer_db.get(bcn) is None: raise HTTPException(status.HTTP_404_NOT_FOUND, "Customer not found.")
         rows, total = activity_db.history(bcn, page, page_size)
         return {"items": [{"id": item.id, "bcn": item.bcn, "kind": item.kind, "outcome": item.outcome, "text": None if item.deleted_at else item.text, "actorId": item.actor_id, "timestamp": item.created_at.isoformat(), "deleted": item.deleted_at is not None, "deletedBy": item.deleted_by, "deletedAt": item.deleted_at.isoformat() if item.deleted_at else None} for item in rows], "page": page, "page_size": page_size, "total": total}
     row = repo.customers.get(bcn)

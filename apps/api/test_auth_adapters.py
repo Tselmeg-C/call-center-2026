@@ -10,6 +10,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from datetime import date
 from decimal import Decimal
+from io import BytesIO
 from threading import Barrier
 from uuid import uuid4
 
@@ -17,6 +18,7 @@ import pytest
 from alembic import command
 from alembic.config import Config
 from fastapi.testclient import TestClient
+from openpyxl import Workbook
 from sqlalchemy import create_engine, event, select, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import IntegrityError
@@ -600,6 +602,195 @@ def test_postgres_customer_import_persists_and_rolls_back(postgres_url):
         assert (row.name, row.propensity_rank, customers.phones("000777")) in (("Winner 1", 1, ["555-011"]), ("Winner 2", 2, ["555-012"]))
     finally:
         auth.engine.dispose(); customers.engine.dispose()
+
+
+def test_postgres_customer_import_constraints_and_rollback(postgres_url):
+    """Constraint/rollback coverage for customers/customer_phones/customer_collections/import_row_errors, matching test_postgres_migrations_constraints_and_rollback's pattern for users/sessions."""
+    from .db_customers import CustomerCollectionRow, CustomerDatabase, CustomerRow, ImportErrorRow, ImportJobRow, PhoneRow
+
+    migrate()
+    auth = AuthDatabase(postgres_url, create_schema=False)
+    customers = CustomerDatabase(postgres_url, create_schema=False)
+    try:
+        hashed = main.password_hash.hash(secrets.token_urlsafe(24))
+        auth.create_user(user_id="owner", name="Owner", email="owner@example.test", role="Sales", password_hash=hashed)
+        customers.upsert_source(bcn="000900", name="Synthetic", source={})
+        # Blank required identifiers and an invalid status are rejected by check constraints.
+        for changes in ({"bcn": "   "}, {"name": " "}, {"status": "Pending"}):
+            row = dict(bcn=uuid4().hex[:12], name="Synthetic", status="Open", source={}, version=0) | changes
+            with pytest.raises(IntegrityError):
+                with Session(customers.engine) as session, session.begin():
+                    session.execute(CustomerRow.__table__.insert().values(**row))
+        # A blank phone is rejected.
+        with pytest.raises(IntegrityError):
+            with Session(customers.engine) as session, session.begin():
+                session.add(PhoneRow(bcn="000900", phone="   ", primary=False)); session.flush()
+        # Invalid collection kind/slot/name are each rejected.
+        for changes in ({"kind": "other"}, {"slot": 0}, {"name": " "}):
+            row = dict(bcn="000900", kind="vendor", slot=1, name="Synthetic vendor") | changes
+            with pytest.raises(IntegrityError):
+                with Session(customers.engine) as session, session.begin():
+                    session.add(CustomerCollectionRow(**row)); session.flush()
+        # An orphan owner_id is rejected.
+        with pytest.raises(IntegrityError):
+            with Session(customers.engine) as session, session.begin():
+                session.get(CustomerRow, "000900").owner_id = "missing-user"; session.flush()
+        # An orphan import_row_errors.job_id is rejected.
+        with pytest.raises(IntegrityError):
+            with Session(customers.engine) as session, session.begin():
+                session.add(ImportErrorRow(job_id="missing-job", row_number=1, field="bcn", reason="bad")); session.flush()
+        assert customers.get("000900").owner_id is None
+        # An unexpected failure during ingest_sources rolls back the customer row, phone, job, and row errors together.
+        def fail_commit(session):
+            if session.bind is customers.engine:
+                session.flush(); raise RuntimeError("Injected failure")
+        event.listen(Session, "before_commit", fail_commit)
+        try:
+            with pytest.raises(RuntimeError, match="Injected failure"):
+                customers.ingest_sources([{"bcn": "000901", "name": "Rolled back", "source": {}, "primary_phone": "555-0001"}], {"jobId": "job-rollback", "submissionId": "rollback", "filename": "x.xlsx", "processed": 1, "created": 1, "updated": 0, "errorRows": 1, "status": "Partial", "errors": [{"row": 2, "field": "bcn", "reason": "bad"}], "actorId": "owner"})
+        finally:
+            event.remove(Session, "before_commit", fail_commit)
+        assert customers.get("000901") is None and customers.import_job("owner", "rollback") is None
+        with Session(customers.engine) as session:
+            assert session.scalar(select(ImportJobRow)) is None and session.scalar(select(ImportErrorRow)) is None
+    finally:
+        auth.engine.dispose(); customers.engine.dispose()
+
+
+def test_postgres_import_http_pipeline_behavior(postgres_url, monkeypatch):
+    """The #18 ingestion behavior suite through the real /admin/imports upload pipeline against Postgres: row errors, duplicate rows in one file, retry, conflict-on-change, unchanged-row updates, and null-clearing."""
+    from .db_customers import CustomerDatabase
+
+    migrate()
+    auth = AuthDatabase(postgres_url, create_schema=False)
+    customers = CustomerDatabase(postgres_url, create_schema=False)
+    monkeypatch.setattr(main, "auth_db", auth)
+    monkeypatch.setattr(main, "customer_db", customers)
+    monkeypatch.setattr(main, "activity_db", None)
+    main.repo.reset(); main.repo.customers.clear()
+    try:
+        admin, secret = provision("pipeline-admin@example.test")
+        with TestClient(main.app, base_url="http://localhost") as client:
+            assert sign_in(client, admin.email, secret).status_code == 200
+            headers = ["bcn", "customer_name", "propensity_score", "last_purchase_date", "recent", "phone"]
+            book = Workbook(); sheet = book.active; sheet.append(headers)
+            sheet.append(["700100", "Stable Co", 0.42, datetime(2025, 3, 4), True, "555-1000"])
+            sheet.append(["bad", "Broken", None, None, None, None])
+            sheet.append(["700100", "Duplicate", None, None, None, None])
+            output = BytesIO(); book.save(output); first_bytes = output.getvalue()
+            first = client.post("/admin/imports?submission_id=first-run", files={"file": ("first.xlsx", first_bytes, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")}, headers=ORIGIN)
+            body = first.json()
+            assert first.status_code == 201
+            assert (body["processed"], body["created"], body["updated"], body["errorRows"], body["status"]) == (3, 1, 0, 2, "Partial")
+            assert body["errors"] == [{"row": 3, "field": "bcn", "reason": "Invalid bcn"}, {"row": 4, "field": "bcn", "reason": "Duplicate bcn"}]
+            row = customers.get("700100")
+            assert row.propensity_score == Decimal("0.42") and row.last_purchase_date == date(2025, 3, 4) and row.recent is True
+            assert customers.phones("700100") == ["555-1000"]
+
+            # A same-submission retry after a simulated restart (in-process cache cleared) replays the persisted job.
+            main.repo.imports.clear(); main.repo.import_payloads.clear()
+            replay = client.post("/admin/imports?submission_id=first-run", files={"file": ("first.xlsx", first_bytes, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")}, headers=ORIGIN)
+            assert replay.status_code == 201 and replay.json()["jobId"] == body["jobId"]
+            assert customers.import_jobs(admin.id, 1, 50)[1] == 1
+
+            # Reuse of the same submission ID with a changed workbook is a contracted conflict.
+            main.repo.imports.clear(); main.repo.import_payloads.clear()
+            changed = Workbook(); changed.active.append(["bcn", "customer_name"]); changed.active.append(["700200", "Changed"])
+            changed_output = BytesIO(); changed.save(changed_output)
+            conflict = client.post("/admin/imports?submission_id=first-run", files={"file": ("first.xlsx", changed_output.getvalue(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")}, headers=ORIGIN)
+            assert conflict.status_code == 409
+
+            # Reimporting the same unchanged row counts it as updated, not created.
+            unchanged = Workbook(); unchanged.active.append(headers); unchanged.active.append(["700100", "Stable Co", 0.42, datetime(2025, 3, 4), True, "555-1000"])
+            unchanged_output = BytesIO(); unchanged.save(unchanged_output)
+            second = client.post("/admin/imports?submission_id=second-run", files={"file": ("second.xlsx", unchanged_output.getvalue(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")}, headers=ORIGIN)
+            assert second.status_code == 201
+            assert (second.json()["created"], second.json()["updated"]) == (0, 1)
+
+            # Blank nullable cells clear the typed values and remove the primary phone.
+            nulled = Workbook(); nulled.active.append(headers); nulled.active.append(["700100", "Stable Co", None, None, None, None])
+            nulled_output = BytesIO(); nulled.save(nulled_output)
+            third = client.post("/admin/imports?submission_id=third-run", files={"file": ("third.xlsx", nulled_output.getvalue(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")}, headers=ORIGIN)
+            assert third.status_code == 201
+            row = customers.get("700100")
+            assert row.propensity_score is None and row.last_purchase_date is None and row.recent is None
+            assert customers.phones("700100") == []
+    finally:
+        auth.engine.dispose(); customers.engine.dispose()
+
+
+def test_postgres_import_rejects_empty_and_corrupt_workbooks(postgres_url, monkeypatch):
+    """Empty (header-only) workbooks persist a zero-total job; corrupt/wrong-extension uploads are whole-file rejections with no persisted job."""
+    from .db_customers import CustomerDatabase
+
+    migrate()
+    auth = AuthDatabase(postgres_url, create_schema=False)
+    customers = CustomerDatabase(postgres_url, create_schema=False)
+    monkeypatch.setattr(main, "auth_db", auth)
+    monkeypatch.setattr(main, "customer_db", customers)
+    monkeypatch.setattr(main, "activity_db", None)
+    main.repo.reset(); main.repo.customers.clear()
+    try:
+        admin, secret = provision("rejection-admin@example.test")
+        with TestClient(main.app, base_url="http://localhost") as client:
+            assert sign_in(client, admin.email, secret).status_code == 200
+            book = Workbook(); book.active.append(["bcn", "customer_name"])
+            output = BytesIO(); book.save(output)
+            empty = client.post("/admin/imports?submission_id=empty-book", files={"file": ("empty.xlsx", output.getvalue(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")}, headers=ORIGIN)
+            body = empty.json()
+            assert empty.status_code == 201
+            assert (body["processed"], body["created"], body["updated"], body["errorRows"], body["status"]) == (0, 0, 0, 0, "Completed")
+            assert customers.import_job(admin.id, "empty-book")["jobId"] == body["jobId"]
+
+            wrong_ext = client.post("/admin/imports?submission_id=wrong-ext", files={"file": ("customers.csv", b"bcn,customer_name\n700300,New Co\n", "text/csv")}, headers=ORIGIN)
+            assert wrong_ext.status_code == 422
+            assert customers.import_job(admin.id, "wrong-ext") is None
+
+            corrupt = client.post("/admin/imports?submission_id=corrupt-zip", files={"file": ("corrupt.xlsx", b"this is not a real zip archive", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")}, headers=ORIGIN)
+            assert corrupt.status_code == 422
+            assert customers.import_job(admin.id, "corrupt-zip") is None
+            assert customers.get("700300") is None
+    finally:
+        auth.engine.dispose(); customers.engine.dispose()
+
+
+def test_postgres_import_restart_preserves_jobs_and_errors(postgres_url):
+    migrate()
+    # Transport synthetic cookies only over anonymous process pipes, never args/files/output.
+    seed = '''
+import json, secrets
+from io import BytesIO
+from openpyxl import Workbook
+from apps.api.main import app, provision_user, Provision
+from fastapi.testclient import TestClient
+secret = secrets.token_urlsafe(24)
+admin = provision_user(Provision(name="Restart Admin", email="restart-admin@example.test", password=secret))
+client = TestClient(app, base_url="http://localhost")
+assert client.post("/session/login", json={"email": admin.email, "password": secret}).status_code == 200
+book = Workbook(); book.active.append(["bcn", "customer_name"]); book.active.append(["700900", "Restart Co"]); book.active.append(["bad", "Bad"])
+payload = BytesIO(); book.save(payload)
+response = client.post("/admin/imports?submission_id=restart-import", files={"file": ("restart.xlsx", payload.getvalue(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")}, headers={"origin": "http://localhost:3000"})
+assert response.status_code == 201, response.text
+print(json.dumps({"actorId": admin.id, "jobId": response.json()["jobId"]}))
+'''
+    verify = '''
+import json, sys
+from apps.api.main import customer_db
+info = json.load(sys.stdin)
+job = customer_db.import_job(info["actorId"], "restart-import")
+assert job is not None and job["jobId"] == info["jobId"]
+assert (job["processed"], job["created"], job["errorRows"]) == (2, 1, 1)
+errors, total = customer_db.import_errors(info["actorId"], "restart-import", 1, 25)
+assert total == 1 and errors[0]["field"] == "bcn"
+row = customer_db.get("700900")
+assert row is not None and row.name == "Restart Co"
+assert customer_db.phones("700900") == []
+'''
+    env = os.environ | {"CALL_CENTER_STORAGE": "postgres", "DATABASE_URL": postgres_url}
+    first = subprocess.run([sys.executable, "-c", seed], env=env, capture_output=True)
+    assert first.returncode == 0, first.stderr
+    second = subprocess.run([sys.executable, "-c", verify], env=env, input=first.stdout, capture_output=True)
+    assert second.returncode == 0, second.stderr
 
 
 def test_postgres_process_restart(postgres_url):

@@ -368,6 +368,33 @@ def test_import_storage_failure_restores_in_memory_staging(monkeypatch) -> None:
     response = client.post("/admin/imports?submission_id=rollback", files={"file": ("source.xlsx", payload.getvalue(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")}, headers={"origin": "http://localhost:3000"})
     assert response.status_code == 422 and "999999" not in repo.customers and failing.failed["status"] == "Failed"
 
+def test_import_accepts_header_only_workbook_with_zero_totals() -> None:
+    repo.reset()
+    admin = provision_user(type("P", (), {"name": "Admin", "email": "admin@example.test", "role": "Admin", "password": "correct horse battery staple"})())
+    client = TestClient(app, base_url="http://localhost"); client.post("/session/login", json={"email": admin.email, "password": "correct horse battery staple"})
+    workbook = Workbook(); workbook.active.append(["bcn", "customer_name"])
+    payload = BytesIO(); workbook.save(payload)
+    response = client.post("/admin/imports?submission_id=empty-book", files={"file": ("empty.xlsx", payload.getvalue(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")}, headers={"origin": "http://localhost:3000"})
+    body = response.json()
+    assert response.status_code == 201
+    assert (body["processed"], body["created"], body["updated"], body["errorRows"], body["status"]) == (0, 0, 0, 0, "Completed")
+
+def test_import_rejects_wrong_extension_without_persisting_a_job() -> None:
+    repo.reset()
+    admin = provision_user(type("P", (), {"name": "Admin", "email": "admin@example.test", "role": "Admin", "password": "correct horse battery staple"})())
+    client = TestClient(app, base_url="http://localhost"); client.post("/session/login", json={"email": admin.email, "password": "correct horse battery staple"})
+    response = client.post("/admin/imports?submission_id=wrong-ext", files={"file": ("customers.csv", b"bcn,customer_name\n000123,Renamed\n", "text/csv")}, headers={"origin": "http://localhost:3000"})
+    assert response.status_code == 422
+    assert client.get("/admin/imports/wrong-ext").status_code == 404
+
+def test_import_rejects_corrupt_workbook_archive_without_persisting_a_job() -> None:
+    repo.reset()
+    admin = provision_user(type("P", (), {"name": "Admin", "email": "admin@example.test", "role": "Admin", "password": "correct horse battery staple"})())
+    client = TestClient(app, base_url="http://localhost"); client.post("/session/login", json={"email": admin.email, "password": "correct horse battery staple"})
+    response = client.post("/admin/imports?submission_id=corrupt-zip", files={"file": ("corrupt.xlsx", b"this is not a real zip archive", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")}, headers={"origin": "http://localhost:3000"})
+    assert response.status_code == 422
+    assert client.get("/admin/imports/corrupt-zip").status_code == 404
+
 def test_memory_assignment_retry_is_scoped_to_actor() -> None:
     repo.reset()
     admin_one = provision_user(type("P", (), {"name": "One", "email": "one@example.test", "role": "Admin", "password": "correct horse battery staple"})())

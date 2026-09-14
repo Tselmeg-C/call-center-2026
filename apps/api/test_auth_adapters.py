@@ -634,6 +634,58 @@ def test_postgres_migrations_constraints_and_rollback(postgres_url, monkeypatch)
     database.engine.dispose()
 
 
+def test_postgres_activity_migrations_survive_bcn_widen_and_followup_link(postgres_url):
+    """#25's own migrations (018 widening activities/follow_ups.bcn and adding their customer FK, 025
+    adding the follow_ups.interaction_id link, and the 027/028 chain) must preserve previously seeded
+    activity/follow-up/closure-reason/idempotency rows across the upgrade to head, and a repeated
+    upgrade must be a no-op -- the same pattern the #24 fix used for #23's customers/import tables in
+    test_postgres_migrations_constraints_and_rollback."""
+    from .db_activity import ActivityDatabase, fingerprint
+    from .db_customers import CustomerDatabase
+
+    # Start from the revision right before #25's activity_customer_fks migration, seed representative
+    # pre-existing rows using the schema as it existed at that revision (bcn is still VARCHAR(64) and
+    # follow_ups has no interaction_id column yet), then upgrade through 018/025/026/027/028 to head.
+    migrate("017_customer_owner_fk")
+    auth = AuthDatabase(postgres_url, create_schema=False)
+    customers = CustomerDatabase(postgres_url, create_schema=False)
+    auth.create_user(user_id="legacy-actor", name="Legacy Actor", email="legacy-activity@example.test", role="Sales", password_hash=main.password_hash.hash(secrets.token_urlsafe(24)))
+    customers.upsert_source(bcn="000555", name="Legacy Activity Co", source={})
+    payload = "activity-legacy-payload"
+    digest_value = fingerprint(payload)
+    with auth.engine.begin() as connection:
+        connection.execute(text("INSERT INTO closure_reasons (id, label, active) VALUES ('closure-legacy', 'Legacy reason', true)"))
+        connection.execute(text("INSERT INTO activities (id, bcn, actor_id, kind, outcome, text, created_at) VALUES ('activity-legacy', '000555', 'legacy-actor', 'Interaction', 'Contact', 'Legacy note', now())"))
+        connection.execute(text("INSERT INTO follow_ups (id, bcn, actor_id, type, status, version, created_at, updated_at) VALUES ('followup-legacy', '000555', 'legacy-actor', 'Reminder', 'Open', 0, now(), now())"))
+        connection.execute(text("INSERT INTO idempotency_records (actor_id, operation, submission_id, fingerprint, result, completed_at) VALUES ('legacy-actor', 'interaction', 'legacy-submission', :fp, '{\"id\": \"activity-legacy\"}'::json, now())"), {"fp": digest_value})
+    auth.engine.dispose()
+
+    migrate()
+    migrate()  # repeated upgrade of #25's full activity chain is a no-op
+
+    activities = ActivityDatabase(postgres_url, create_schema=False)
+    verify_customers = CustomerDatabase(postgres_url, create_schema=False)
+    verify_auth = AuthDatabase(postgres_url, create_schema=False)
+    try:
+        with verify_auth.transaction() as session:
+            assert session.scalar(text("SELECT version_num FROM alembic_version")) == main.ALEMBIC_HEAD
+        assert verify_customers.get("000555").name == "Legacy Activity Co"
+        history, total = activities.history("000555")
+        assert total == 1 and history[0].id == "activity-legacy" and history[0].text == "Legacy note" and history[0].deleted_at is None
+        followups = activities.followups("000555")
+        assert len(followups) == 1 and followups[0].id == "followup-legacy" and followups[0].status == "Open" and followups[0].interaction_id is None
+        reasons = {row.id: row for row in activities.reasons()}
+        assert reasons["closure-legacy"].label == "Legacy reason" and reasons["closure-legacy"].active is True
+        assert activities.get_idempotent(actor_id="legacy-actor", operation="interaction", submission_id="legacy-submission", payload=payload) == {"id": "activity-legacy"}
+
+        # 025's interaction_id link column/constraint work against the migration-preserved follow-up.
+        activities.complete_followup({"id": "followup-legacy", "bcn": "000555", "actorId": "legacy-actor"}, {"id": "activity-legacy-interaction", "bcn": "000555", "actorId": "legacy-actor", "outcome": "Contact", "note": "Post-migration completion"})
+        completed = activities.followups("000555")[0]
+        assert completed.status == "Completed" and completed.interaction_id == "activity-legacy-interaction"
+    finally:
+        activities.engine.dispose(); verify_customers.engine.dispose(); verify_auth.engine.dispose()
+
+
 def test_postgres_customer_import_persists_and_rolls_back(postgres_url):
     from .db_customers import CustomerCollectionRow, CustomerDatabase, CustomerRow, PhoneRow
 
@@ -723,6 +775,108 @@ def test_postgres_customer_import_constraints_and_rollback(postgres_url):
             assert session.scalar(select(ImportJobRow)) is None and session.scalar(select(ImportErrorRow)) is None
     finally:
         auth.engine.dispose(); customers.engine.dispose()
+
+
+def test_postgres_activity_lifecycle_http_journey(postgres_url, monkeypatch):
+    """The #16/#17 interaction/note/follow-up/lifecycle behavior suite through the real HTTP endpoints
+    (/interactions, /notes, /follow-ups, /close, /reopen, /admin/closure-reasons) against real
+    PostgreSQL -- the coverage gap QA found: every prior activity/lifecycle test called repository or
+    main.py functions directly, or ran the HTTP routes only against the in-memory repo."""
+    from .db_activity import ActivityDatabase
+    from .db_customers import CustomerDatabase
+
+    migrate()
+    auth = AuthDatabase(postgres_url, create_schema=False)
+    customers = CustomerDatabase(postgres_url, create_schema=False)
+    activities = ActivityDatabase(postgres_url, create_schema=False)
+    monkeypatch.setattr(main, "auth_db", auth)
+    monkeypatch.setattr(main, "customer_db", customers)
+    monkeypatch.setattr(main, "activity_db", activities)
+    monkeypatch.setattr(main, "assignment_db", None)
+    main.repo.reset(); main.repo.customers.clear()
+    try:
+        secret = secrets.token_urlsafe(24)
+        hashed = main.password_hash.hash(secret)
+        auth.create_user(user_id="journey-admin", name="Journey Admin", email="journey-admin@example.test", role="Admin", password_hash=hashed)
+        auth.create_user(user_id="journey-owner", name="Journey Owner", email="journey-owner@example.test", role="Sales", password_hash=hashed)
+        auth.create_user(user_id="journey-other", name="Journey Other", email="journey-other@example.test", role="Sales", password_hash=hashed)
+        customers.upsert_source(bcn="000860", name="Journey Co", source={})
+        customers.save_operational(bcn="000860", owner_id="journey-owner", status="Open", version=0)
+
+        with TestClient(main.app, base_url="http://localhost") as admin_client:
+            assert admin_client.post("/session/login", json={"email": "journey-admin@example.test", "password": secret}).status_code == 200
+            reason = admin_client.post("/admin/closure-reasons", json={"label": "Journey resolved"}, headers=ORIGIN)
+            assert reason.status_code == 201
+            reason_id = reason.json()["id"]
+
+        with TestClient(main.app, base_url="http://localhost") as owner_client:
+            assert owner_client.post("/session/login", json={"email": "journey-owner@example.test", "password": secret}).status_code == 200
+            assert owner_client.post("/admin/closure-reasons", json={"label": "Sales cannot"}, headers=ORIGIN).status_code == 403
+
+            interaction = owner_client.post("/customers/000860/interactions", json={"outcome": "Contact", "note": "First contact", "submissionId": "journey-interaction"}, headers=ORIGIN)
+            assert interaction.status_code == 200, interaction.text
+            interaction_id = interaction.json()["id"]
+            replay = owner_client.post("/customers/000860/interactions", json={"outcome": "Contact", "note": "First contact", "submissionId": "journey-interaction"}, headers=ORIGIN)
+            assert replay.status_code == 200 and replay.json()["id"] == interaction_id
+            conflict = owner_client.post("/customers/000860/interactions", json={"outcome": "Attempt", "note": "Changed", "submissionId": "journey-interaction"}, headers=ORIGIN)
+            assert conflict.status_code == 409
+
+            note = owner_client.post("/customers/000860/notes", json={"text": "Standalone note", "submissionId": "journey-note"}, headers=ORIGIN)
+            assert note.status_code == 200
+            note_id = note.json()["id"]
+            deleted = owner_client.delete(f"/customers/000860/history/{note_id}", headers=ORIGIN)
+            assert deleted.status_code == 200 and deleted.json()["deleted"] is True and deleted.json()["deletedBy"] == "journey-owner"
+            history = owner_client.get("/customers/000860/history").json()
+            tombstone = next(item for item in history["items"] if item["id"] == note_id)
+            assert tombstone["deleted"] is True and tombstone["text"] is None
+
+            first_followup = owner_client.post("/customers/000860/follow-ups", json={"type": "Reminder", "due": None, "note": "Call back", "submissionId": "journey-followup-1"}, headers=ORIGIN)
+            assert first_followup.status_code == 200
+            first_id = first_followup.json()["id"]
+            second_followup = owner_client.post("/customers/000860/follow-ups", json={"type": "Appointment", "due": "2026-09-20", "note": "Site visit", "submissionId": "journey-followup-2"}, headers=ORIGIN)
+            assert second_followup.status_code == 200
+            second_id = second_followup.json()["id"]
+
+            edited = owner_client.patch(f"/customers/000860/follow-ups/{first_id}", json={"type": "Reminder", "due": None, "note": "Call back tomorrow", "submissionId": "journey-followup-edit"}, headers=ORIGIN)
+            assert edited.status_code == 200 and edited.json()["note"] == "Call back tomorrow" and edited.json()["version"] == 1
+
+            completed = owner_client.post(f"/customers/000860/follow-ups/{second_id}/complete", json={"outcome": "Contact", "note": "Visited", "submissionId": "journey-complete"}, headers=ORIGIN)
+            assert completed.status_code == 200 and completed.json()["status"] == "Completed" and completed.json()["interactionId"]
+            replay_complete = owner_client.post(f"/customers/000860/follow-ups/{second_id}/complete", json={"outcome": "Contact", "note": "Visited", "submissionId": "journey-complete"}, headers=ORIGIN)
+            assert replay_complete.status_code == 200 and replay_complete.json() == completed.json()
+            already = owner_client.post(f"/customers/000860/follow-ups/{second_id}/complete", json={"outcome": "Attempt", "note": "Different", "submissionId": "journey-complete"}, headers=ORIGIN)
+            assert already.status_code == 409
+
+        with TestClient(main.app, base_url="http://localhost") as other_client:
+            assert other_client.post("/session/login", json={"email": "journey-other@example.test", "password": secret}).status_code == 200
+            assert other_client.post("/customers/000860/interactions", json={"outcome": "Attempt", "submissionId": "foreign"}, headers=ORIGIN).status_code == 403
+
+        with TestClient(main.app, base_url="http://localhost") as owner_client:
+            assert owner_client.post("/session/login", json={"email": "journey-owner@example.test", "password": secret}).status_code == 200
+            closed = owner_client.post("/customers/000860/close", json={"reasonId": reason_id, "submissionId": "journey-close"}, headers=ORIGIN)
+            assert closed.status_code == 200 and closed.json()["status"] == "Closed"
+            assert owner_client.post("/customers/000860/interactions", json={"outcome": "Contact", "submissionId": "after-close"}, headers=ORIGIN).status_code == 409
+
+            reopened = owner_client.post("/customers/000860/reopen", json={"submissionId": "journey-reopen"}, headers=ORIGIN)
+            assert reopened.status_code == 200 and reopened.json()["status"] == "Open" and reopened.json()["ownerId"] == "journey-owner"
+            replay_reopen = owner_client.post("/customers/000860/reopen", json={"submissionId": "journey-reopen"}, headers=ORIGIN)
+            assert replay_reopen.status_code == 200 and replay_reopen.json() == reopened.json()
+
+        # Persisted state matches the HTTP responses: the first follow-up was cancelled by the close
+        # (never restored by reopen), the second stays Completed with its interaction link, the note
+        # tombstone hides the text but keeps the record, and the closure/reopen events are both durable.
+        followups = {row.id: row for row in activities.followups("000860")}
+        assert followups[first_id].status == "Cancelled"
+        assert followups[second_id].status == "Completed" and followups[second_id].interaction_id
+        note_row = next(item for item in activities.history("000860")[0] if item.id == note_id)
+        assert note_row.deleted_at is not None and note_row.text == "Standalone note"  # tombstone hides it only in API responses
+        kinds = [item.kind for item in activities.history("000860")[0]]
+        assert kinds.count("Closure") == 1 and kinds.count("Reopen") == 1
+        assert customers.get("000860").status == "Open" and customers.get("000860").owner_id == "journey-owner"
+        reasons = {row.id: row.label for row in activities.reasons()}
+        assert reasons[reason_id] == "Journey resolved"
+    finally:
+        auth.engine.dispose(); customers.engine.dispose(); activities.engine.dispose()
 
 
 def test_postgres_import_http_pipeline_behavior(postgres_url, monkeypatch):
@@ -1077,6 +1231,52 @@ def test_postgres_manual_assignment_concurrent_stale_version_conflicts(postgres_
         auth.engine.dispose(); customers.engine.dispose(); assignments.engine.dispose()
 
 
+def test_postgres_followup_completion_race_loser_gets_conflict_not_500(postgres_url, monkeypatch):
+    """Regression for the #25 QA bug: two concurrent /follow-ups/{id}/complete requests for the same
+    open follow-up must produce one 200 and one 409 -- never a raw 500. ActivityDatabase.complete_followup
+    raises ValueError for the with_for_update lock loser (whose in-process view of the follow-up was
+    still "Open" when it read it); main.complete_followup must catch that, like every other mutation
+    endpoint catches its own idempotency/version ValueError, instead of letting FastAPI turn it into an
+    unhandled 500."""
+    from .db_activity import ActivityDatabase
+    from .db_customers import CustomerDatabase
+
+    migrate()
+    auth = AuthDatabase(postgres_url, create_schema=False)
+    customers = CustomerDatabase(postgres_url, create_schema=False)
+    activities = ActivityDatabase(postgres_url, create_schema=False)
+    monkeypatch.setattr(main, "auth_db", auth)
+    monkeypatch.setattr(main, "customer_db", customers)
+    monkeypatch.setattr(main, "activity_db", activities)
+    monkeypatch.setattr(main, "assignment_db", None)
+    main.repo.reset(); main.repo.customers.clear()
+    try:
+        secret = secrets.token_urlsafe(24)
+        hashed = main.password_hash.hash(secret)
+        auth.create_user(user_id="race-sales", name="Race Sales", email="race-complete@example.test", role="Sales", password_hash=hashed)
+        customers.upsert_source(bcn="000850", name="Synthetic", source={})
+        customers.save_operational(bcn="000850", owner_id="race-sales", status="Open", version=0)
+        followup = {"id": "followup-race", "bcn": "000850", "actorId": "race-sales", "type": "Reminder", "due": None, "note": None, "status": "Open", "createdAt": datetime.now(timezone.utc).isoformat()}
+        activities.create_followup(followup, submission_id="race-create", payload="race-create")
+        # A concurrent request wins the real database race first, completing the follow-up.
+        activities.complete_followup(followup, {"id": "interaction-winner", "bcn": "000850", "actorId": "race-sales", "outcome": "Contact", "note": "Winner"})
+
+        # This request's in-process view of the follow-up still shows it as Open -- exactly what it
+        # would look like had it read the row a moment before the winner's commit.
+        stale = {**followup, "status": "Open", "interactionId": None}
+        monkeypatch.setattr(main, "find_followup", lambda bcn, followup_id, user: stale)
+        with TestClient(main.app, base_url="http://localhost") as client:
+            assert client.post("/session/login", json={"email": "race-complete@example.test", "password": secret}).status_code == 200
+            response = client.post("/customers/000850/follow-ups/followup-race/complete", json={"outcome": "Contact", "note": "Loser", "submissionId": "race-loser"}, headers=ORIGIN)
+        assert response.status_code == 409, response.text
+        assert response.json() == {"detail": "follow-up is no longer open"}
+        # The loser's interaction must never have been persisted (only the follow-up creation and
+        # the winner's interaction rows exist).
+        assert len(activities.history("000850")[0]) == 2
+    finally:
+        auth.engine.dispose(); customers.engine.dispose(); activities.engine.dispose()
+
+
 def test_postgres_assignment_restart_preserves_audit_and_resubmission(postgres_url):
     migrate()
     # Transport synthetic cookies only over anonymous process pipes, never args/files/output.
@@ -1168,6 +1368,92 @@ assert total == 1 and errors[0]["field"] == "bcn"
 row = customer_db.get("700900")
 assert row is not None and row.name == "Restart Co"
 assert customer_db.phones("700900") == []
+'''
+    env = os.environ | {"CALL_CENTER_STORAGE": "postgres", "DATABASE_URL": postgres_url}
+    first = subprocess.run([sys.executable, "-c", seed], env=env, capture_output=True)
+    assert first.returncode == 0, first.stderr
+    second = subprocess.run([sys.executable, "-c", verify], env=env, input=first.stdout, capture_output=True)
+    assert second.returncode == 0, second.stderr
+
+
+def test_postgres_activity_lifecycle_restart_preserves_history(postgres_url):
+    """Interactions, a soft-deleted note tombstone, follow-up completion, a closure-reason label, and
+    close/reopen events must all survive a process restart -- the coverage gap QA found despite roughly
+    ten prior engineering comments on #25 claiming exactly that, none of which were ever proven with a
+    restart test. Follows the subprocess-restart pattern already used for #23/#24."""
+    migrate()
+    # Transport synthetic cookies only over anonymous process pipes, never args/files/output.
+    seed = '''
+import json, secrets
+from io import BytesIO
+from openpyxl import Workbook
+from fastapi.testclient import TestClient
+from apps.api.main import app, provision_user, Provision
+secret = secrets.token_urlsafe(24)
+admin = provision_user(Provision(name="Restart Admin", email="restart-activity-admin@example.test", password=secret))
+client = TestClient(app, base_url="http://localhost")
+assert client.post("/session/login", json={"email": admin.email, "password": secret}).status_code == 200
+origin = {"origin": "http://localhost:3000"}
+sales_secret = secrets.token_urlsafe(24)
+sales = client.post("/admin/users", json={"name": "Restart Sales", "email": "restart-activity-sales@example.test", "role": "Sales", "password": sales_secret}, headers=origin).json()
+reason = client.post("/admin/closure-reasons", json={"label": "Restart resolved"}, headers=origin).json()
+book = Workbook(); book.active.append(["bcn", "customer_name"]); book.active.append(["800200", "Restart Activity Co"])
+payload = BytesIO(); book.save(payload)
+imported = client.post("/admin/imports?submission_id=restart-activity-import", files={"file": ("restart.xlsx", payload.getvalue(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")}, headers=origin)
+assert imported.status_code == 201, imported.text
+assigned = client.post("/admin/assignments/manual/800200", json={"ownerId": sales["id"], "submissionId": "restart-activity-assign"}, headers=origin)
+assert assigned.status_code == 200, assigned.text
+client.post("/session/logout", headers=origin)
+
+assert client.post("/session/login", json={"email": sales["email"], "password": sales_secret}).status_code == 200
+interaction = client.post("/customers/800200/interactions", json={"outcome": "Contact", "note": "Restart contact", "submissionId": "restart-interaction"}, headers=origin)
+assert interaction.status_code == 200, interaction.text
+note = client.post("/customers/800200/notes", json={"text": "Restart note", "submissionId": "restart-note"}, headers=origin)
+assert note.status_code == 200, note.text
+note_id = note.json()["id"]
+deleted = client.delete("/customers/800200/history/" + note_id, headers=origin)
+assert deleted.status_code == 200, deleted.text
+kept_open = client.post("/customers/800200/follow-ups", json={"type": "Reminder", "due": None, "note": "Stays open then cancelled", "submissionId": "restart-followup-open"}, headers=origin)
+assert kept_open.status_code == 200, kept_open.text
+to_complete = client.post("/customers/800200/follow-ups", json={"type": "Reminder", "due": None, "note": "Will be completed", "submissionId": "restart-followup-complete"}, headers=origin)
+assert to_complete.status_code == 200, to_complete.text
+to_complete_id = to_complete.json()["id"]
+completed = client.post("/customers/800200/follow-ups/" + to_complete_id + "/complete", json={"outcome": "Contact", "note": "Completed before restart", "submissionId": "restart-followup-complete-intent"}, headers=origin)
+assert completed.status_code == 200, completed.text
+closed = client.post("/customers/800200/close", json={"reasonId": reason["id"], "submissionId": "restart-close"}, headers=origin)
+assert closed.status_code == 200, closed.text
+reopened = client.post("/customers/800200/reopen", json={"submissionId": "restart-reopen"}, headers=origin)
+assert reopened.status_code == 200, reopened.text
+print(json.dumps({"salesId": sales["id"], "reasonId": reason["id"], "noteId": note_id, "openFollowupId": kept_open.json()["id"], "completedFollowupId": to_complete_id}))
+'''
+    verify = '''
+import json, sys
+from apps.api.main import activity_db, customer_db
+info = json.load(sys.stdin)
+bcn = "800200"
+
+reasons = {row.id: row for row in activity_db.reasons()}
+assert reasons[info["reasonId"]].label == "Restart resolved" and reasons[info["reasonId"]].active is True
+
+rows, total = activity_db.history(bcn)
+by_id = {row.id: row for row in rows}
+interaction = next(row for row in rows if row.kind == "Interaction" and row.outcome == "Contact" and row.deleted_at is None and row.text == "Restart contact")
+assert interaction is not None
+note_row = by_id[info["noteId"]]
+assert note_row.deleted_at is not None and note_row.deleted_by == info["salesId"] and note_row.text == "Restart note"
+closure = next(row for row in rows if row.kind == "Closure")
+assert closure.text == "Restart resolved"
+reopen_row = next(row for row in rows if row.kind == "Reopen")
+assert reopen_row.actor_id == info["salesId"]
+
+followups = {row.id: row for row in activity_db.followups(bcn)}
+assert followups[info["openFollowupId"]].status == "Cancelled"
+completed_followup = followups[info["completedFollowupId"]]
+assert completed_followup.status == "Completed" and completed_followup.interaction_id is not None
+assert by_id[completed_followup.interaction_id].text == "Completed before restart"
+
+customer = customer_db.get(bcn)
+assert customer.status == "Open" and customer.owner_id == info["salesId"]
 '''
     env = os.environ | {"CALL_CENTER_STORAGE": "postgres", "DATABASE_URL": postgres_url}
     first = subprocess.run([sys.executable, "-c", seed], env=env, capture_output=True)

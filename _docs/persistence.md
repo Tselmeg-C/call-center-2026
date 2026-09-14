@@ -36,6 +36,8 @@ docker compose -p call-center-tests -f infra/docker-compose.test.yml down -v
 
 Each PostgreSQL test requires a database ending in `_test` or `_ci`, creates a unique schema, applies Alembic migrations, and drops only that schema in cleanup. Checks cover an empty schema, prior revision upgrade, repeated upgrade, PostgreSQL constraints, concurrent normalized identity conflicts, injected transaction rollback, released connections, and sessions across separate API processes. Cookies move between test processes only through anonymous pipes. Keep `--tb=no` to prevent assertion diagnostics from exposing generated secrets. With no `TEST_DATABASE_URL`, PostgreSQL cases skip and the complete existing memory suite remains runnable.
 
+Customer imports acquire PostgreSQL transaction advisory locks in ascending BCN order. Overlapping imports therefore serialize per customer; each committed row's source fields and primary phone come from one import transaction.
+
 ## Operator commands
 
 With `DATABASE_URL` supplied by environment/secret storage and migrations applied:

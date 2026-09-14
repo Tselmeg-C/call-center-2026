@@ -96,7 +96,7 @@ class CustomerDatabase:
 
     def upsert_sources(self, records: list[dict]) -> None:
         with Session(self.engine) as session:
-            for record in records:
+            for record in sorted(records, key=lambda record: record["bcn"]):
                 if session.bind.dialect.name == "postgresql": session.execute(text("SELECT pg_advisory_xact_lock(hashtext(:bcn))"), {"bcn": record["bcn"]})
                 row = session.get(CustomerRow, record["bcn"])
                 if row is None: row = CustomerRow(bcn=record["bcn"], name=record["name"] or record["bcn"], status="Open", source={}); session.add(row)
@@ -211,7 +211,7 @@ class CustomerDatabase:
     def ingest_sources(self, records: list[dict], result: dict) -> None:
         """Commit source rows, phones, import summary, and row errors together."""
         with Session(self.engine) as session:
-            for record in records:
+            for record in sorted(records, key=lambda record: record["bcn"]):
                 if session.bind.dialect.name == "postgresql": session.execute(text("SELECT pg_advisory_xact_lock(hashtext(:bcn))"), {"bcn": record["bcn"]})
                 row = session.get(CustomerRow, record["bcn"])
                 if row is None:

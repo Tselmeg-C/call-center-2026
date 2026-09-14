@@ -8,6 +8,8 @@ import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
+from datetime import date
+from decimal import Decimal
 from threading import Barrier
 from uuid import uuid4
 
@@ -560,6 +562,44 @@ def test_postgres_migrations_constraints_and_rollback(postgres_url, monkeypatch)
         event.remove(database.engine, "before_cursor_execute", unavailable)
     assert database.engine.pool.checkedout() == 0
     database.engine.dispose()
+
+
+def test_postgres_customer_import_persists_and_rolls_back(postgres_url):
+    from .db_customers import CustomerCollectionRow, CustomerDatabase, CustomerRow, PhoneRow
+
+    migrate()
+    auth = AuthDatabase(postgres_url, create_schema=False)
+    customers = CustomerDatabase(postgres_url, create_schema=False)
+    try:
+        hashed = main.password_hash.hash(secrets.token_urlsafe(24))
+        for user_id in ("admin", "sales"):
+            auth.create_user(user_id=user_id, name=user_id, email=f"{user_id}@example.test", role="Admin" if user_id == "admin" else "Sales", password_hash=hashed)
+        result = {"jobId": "import-1", "submissionId": "first", "filename": "synthetic.xlsx", "processed": 2, "created": 1, "updated": 0, "errorRows": 1, "status": "Partial", "errors": [{"row": 3, "field": "bcn", "reason": "Invalid bcn"}], "actorId": "admin"}
+        customers.ingest_sources([{"bcn": "000123", "name": "Original", "source": {"customer_name": "Original"}, "typed": {"propensity_score": Decimal("0.875000"), "last_purchase_date": date(2025, 1, 2), "recent": True}, "collections": [{"kind": "vendor", "slot": 4, "name": "Synthetic vendor", "revenue": Decimal("12.500000")}], "primary_phone": "555-0100"}], result)
+        with Session(customers.engine) as session:
+            row = session.get(CustomerRow, "000123")
+            assert row.bcn == "000123" and row.propensity_score == Decimal("0.875000") and row.last_purchase_date == date(2025, 1, 2) and row.recent is True
+            assert session.query(CustomerCollectionRow).one().slot == 4
+            session.add(PhoneRow(bcn="000123", phone="555-0101", primary=False)); session.commit()
+        customers.save_operational(bcn="000123", owner_id="sales", status="Closed", version=7)
+        customers.ingest_sources([{"bcn": "000123", "name": "Reimported", "source": {"customer_name": "Reimported"}, "typed": {"propensity_score": None, "last_purchase_date": None, "recent": None}, "collections": [], "primary_phone": None}], {**result, "jobId": "import-2", "submissionId": "second", "processed": 1, "created": 0, "updated": 1, "errorRows": 0, "status": "Completed", "errors": []})
+        row = customers.get("000123")
+        assert row.name == "Reimported" and row.owner_id == "sales" and row.status == "Closed" and row.version == 7 and row.propensity_score is None and row.last_purchase_date is None and row.recent is None
+        assert customers.phones("000123") == ["555-0101"]
+        assert customers.import_errors("admin", "first", 1, 1) == ([{"row": 3, "field": "bcn", "reason": "Invalid bcn"}], 1)
+        with pytest.raises(IntegrityError):
+            customers.ingest_sources([{"bcn": "000999", "name": "Rolled back", "source": {}, "primary_phone": None}], {**result, "submissionId": "conflict"})
+        assert customers.get("000999") is None and customers.import_job("admin", "conflict") is None
+        barrier = Barrier(2)
+        def concurrent_import(index):
+            barrier.wait()
+            customers.ingest_sources([{"bcn": "000777", "name": f"Winner {index}", "source": {"customer_name": f"Winner {index}"}, "typed": {"propensity_rank": index}, "primary_phone": f"555-01{index}"}], {**result, "jobId": f"race-{index}", "submissionId": f"race-{index}", "errorRows": 0, "status": "Completed", "errors": []})
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            list(pool.map(concurrent_import, (1, 2)))
+        row = customers.get("000777")
+        assert (row.name, row.propensity_rank, customers.phones("000777")) in (("Winner 1", 1, ["555-011"]), ("Winner 2", 2, ["555-012"]))
+    finally:
+        auth.engine.dispose(); customers.engine.dispose()
 
 
 def test_postgres_process_restart(postgres_url):

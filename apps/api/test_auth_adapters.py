@@ -19,9 +19,9 @@ from alembic import command
 from alembic.config import Config
 from fastapi.testclient import TestClient
 from openpyxl import Workbook
-from sqlalchemy import create_engine, event, select, text
+from sqlalchemy import create_engine, delete, event, select, text, update
 from sqlalchemy.engine import make_url
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.orm import Session
 
 from . import main, db_auth
@@ -282,6 +282,15 @@ def test_owner_identity_change_rolls_back_and_releases_only_open(changes, tmp_pa
         with Session(assignments.engine) as session:
             assert len(list(session.scalars(select(AssignmentHistoryRow)))) == 1
             assert len(list(session.scalars(select(AuditRow)))) == 2
+        # Reactivating (active Sales again) does not reassign or reclaim any customer.
+        reactivation = {"active": True} if "active" in changes else {"role": "Sales"}
+        main.update_user("sales", main.UserPatch(**reactivation), actor)
+        assert customers.get("000001").owner_id is None and customers.get("000001").version == 4
+        assert customers.get("000002").owner_id == "sales" and customers.get("000002").version == 3
+        assert main.repo.customers["000001"]["ownerId"] is None and main.repo.customers["000002"]["ownerId"] == "sales"
+        with Session(assignments.engine) as session:
+            assert len(list(session.scalars(select(AssignmentHistoryRow)))) == 1
+            assert len(list(session.scalars(select(AuditRow)))) == 3
         with pytest.raises(HTTPException) as blocked:
             main.update_user("sales", main.UserPatch(active=False), main.User(**main.repo.users["sales"]))
         assert blocked.value.status_code == 422
@@ -752,6 +761,268 @@ def test_postgres_import_rejects_empty_and_corrupt_workbooks(postgres_url, monke
             assert customers.get("700300") is None
     finally:
         auth.engine.dispose(); customers.engine.dispose()
+
+
+def test_postgres_assignment_constraints_and_rollback(postgres_url):
+    """Constraint/rollback coverage for assignment_rules/assignment_history/audit_events/assignment_runs, matching test_postgres_customer_import_constraints_and_rollback's pattern."""
+    from .db_assignment import AssignmentDatabase, AssignmentHistoryRow, AssignmentRunRow, AuditRow, RuleRow
+    from .db_customers import CustomerDatabase
+
+    migrate("008_assignment_settings")
+    migrate()
+    migrate()
+    auth = AuthDatabase(postgres_url, create_schema=False)
+    customers = CustomerDatabase(postgres_url, create_schema=False)
+    assignments = AssignmentDatabase(postgres_url, create_schema=False)
+    try:
+        hashed = main.password_hash.hash(secrets.token_urlsafe(24))
+        auth.create_user(user_id="owner", name="Owner", email="owner@example.test", role="Sales", password_hash=hashed)
+        customers.upsert_source(bcn="000900", name="Synthetic", source={})
+
+        # Rule-name uniqueness and a rule naming a nonexistent owner are rejected.
+        assignments.create_rule(rule_id="r1", name="Rule One", position=1, actor_id="owner", owner_id="owner")
+        with pytest.raises(IntegrityError):
+            with Session(assignments.engine) as session, session.begin():
+                session.add(RuleRow(id="r2", name="Rule One", position=2, active=True, version=0, owner_id=None)); session.flush()
+        with pytest.raises(IntegrityError):
+            with Session(assignments.engine) as session, session.begin():
+                session.add(RuleRow(id="r3", name="Rule Three", position=3, active=True, version=0, owner_id="missing-user")); session.flush()
+
+        # assignment_history rejects a nonexistent actor, old owner, new owner, or bcn.
+        base = dict(bcn="000900", actor_id="owner", old_owner_id=None, new_owner_id="owner", reason="Synthetic", created_at=datetime.now(timezone.utc))
+        for changes in ({"actor_id": "missing"}, {"old_owner_id": "missing"}, {"new_owner_id": "missing"}, {"bcn": "999999"}):
+            with pytest.raises(IntegrityError):
+                with Session(assignments.engine) as session, session.begin():
+                    session.add(AssignmentHistoryRow(**(base | changes))); session.flush()
+
+        # audit_events rejects a nonexistent actor.
+        with pytest.raises(IntegrityError):
+            with Session(assignments.engine) as session, session.begin():
+                session.add(AuditRow(actor_id="missing", action="Test", target="000900", details={}, created_at=datetime.now(timezone.utc))); session.flush()
+
+        # assignment_runs enforces its (actor_id, submission_id) uniqueness at the database level too.
+        run = dict(actor_id="owner", submission_id="dup", scope="unassigned", fingerprint=None, result={}, created_at=datetime.now(timezone.utc))
+        with Session(assignments.engine) as session, session.begin():
+            session.add(AssignmentRunRow(**run)); session.flush()
+        with pytest.raises(IntegrityError):
+            with Session(assignments.engine) as session, session.begin():
+                session.add(AssignmentRunRow(**run)); session.flush()
+
+        # An ordinary UPDATE or DELETE against the append-only history tables is rejected by the database trigger.
+        assignments.append_audit(actor_id="owner", action="Synthetic", target="000900", details={})
+        assignments.append_assignment(bcn="000900", actor_id="owner", old_owner_id=None, new_owner_id="owner", reason="Synthetic")
+        with Session(assignments.engine) as session:
+            audit_id = session.scalar(select(AuditRow.id).where(AuditRow.action == "Synthetic"))
+            with pytest.raises(DBAPIError):
+                session.execute(update(AuditRow).where(AuditRow.id == audit_id).values(action="Changed"))
+            session.rollback()
+        with Session(assignments.engine) as session:
+            history_id = session.scalar(select(AssignmentHistoryRow.id))
+            with pytest.raises(DBAPIError):
+                session.execute(delete(AssignmentHistoryRow).where(AssignmentHistoryRow.id == history_id))
+            session.rollback()
+        with Session(assignments.engine) as session:
+            assert session.scalar(select(AuditRow).where(AuditRow.id == audit_id)).action == "Synthetic"
+            assert session.scalar(select(AssignmentHistoryRow).where(AssignmentHistoryRow.id == history_id)) is not None
+    finally:
+        auth.engine.dispose(); customers.engine.dispose(); assignments.engine.dispose()
+
+
+def test_postgres_bulk_assignment_rule_order_fallback_and_scope(postgres_url, monkeypatch):
+    """The #19 rule-order/fallback/unchanged-owner engine (test_assignment_order_fallback_and_unchanged_owner) against real PostgreSQL persistence."""
+    from .db_assignment import AssignmentDatabase, AssignmentHistoryRow, AuditRow
+    from .db_customers import CustomerDatabase
+
+    migrate()
+    auth = AuthDatabase(postgres_url, create_schema=False)
+    customers = CustomerDatabase(postgres_url, create_schema=False)
+    assignments = AssignmentDatabase(postgres_url, create_schema=False)
+    monkeypatch.setattr(main, "auth_db", auth)
+    monkeypatch.setattr(main, "customer_db", customers)
+    monkeypatch.setattr(main, "assignment_db", assignments)
+    main.repo.reset()
+    try:
+        hashed = main.password_hash.hash(secrets.token_urlsafe(24))
+        for user_id, role, active in (("admin", "Admin", True), ("first", "Sales", True), ("second", "Sales", True), ("inactive", "Sales", False)):
+            auth.create_user(user_id=user_id, name=user_id, email=f"{user_id}@example.test", role=role, password_hash=hashed)
+            main.repo.users[user_id] = {"id": user_id, "name": user_id, "role": role, "active": active}
+        customers.upsert_source(bcn="000001", name="Synthetic", source={}); customers.save_operational(bcn="000001", owner_id="first", status="Open", version=4)
+        customers.upsert_source(bcn="000002", name="Synthetic", source={}); customers.save_operational(bcn="000002", owner_id=None, status="Open", version=0)
+        customers.upsert_source(bcn="000003", name="Synthetic", source={}); customers.save_operational(bcn="000003", owner_id=None, status="Closed", version=0)
+        main.repo.customers = {}
+        actor = main.User(id="admin", name="Admin", email="admin@example.test", role="Admin")
+        rule_first = main.create_assignment_rule(main.AssignmentRuleDraft(name="First", ownerId="first", active=True), actor)
+        rule_second = main.create_assignment_rule(main.AssignmentRuleDraft(name="Second", ownerId="second", active=True), actor)
+        main.repo.fallback_sales = ["inactive", "second", "first"]
+
+        def counts():
+            with Session(assignments.engine) as session:
+                return (len(list(session.scalars(select(AssignmentHistoryRow)))), len(list(session.scalars(select(AuditRow)))))
+        history_before, audit_before = counts()
+
+        # A matching active rule (by position) wins over the fallback list; an already-correct owner is a no-op; Closed customers are excluded from the run's scope.
+        result = main.run_assignment(main.AssignmentRunRequest(scope="all-open", submissionId="ordered"), actor)
+        assert (result["candidates"], result["assigned"], result["skipped"]) == (2, 1, 1)
+        assert customers.get("000001").owner_id == "first" and customers.get("000001").version == 4
+        assert customers.get("000002").owner_id == "first" and customers.get("000002").version == 1
+        assert customers.get("000003").owner_id is None
+        history_after_ordered, audit_after_ordered = counts()
+        assert (history_after_ordered - history_before, audit_after_ordered - audit_before) == (1, 1)
+
+        # Every rule inactive falls through to the fallback list.
+        main.update_assignment_rule(rule_first["id"], {"active": False, "version": main.repo.assignment_version}, actor)
+        main.update_assignment_rule(rule_second["id"], {"active": False, "version": main.repo.assignment_version}, actor)
+        history_before_fallback, audit_before_fallback = counts()
+        result = main.run_assignment(main.AssignmentRunRequest(scope="all-open", submissionId="fallback"), actor)
+        assert result["assigned"] == 2
+        assert customers.get("000001").owner_id == "second" and customers.get("000001").version == 5
+        assert customers.get("000002").owner_id == "second" and customers.get("000002").version == 2
+        history_after_fallback, audit_after_fallback = counts()
+        assert (history_after_fallback - history_before_fallback, audit_after_fallback - audit_before_fallback) == (2, 2)
+
+        # The owner is already correct: a no-op, no new rows, unchanged versions.
+        result = main.run_assignment(main.AssignmentRunRequest(scope="all-open", submissionId="already-correct"), actor)
+        assert (result["assigned"], result["skipped"]) == (0, 2)
+        assert customers.get("000001").version == 5 and customers.get("000002").version == 2
+        assert counts() == (history_after_fallback, audit_after_fallback)
+
+        # Every fallback member inactive/non-Sales leaves the owner unchanged: no history/audit row, no version bump.
+        main.repo.fallback_sales = ["inactive"]
+        result = main.run_assignment(main.AssignmentRunRequest(scope="all-open", submissionId="no-eligible-owner"), actor)
+        assert (result["assigned"], result["skipped"]) == (0, 2)
+        assert customers.get("000001").owner_id == "second" and customers.get("000001").version == 5
+        assert customers.get("000002").owner_id == "second" and customers.get("000002").version == 2
+        assert counts() == (history_after_fallback, audit_after_fallback)
+    finally:
+        auth.engine.dispose(); customers.engine.dispose(); assignments.engine.dispose()
+
+
+def test_postgres_bulk_run_concurrent_submission_serializes(postgres_url):
+    """Two real concurrent PostgreSQL transactions racing on the same (actor_id, submission_id) serialize on the unique run key."""
+    from .db_assignment import AssignmentDatabase, AssignmentHistoryRow, AssignmentRunRow, AuditRow
+    from .db_customers import CustomerDatabase
+
+    migrate()
+    auth = AuthDatabase(postgres_url, create_schema=False)
+    customers = CustomerDatabase(postgres_url, create_schema=False)
+    assignments = AssignmentDatabase(postgres_url, create_schema=False)
+    try:
+        hashed = main.password_hash.hash(secrets.token_urlsafe(24))
+        auth.create_user(user_id="admin", name="Admin", email="admin@example.test", role="Admin", password_hash=hashed)
+        auth.create_user(user_id="sales", name="Sales", email="sales@example.test", role="Sales", password_hash=hashed)
+        customers.upsert_source(bcn="000700", name="Synthetic", source={})
+        barrier = Barrier(2)
+        def race(_index):
+            barrier.wait()
+            return assignments.run_bulk(actor_id="admin", submission_id="race", scope="unassigned", owner_id="sales")
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(race, (1, 2)))
+        assert results[0][0] == results[1][0]
+        assert results[0][0]["assigned"] == 1
+        with Session(assignments.engine) as session:
+            assert len(list(session.scalars(select(AssignmentHistoryRow)))) == 1
+            assert len(list(session.scalars(select(AuditRow)))) == 1
+            assert len(list(session.scalars(select(AssignmentRunRow)))) == 1
+        assert customers.get("000700").owner_id == "sales" and customers.get("000700").version == 1
+    finally:
+        auth.engine.dispose(); customers.engine.dispose(); assignments.engine.dispose()
+
+
+def test_postgres_manual_assignment_concurrent_stale_version_conflicts(postgres_url):
+    """Two real concurrent PostgreSQL transactions racing on the same bcn serialize on the customer row lock; the stale-version loser gets a conflict, not a silently lost update."""
+    from .db_assignment import AssignmentDatabase, AssignmentHistoryRow, AuditRow
+    from .db_customers import CustomerDatabase
+
+    migrate()
+    auth = AuthDatabase(postgres_url, create_schema=False)
+    customers = CustomerDatabase(postgres_url, create_schema=False)
+    assignments = AssignmentDatabase(postgres_url, create_schema=False)
+    try:
+        hashed = main.password_hash.hash(secrets.token_urlsafe(24))
+        auth.create_user(user_id="admin", name="Admin", email="admin@example.test", role="Admin", password_hash=hashed)
+        for owner in ("sales-a", "sales-b"):
+            auth.create_user(user_id=owner, name=owner, email=f"{owner}@example.test", role="Sales", password_hash=hashed)
+        customers.upsert_source(bcn="000800", name="Synthetic", source={})
+        barrier = Barrier(2)
+        def race(owner):
+            barrier.wait()
+            try:
+                return ("ok", assignments.assign_manual(bcn="000800", owner_id=owner, expected_version=0, actor_id="admin"))
+            except ValueError as exc:
+                return ("conflict", str(exc))
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            outcomes = list(pool.map(race, ("sales-a", "sales-b")))
+        statuses = sorted(status for status, _ in outcomes)
+        assert statuses == ["conflict", "ok"]
+        assert "stale" in next(detail for status, detail in outcomes if status == "conflict").lower()
+        winner = next(detail for status, detail in outcomes if status == "ok")
+        row = customers.get("000800")
+        assert row.owner_id == winner["ownerId"] and row.version == 1
+        with Session(assignments.engine) as session:
+            assert len(list(session.scalars(select(AssignmentHistoryRow)))) == 1
+            assert len(list(session.scalars(select(AuditRow)))) == 1
+    finally:
+        auth.engine.dispose(); customers.engine.dispose(); assignments.engine.dispose()
+
+
+def test_postgres_assignment_restart_preserves_audit_and_resubmission(postgres_url):
+    migrate()
+    # Transport synthetic cookies only over anonymous process pipes, never args/files/output.
+    seed = '''
+import json, secrets
+from io import BytesIO
+from openpyxl import Workbook
+from fastapi.testclient import TestClient
+from apps.api.main import app, provision_user, Provision
+secret = secrets.token_urlsafe(24)
+admin = provision_user(Provision(name="Restart Admin", email="restart-assign-admin@example.test", password=secret))
+client = TestClient(app, base_url="http://localhost")
+assert client.post("/session/login", json={"email": admin.email, "password": secret}).status_code == 200
+sales_secret = secrets.token_urlsafe(24)
+sales = client.post("/admin/users", json={"name": "Sales", "email": "restart-assign-sales@example.test", "role": "Sales", "password": sales_secret}, headers={"origin": "http://localhost:3000"}).json()
+book = Workbook(); book.active.append(["bcn", "customer_name"]); book.active.append(["800100", "Restart Assign Co"])
+payload = BytesIO(); book.save(payload)
+imported = client.post("/admin/imports?submission_id=restart-assign-import", files={"file": ("restart.xlsx", payload.getvalue(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")}, headers={"origin": "http://localhost:3000"})
+assert imported.status_code == 201, imported.text
+assigned = client.post("/admin/assignments/manual/800100", json={"ownerId": sales["id"], "submissionId": "restart-assign-manual"}, headers={"origin": "http://localhost:3000"})
+assert assigned.status_code == 200, assigned.text
+run = client.post("/admin/assignment-runs", json={"scope": "unassigned", "submissionId": "restart-assign-run"}, headers={"origin": "http://localhost:3000"})
+assert run.status_code == 200, run.text
+print(json.dumps({"adminEmail": admin.email, "adminId": admin.id, "runResult": run.json()}))
+'''
+    verify = '''
+import json, sys
+from fastapi import HTTPException
+from apps.api.main import admin_audit, run_assignment, AssignmentRunRequest, User
+info = json.load(sys.stdin)
+actor = User(id=info["adminId"], name="Restart Admin", email=info["adminEmail"], role="Admin")
+
+# Resubmitting the same (actor, submission_id) with an identical scope replays the persisted result, unchanged, across a restart.
+same = run_assignment(AssignmentRunRequest(scope="unassigned", submissionId="restart-assign-run"), actor)
+assert same == info["runResult"], (same, info["runResult"])
+
+# A different scope under the same submission_id is a 409, across a restart.
+try:
+    run_assignment(AssignmentRunRequest(scope="all-open", submissionId="restart-assign-run"), actor)
+    raise SystemExit("expected HTTPException")
+except HTTPException as exc:
+    assert exc.status_code == 409
+
+# audit_events/assignment_history rows from before the restart are still present and readable through the paginated audit query,
+# including the source-change row #23's import path wrote, with only the whitelisted detail fields returned (never a credential).
+audit = admin_audit(page=1, page_size=50)
+actions = [item["action"] for item in audit["items"]]
+assert actions.count("Import completed") == 1
+assert "Customer assigned" in actions
+for item in audit["items"]:
+    assert set(item) == {"id", "actor", "actorId", "action", "target", "timestamp", "details"}
+    assert "password" not in item["details"] and "secret" not in item["details"]
+'''
+    env = os.environ | {"CALL_CENTER_STORAGE": "postgres", "DATABASE_URL": postgres_url}
+    first = subprocess.run([sys.executable, "-c", seed], env=env, capture_output=True)
+    assert first.returncode == 0, first.stderr
+    second = subprocess.run([sys.executable, "-c", verify], env=env, input=first.stdout, capture_output=True)
+    assert second.returncode == 0, second.stderr
 
 
 def test_postgres_import_restart_preserves_jobs_and_errors(postgres_url):

@@ -33,6 +33,9 @@ app.add_middleware(CORSMiddleware, allow_origins=ALLOWED_ORIGINS, allow_credenti
 password_hash = PasswordHash.recommended()
 SESSION_SECONDS = 8 * 60 * 60
 ALEMBIC_HEAD = "028_import_fingerprint"
+# Every key any append_audit/append_assignment caller writes today; the audit endpoint
+# strips anything else so a future detail field never leaks unreviewed (never a credential).
+AUDIT_DETAIL_KEYS = {"name", "ownerId", "position", "active", "oldOwner", "newOwner", "source", "reason", "role", "outcome", "recordId", "reasonId", "created", "updated", "errors", "label"}
 
 
 @app.exception_handler(StorageError)
@@ -1083,7 +1086,7 @@ def admin_reports(start: str | None = None, end: str | None = None, _: Annotated
 def admin_audit(actor: str | None = None, action: str | None = None, bcn: str | None = None, start: str | None = None, end: str | None = None, page: int = Query(1, ge=1), page_size: int = Query(25, ge=1, le=100), _: Annotated[User, Depends(admin_user)] = None) -> dict:
     if assignment_db is not None:
         rows, total = assignment_db.audit(page, page_size, actor=actor, action=action, target=bcn, start=start, end=end)
-        return {"items": [{"id": str(item.id), "actor": item.actor_id or "", "actorId": item.actor_id or "", "action": item.action, "target": item.target, "timestamp": item.created_at.isoformat(), "details": item.details} for item in rows], "page": page, "page_size": page_size, "total": total}
+        return {"items": [{"id": str(item.id), "actor": item.actor_id or "", "actorId": item.actor_id or "", "action": item.action, "target": item.target, "timestamp": item.created_at.isoformat(), "details": {key: value for key, value in item.details.items() if key in AUDIT_DETAIL_KEYS}} for item in rows], "page": page, "page_size": page_size, "total": total}
     events = []
     for row in repo.customers.values():
         for index, event in enumerate(row["histories"]):

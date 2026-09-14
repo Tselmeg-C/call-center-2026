@@ -38,6 +38,8 @@ Each PostgreSQL test requires a database ending in `_test` or `_ci`, creates a u
 
 Customer imports acquire PostgreSQL transaction advisory locks in ascending BCN order. Overlapping imports therefore serialize per customer; each committed row's source fields and primary phone come from one import transaction.
 
+Assignment writes lock in this order: customer rows (`SELECT ... FOR UPDATE`, ascending BCN) before the `assignment_settings.assignment_version` row a rule update compares against. Manual reassignment (`assign_manual`) and a bulk run (`run_bulk`) lock only customer rows, so two concurrent bulk runs racing on the same `(actor_id, submission_id)` serialize on that unique key, and two concurrent manual reassignments of the same customer serialize on the customer row lock, with the stale-version side rejected rather than silently overwritten. User deactivation (`update_identity`) locks the user row, then that user's Open customer rows, before writing the released customers' history/audit rows and the "User changed" audit row in the same transaction; it never locks `assignment_settings`, so it cannot deadlock against a rule update. A user is never deleted, and `assignment_history`/`audit_events` are never cascade-deleted through a user or customer change; both tables also reject ordinary `UPDATE`/`DELETE` at the database level (append-only trigger) so only the retention process in #28 may remove rows.
+
 ## Operator commands
 
 With `DATABASE_URL` supplied by environment/secret storage and migrations applied:

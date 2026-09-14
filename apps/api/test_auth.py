@@ -232,6 +232,28 @@ def test_assignment_order_fallback_and_unchanged_owner(monkeypatch) -> None:
     finally:
         repo.reset()
 
+def test_assignment_fallback_rejects_invalid_members_without_partial_write() -> None:
+    repo.reset(); admin = provision_user(type("P", (), {"name": "Admin", "email": "admin@example.test", "role": "Admin", "password": "correct horse battery staple"})())
+    repo.users["sales-river"] = {"id": "sales-river", "name": "River Sales", "email": "river@example.test", "role": "Sales", "active": True, "password": "unused"}
+    client = TestClient(app, base_url="http://localhost"); client.post("/session/login", json={"email": admin.email, "password": "correct horse battery staple"})
+    assert client.put("/admin/assignment-fallback", json=["sales-river"], headers={"origin": "http://localhost:3000"}).json() == ["sales-river"]
+    rejected = client.put("/admin/assignment-fallback", json=["sales-river", "ghost-user"], headers={"origin": "http://localhost:3000"})
+    assert rejected.status_code == 422
+    assert client.get("/admin/assignment-fallback", headers={"origin": "http://localhost:3000"}).json() == ["sales-river"]
+
+def test_audit_endpoint_returns_only_whitelisted_detail_keys(tmp_path, monkeypatch) -> None:
+    from . import main
+    database = AssignmentDatabase(f"sqlite+pysqlite:///{tmp_path / 'audit.db'}")
+    monkeypatch.setattr(main, "assignment_db", database)
+    try:
+        database.append_audit(actor_id="admin", action="Customer assigned", target="000123", details={"oldOwner": None, "newOwner": "sales", "secret": "should-not-appear", "password": "nope"})
+        result = main.admin_audit(page=1, page_size=25)
+        item = result["items"][0]
+        assert set(item) == {"id", "actor", "actorId", "action", "target", "timestamp", "details"}
+        assert item["details"] == {"oldOwner": None, "newOwner": "sales"}
+    finally:
+        database.engine.dispose()
+
 def test_activity_idempotency_replays_and_rejects_payload_reuse() -> None:
     database = ActivityDatabase("sqlite+pysqlite:///:memory:")
     assert database.save_idempotent(actor_id="u1", operation="note", submission_id="s1", payload="hello", result={"id": "n1"}) == {"id": "n1"}

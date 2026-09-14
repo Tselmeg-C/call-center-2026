@@ -183,6 +183,35 @@ def test_rule_updates_compare_persisted_version_and_rollback(tmp_path, monkeypat
         main.repo.reset()
 
 
+def test_rule_owner_update_enforces_active_sales(tmp_path, monkeypatch):
+    """Deactivating a rule's owner leaves owner_id untouched until the rule is edited (or the user reactivated); editing to a new owner is validated the same way rule creation is."""
+    from fastapi import HTTPException
+    from .db_assignment import AssignmentDatabase
+
+    database = AssignmentDatabase(f"sqlite+pysqlite:///{tmp_path / 'rule-owner.db'}")
+    monkeypatch.setattr(main, "assignment_db", database)
+    main.repo.reset()
+    try:
+        main.repo.users["first"] = {"id": "first", "name": "first", "role": "Sales", "active": True}
+        main.repo.users["inactive"] = {"id": "inactive", "name": "inactive", "role": "Sales", "active": False}
+        actor = main.User(id="admin", name="Admin", email="admin@example.test", role="Admin")
+        rule = main.create_assignment_rule(main.AssignmentRuleDraft(name="Rule", ownerId="first", active=True), actor)
+        # Deactivating the owner leaves the rule's owner_id untouched (no cascade-null); the rule is simply skipped at run time.
+        main.repo.users["first"]["active"] = False
+        assert database.ordered_rules()[0].owner_id == "first"
+        with pytest.raises(HTTPException) as rejected:
+            main.update_assignment_rule(rule["id"], {"ownerId": "inactive", "version": main.repo.assignment_version}, actor)
+        assert rejected.value.status_code == 422
+        assert database.ordered_rules()[0].owner_id == "first" and database.ordered_rules()[0].active is True
+        main.repo.users["second"] = {"id": "second", "name": "second", "role": "Sales", "active": True}
+        result = main.update_assignment_rule(rule["id"], {"ownerId": "second", "version": main.repo.assignment_version}, actor)
+        assert result["ownerId"] == "second"
+        assert database.ordered_rules()[0].owner_id == "second"
+    finally:
+        database.engine.dispose()
+        main.repo.reset()
+
+
 def test_manual_assignment_commit_and_rollback(tmp_path, monkeypatch):
     from .db_assignment import AssignmentDatabase, AssignmentHistoryRow, AuditRow
     from .db_customers import CustomerDatabase

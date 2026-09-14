@@ -937,10 +937,13 @@ def update_assignment_rule(rule_id: str, patch: dict, _: Annotated[User, Depends
     if not rule: raise HTTPException(status.HTTP_404_NOT_FOUND, "Rule not found.")
     if assignment_db is None and "version" in patch and patch["version"] != repo.assignment_version: raise HTTPException(status.HTTP_409_CONFLICT, "Assignment configuration is stale.")
     if "name" in patch and any(item["id"] != rule_id and item["name"].casefold() == str(patch["name"]).strip().casefold() for item in repo.rules): raise HTTPException(status.HTTP_409_CONFLICT, "Rule already exists.")
+    if "ownerId" in patch:
+        owner = repo.users.get(patch["ownerId"])
+        if not owner or owner["role"] != "Sales" or not owner["active"]: raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Owner must be active Sales.")
     if assignment_db is not None:
         expected_version = patch.get("version", repo.assignment_version)
         if type(expected_version) is not int or expected_version < 1: raise HTTPException(status.HTTP_409_CONFLICT, "Assignment configuration is stale.")
-        updates = {("position" if key == "order" else key): patch[key] for key in ("name", "active", "order") if key in patch}
+        updates = {("position" if key == "order" else "owner_id" if key == "ownerId" else key): patch[key] for key in ("name", "active", "order", "ownerId") if key in patch}
         try: stored = assignment_db.update_rule(rule_id, updates, _.id, expected_version)
         except ValueError as exc: raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
         if stored is None: raise HTTPException(status.HTTP_404_NOT_FOUND, "Rule not found.")
@@ -948,7 +951,7 @@ def update_assignment_rule(rule_id: str, patch: dict, _: Annotated[User, Depends
         repo.rules.sort(key=lambda item: item["order"])
         repo.assignment_version = expected_version + 1
         return rule
-    for key in ("name", "active", "order"):
+    for key in ("name", "active", "order", "ownerId"):
         if key in patch: rule[key] = patch[key]
     repo.rules.sort(key=lambda item: item["order"]); repo.assignment_version += 1
     return rule

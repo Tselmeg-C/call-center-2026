@@ -261,22 +261,29 @@ def test_manual_assignment_commit_and_rollback(tmp_path, monkeypatch):
         main.repo.reset()
 
 
+@pytest.mark.parametrize("backend", ["sqlite", "postgres"])
 @pytest.mark.parametrize("changes", [{"active": False}, {"role": "Admin"}])
-def test_owner_identity_change_rolls_back_and_releases_only_open(changes, tmp_path, monkeypatch):
+def test_owner_identity_change_rolls_back_and_releases_only_open(changes, backend, request, tmp_path, monkeypatch):
+    """Parametrized over sqlite/postgres so update_identity's with_for_update() row-locking path
+    is exercised against real PostgreSQL, not just SQLite."""
     from copy import deepcopy
     from fastapi import HTTPException
     from .db_assignment import AssignmentDatabase, AssignmentHistoryRow, AuditRow
     from .db_customers import CustomerDatabase
 
-    url = f"sqlite+pysqlite:///{tmp_path / 'owner.db'}"
-    auth = AuthDatabase(url)
-    customers = CustomerDatabase(url)
-    assignments = AssignmentDatabase(url)
+    url = request.getfixturevalue("postgres_url") if backend == "postgres" else f"sqlite+pysqlite:///{tmp_path / 'owner.db'}"
+    if backend == "postgres": migrate()
+    auth = AuthDatabase(url, create_schema=backend == "sqlite")
+    customers = CustomerDatabase(url, create_schema=backend == "sqlite")
+    assignments = AssignmentDatabase(url, create_schema=backend == "sqlite")
     for name, database in (("auth_db", auth), ("customer_db", customers), ("assignment_db", assignments)):
         monkeypatch.setattr(main, name, database)
     main.repo.reset()
     try:
-        auth.create_user(user_id="sales", name="Sales", email="sales@example.test", role="Sales", password_hash=main.password_hash.hash(secrets.token_urlsafe(24)))
+        hashed = main.password_hash.hash(secrets.token_urlsafe(24))
+        auth.create_user(user_id="sales", name="Sales", email="sales@example.test", role="Sales", password_hash=hashed)
+        # A real actor row too, so assignment_history/audit_events FKs are satisfied under real PostgreSQL enforcement.
+        auth.create_user(user_id="admin", name="Admin", email="owner-admin@example.test", role="Admin", password_hash=hashed)
         token, expires = auth.issue("sales")
         main.repo.users = {"sales": {"id": "sales", "name": "Sales", "email": "sales@example.test", "role": "Sales", "active": True}}
         main.repo.sessions[token] = ("sales", expires)
@@ -524,10 +531,33 @@ def test_shared_session_clock_logout_recovery_and_role(adapter, monkeypatch):
 
 
 def test_postgres_migrations_constraints_and_rollback(postgres_url, monkeypatch):
-    migrate("008_assignment_settings")
+    from .db_customers import CustomerDatabase
+
+    # Start from #23's actual final revision, seed representative pre-existing user/customer/import
+    # data, then upgrade through #24's entire migration chain to head -- proving the upgrade path
+    # itself, not just the schema it lands on -- and that a repeated upgrade is a clean no-op.
+    migrate("002_customers")
+    legacy_auth = AuthDatabase(postgres_url, create_schema=False)
+    legacy_auth.create_user(user_id="legacy-sales", name="Legacy Sales", email="legacy-sales@example.test", role="Sales", password_hash=main.password_hash.hash(secrets.token_urlsafe(24)))
+    # Raw SQL matching #23's actual 002_customers columns exactly -- the CustomerRow ORM model
+    # reflects the head schema, which doesn't exist yet at this revision.
+    with legacy_auth.engine.begin() as connection:
+        connection.execute(text("INSERT INTO customers (bcn, name, status, owner_id, source, version) VALUES ('000042', 'Legacy Co', 'Open', 'legacy-sales', '{}'::json, 3)"))
+        connection.execute(text("INSERT INTO customer_phones (bcn, phone, is_primary) VALUES ('000042', '555-0042', true)"))
+        connection.execute(text("INSERT INTO import_jobs (id, submission_id, actor_id, filename, processed, created, updated, error_rows, status, created_at) VALUES ('legacy-job', 'legacy-import', 'legacy-sales', 'legacy.xlsx', 1, 1, 0, 0, 'Completed', now())"))
+    legacy_auth.engine.dispose()
     migrate()
-    migrate()
+    migrate()  # repeated upgrade of #24's full chain is a no-op
+
     database = AuthDatabase(postgres_url, create_schema=False)
+    legacy_user = database.user_by_email("legacy-sales@example.test")
+    assert legacy_user is not None and legacy_user.role == "Sales" and legacy_user.active
+    verify_customers = CustomerDatabase(postgres_url, create_schema=False)
+    survivor = verify_customers.get("000042")
+    assert (survivor.owner_id, survivor.status, survivor.version, verify_customers.phones("000042")) == ("legacy-sales", "Open", 3, ["555-0042"])
+    with database.transaction() as session:
+        assert session.scalar(text("SELECT status FROM import_jobs WHERE id = 'legacy-job'")) == "Completed"
+    verify_customers.engine.dispose()
     secret = secrets.token_urlsafe(24)
     hashed = main.password_hash.hash(secret)
     kwargs = dict(user_id="persisted", name="Synthetic", email="persisted@example.test", role="Admin", password_hash=hashed)
@@ -793,21 +823,40 @@ def test_postgres_import_rejects_empty_and_corrupt_workbooks(postgres_url, monke
 
 
 def test_postgres_assignment_constraints_and_rollback(postgres_url):
-    """Constraint/rollback coverage for assignment_rules/assignment_history/audit_events/assignment_runs, matching test_postgres_customer_import_constraints_and_rollback's pattern."""
+    """Constraint/rollback coverage for assignment_rules/assignment_history/audit_events/assignment_runs, matching test_postgres_customer_import_constraints_and_rollback's pattern.
+
+    Starts from #23's actual final revision (002_customers), seeded with representative
+    pre-existing user/customer/import data, then upgrades through #24's entire migration chain to
+    head -- proving the upgrade path survives and is a no-op on repeat -- before covering the
+    constraint/rollback behavior.
+    """
     from .db_assignment import AssignmentDatabase, AssignmentHistoryRow, AssignmentRunRow, AuditRow, RuleRow
     from .db_customers import CustomerDatabase
 
-    migrate("008_assignment_settings")
-    migrate()
-    migrate()
+    migrate("002_customers")
     auth = AuthDatabase(postgres_url, create_schema=False)
     customers = CustomerDatabase(postgres_url, create_schema=False)
+    hashed = main.password_hash.hash(secrets.token_urlsafe(24))
+    auth.create_user(user_id="owner", name="Owner", email="owner@example.test", role="Sales", password_hash=hashed)
+    # Raw SQL matching #23's actual 002_customers columns exactly -- the CustomerRow ORM model
+    # reflects the head schema, which doesn't exist yet at this revision.
+    with auth.engine.begin() as connection:
+        connection.execute(text("INSERT INTO customers (bcn, name, status, owner_id, source, version) VALUES ('000900', 'Synthetic', 'Open', 'owner', '{}'::json, 2)"))
+        connection.execute(text("INSERT INTO customer_phones (bcn, phone, is_primary) VALUES ('000900', '555-0900', true)"))
+        connection.execute(text("INSERT INTO import_jobs (id, submission_id, actor_id, filename, processed, created, updated, error_rows, status, created_at) VALUES ('pre-migration-job', 'pre-migration', 'owner', 'legacy.xlsx', 1, 1, 0, 0, 'Completed', now())"))
+
+    migrate()
+    migrate()  # repeated upgrade of #24's full chain is a no-op
+
+    # #23's pre-existing data survives the upgrade unchanged.
+    assert auth.user_by_email("owner@example.test") is not None
+    survivor = customers.get("000900")
+    assert (survivor.owner_id, survivor.status, survivor.version, customers.phones("000900")) == ("owner", "Open", 2, ["555-0900"])
+    with auth.transaction() as session:
+        assert session.scalar(text("SELECT status FROM import_jobs WHERE id = 'pre-migration-job'")) == "Completed"
+
     assignments = AssignmentDatabase(postgres_url, create_schema=False)
     try:
-        hashed = main.password_hash.hash(secrets.token_urlsafe(24))
-        auth.create_user(user_id="owner", name="Owner", email="owner@example.test", role="Sales", password_hash=hashed)
-        customers.upsert_source(bcn="000900", name="Synthetic", source={})
-
         # Rule-name uniqueness and a rule naming a nonexistent owner are rejected.
         assignments.create_rule(rule_id="r1", name="Rule One", position=1, actor_id="owner", owner_id="owner")
         with pytest.raises(IntegrityError):
@@ -924,6 +973,40 @@ def test_postgres_bulk_assignment_rule_order_fallback_and_scope(postgres_url, mo
         assert counts() == (history_after_fallback, audit_after_fallback)
     finally:
         auth.engine.dispose(); customers.engine.dispose(); assignments.engine.dispose()
+
+
+def test_postgres_fallback_sales_round_trips_and_rejects_without_partial_write(postgres_url, monkeypatch):
+    """fallback_sales write/reject round-tripped through AssignmentDatabase.set_setting against real PostgreSQL, not just in memory."""
+    from fastapi import HTTPException
+    from .db_assignment import AssignmentDatabase
+    from .db_customers import CustomerDatabase
+
+    migrate()
+    auth = AuthDatabase(postgres_url, create_schema=False)
+    customers = CustomerDatabase(postgres_url, create_schema=False)
+    assignments = AssignmentDatabase(postgres_url, create_schema=False)
+    monkeypatch.setattr(main, "auth_db", auth)
+    monkeypatch.setattr(main, "customer_db", customers)
+    monkeypatch.setattr(main, "assignment_db", assignments)
+    main.repo.reset()
+    try:
+        hashed = main.password_hash.hash(secrets.token_urlsafe(24))
+        for user_id, role in (("admin", "Admin"), ("sales", "Sales")):
+            auth.create_user(user_id=user_id, name=user_id, email=f"{user_id}@example.test", role=role, password_hash=hashed)
+            main.repo.users[user_id] = {"id": user_id, "name": user_id, "role": role, "active": True}
+        actor = main.User(id="admin", name="Admin", email="admin@example.test", role="Admin")
+
+        assert main.set_assignment_fallback(["sales"], actor) == ["sales"]
+        assert assignments.get_setting("fallback_sales") == {"ids": ["sales"]}
+
+        with pytest.raises(HTTPException) as rejected:
+            main.set_assignment_fallback(["sales", "ghost-user"], actor)
+        assert rejected.value.status_code == 422
+        # No partial write: the previously stored row is unchanged in real PostgreSQL.
+        assert assignments.get_setting("fallback_sales") == {"ids": ["sales"]}
+    finally:
+        auth.engine.dispose(); customers.engine.dispose(); assignments.engine.dispose()
+        main.repo.reset()
 
 
 def test_postgres_bulk_run_concurrent_submission_serializes(postgres_url):

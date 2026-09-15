@@ -1076,19 +1076,13 @@ def workload_contract(user: Annotated[User, Depends(current_user)]) -> dict:
 def admin_reports(start: str | None = None, end: str | None = None, _: Annotated[User, Depends(admin_user)] = None) -> dict:
     if start and end and start > end: raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Start date must not be after end date.")
     if customer_db is not None and activity_db is not None:
-        metrics, daily = activity_db.report_interactions(start, end); owners: dict[str, dict] = {}; customer_rows = customer_db.all()
+        _, daily = activity_db.report_interactions(start, end); owners: dict[str, dict] = {}
         for owner_id, status_value, count in customer_db.owner_counts():
             key = owner_id or "unassigned"; row = owners.setdefault(key, {"ownerId": owner_id, "owner": repo.users.get(key, {}).get("name", "Unassigned"), "open": 0, "closed": 0, "neverContacted": 0, "attempts": 0, "contacts": 0, "pendingFollowUps": 0}); row["open" if status_value == "Open" else "closed"] += count
-        all_counts, _ = activity_db.report_interactions(); pending = {item.bcn: item for item in activity_db.all_followups() if item.status == "Open"}
-        for owner_id, row in ((key, value) for key, value in owners.items()):
-            bcns = [item.bcn for item in customer_rows if (item.owner_id or "unassigned") == owner_id]
-            row["neverContacted"] = sum(1 for bcn in bcns if bcn not in all_counts); row["attempts"] = sum(all_counts.get(bcn, {}).get("attempts", 0) for bcn in bcns); row["contacts"] = sum(all_counts.get(bcn, {}).get("contacts", 0) for bcn in bcns); row["pendingFollowUps"] = sum(1 for item in pending.values() if item.bcn in bcns); row["contactRate"] = row["contacts"] / row["attempts"] * 100 if row["attempts"] else None
-        all_followups = activity_db.all_followups(); followups = {"overdue": 0, "today": 0, "undated": 0, "completed": sum(1 for item in all_followups if item.status == "Completed")}; today = datetime.now(timezone.utc).date()
-        for item in all_followups:
-            if item.status != "Open": continue
-            if item.due is None: followups["undated"] += 1
-            elif item.due.date() < today: followups["overdue"] += 1
-            elif item.due.date() == today: followups["today"] += 1
+        never_contacted = activity_db.owner_never_contacted_counts(); totals = activity_db.owner_interaction_totals(); pending = activity_db.owner_pending_followup_counts()
+        for key, row in owners.items():
+            row["neverContacted"] = never_contacted.get(key, 0); row["attempts"] = totals.get(key, {}).get("attempts", 0); row["contacts"] = totals.get(key, {}).get("contacts", 0); row["pendingFollowUps"] = pending.get(key, 0); row["contactRate"] = row["contacts"] / row["attempts"] * 100 if row["attempts"] else None
+        followups = activity_db.followup_report_summary(datetime.now(timezone.utc).date())
         return {"owners": list(owners.values()), "daily": sorted(daily.values(), key=lambda item: item["date"]), "closureReasons": list(repo.reasons.values()), "followUps": followups}
     owners: dict[str, dict] = {}; daily: dict[str, dict] = {}; all_followups = readable_followups()
     for row in readable_rows():

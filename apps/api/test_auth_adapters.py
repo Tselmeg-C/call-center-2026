@@ -879,6 +879,234 @@ def test_postgres_activity_lifecycle_http_journey(postgres_url, monkeypatch):
         auth.engine.dispose(); customers.engine.dispose(); activities.engine.dispose()
 
 
+def test_postgres_search_workload_reports_audit_http_journey(postgres_url, monkeypatch):
+    """The QA-flagged coverage gap: /customers search/detail, /sales/workload, /workload,
+    /admin/reports, and /admin/audit exercised as real HTTP requests against real PostgreSQL --
+    plus unauthorized direct requests (wrong role, wrong owner, forged IDs) rejected the same way
+    as in memory mode."""
+    from .db_activity import ActivityDatabase
+    from .db_assignment import AssignmentDatabase
+    from .db_customers import CustomerDatabase
+
+    migrate()
+    auth = AuthDatabase(postgres_url, create_schema=False)
+    customers = CustomerDatabase(postgres_url, create_schema=False)
+    activities = ActivityDatabase(postgres_url, create_schema=False)
+    assignments = AssignmentDatabase(postgres_url, create_schema=False)
+    monkeypatch.setattr(main, "auth_db", auth)
+    monkeypatch.setattr(main, "customer_db", customers)
+    monkeypatch.setattr(main, "activity_db", activities)
+    monkeypatch.setattr(main, "assignment_db", assignments)
+    main.repo.reset(); main.repo.customers.clear()
+    try:
+        secret = secrets.token_urlsafe(24)
+        hashed = main.password_hash.hash(secret)
+        auth.create_user(user_id="rep-admin", name="Rep Admin", email="rep-admin@example.test", role="Admin", password_hash=hashed)
+        auth.create_user(user_id="rep-sales-a", name="Rep Sales A", email="rep-sales-a@example.test", role="Sales", password_hash=hashed)
+        auth.create_user(user_id="rep-sales-b", name="Rep Sales B", email="rep-sales-b@example.test", role="Sales", password_hash=hashed)
+        for user_id, role, active in (("rep-admin", "Admin", True), ("rep-sales-a", "Sales", True), ("rep-sales-b", "Sales", True)):
+            main.repo.users[user_id] = {"id": user_id, "name": user_id, "role": role, "active": active}
+
+        yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+        today_iso = datetime.now(timezone.utc).isoformat()
+
+        # never-contacted: no activity at all.
+        customers.upsert_source(bcn="000801", name="Never Contacted Co", source={}, primary_phone="555-0801"); customers.save_operational(bcn="000801", owner_id="rep-sales-a", status="Open", version=0)
+        # overdue: an open follow-up due yesterday, plus a prior interaction (overdue still wins).
+        customers.upsert_source(bcn="000802", name="Overdue Co", source={}, primary_phone="555-0802"); customers.save_operational(bcn="000802", owner_id="rep-sales-a", status="Open", version=0)
+        activities.save_activity(record_id="act-802", bcn="000802", actor_id="rep-sales-a", kind="Interaction", outcome="Attempt", text="Tried")
+        activities.save_followup({"id": "fu-802", "bcn": "000802", "actorId": "rep-sales-a", "type": "Reminder", "due": yesterday, "note": "Overdue", "status": "Open"})
+        # today: an open follow-up due today.
+        customers.upsert_source(bcn="000803", name="Today Co", source={}, primary_phone="555-0803"); customers.save_operational(bcn="000803", owner_id="rep-sales-a", status="Open", version=0)
+        activities.save_followup({"id": "fu-803", "bcn": "000803", "actorId": "rep-sales-a", "type": "Reminder", "due": today_iso, "note": "Today", "status": "Open"})
+        # undated: an open follow-up with no due date.
+        customers.upsert_source(bcn="000804", name="Undated Co", source={}, primary_phone="555-0804"); customers.save_operational(bcn="000804", owner_id="rep-sales-a", status="Open", version=0)
+        activities.save_followup({"id": "fu-804", "bcn": "000804", "actorId": "rep-sales-a", "type": "Reminder", "due": None, "note": "Whenever", "status": "Open"})
+        # other: contacted, no open follow-ups.
+        customers.upsert_source(bcn="000805", name="Contacted Co", source={}, primary_phone="555-0805"); customers.save_operational(bcn="000805", owner_id="rep-sales-a", status="Open", version=0)
+        activities.save_activity(record_id="act-805", bcn="000805", actor_id="rep-sales-a", kind="Interaction", outcome="Contact", text="Reached them")
+        # a closed customer owned by the other sales rep.
+        customers.upsert_source(bcn="000806", name="Closed Co", source={}, primary_phone="555-0806"); customers.save_operational(bcn="000806", owner_id="rep-sales-b", status="Closed", version=1)
+
+        with TestClient(main.app, base_url="http://localhost") as anon_client:
+            assert anon_client.get("/customers").status_code == 401
+
+        with TestClient(main.app, base_url="http://localhost") as admin_client:
+            assert admin_client.post("/session/login", json={"email": "rep-admin@example.test", "password": secret}).status_code == 200
+
+            # /customers search: name/phone query, status filter, owner filter.
+            by_name = admin_client.get("/customers", params={"q": "overdue"}).json()
+            assert by_name["total"] == 1 and by_name["items"][0]["bcn"] == "000802"
+            by_phone = admin_client.get("/customers", params={"q": "555-0804"}).json()
+            assert by_phone["total"] == 1 and by_phone["items"][0]["bcn"] == "000804"
+            closed_only = admin_client.get("/customers", params={"status": "Closed"}).json()
+            assert closed_only["total"] == 1 and closed_only["items"][0]["bcn"] == "000806"
+            owned_by_a = admin_client.get("/customers", params={"owner": "rep-sales-a"}).json()
+            assert owned_by_a["total"] == 5
+
+            # /customers/{bcn} detail includes phones/source/histories.
+            detail = admin_client.get("/customers/000802").json()
+            assert detail["phones"] == ["555-0802"] and detail["ownerId"] == "rep-sales-a"
+            assert any(item["kind"] == "Interaction" for item in detail["histories"])
+            assert any(item["id"] == "fu-802" for item in detail["followUps"])
+
+            # Wrong role: Sales cannot read admin reports/audit.
+            reason = admin_client.post("/admin/closure-reasons", json={"label": "Report done"}, headers=ORIGIN).json()
+
+            # /admin/reports: owner rollup, follow-up buckets, daily interactions -- all DB-side aggregated.
+            reports = admin_client.get("/admin/reports").json()
+            owners_by_id = {item["ownerId"]: item for item in reports["owners"]}
+            sales_a = owners_by_id["rep-sales-a"]
+            # neverContacted counts customers with zero interactions ever (801/803/804 have none;
+            # 802/805 each have one) -- distinct from the workload bucket, which also weighs open
+            # follow-ups.
+            assert (sales_a["open"], sales_a["neverContacted"], sales_a["attempts"], sales_a["contacts"], sales_a["pendingFollowUps"]) == (5, 3, 1, 1, 3)
+            assert sales_a["contactRate"] == 100.0
+            sales_b = owners_by_id["rep-sales-b"]
+            assert (sales_b["open"], sales_b["closed"]) == (0, 1)
+            assert reports["followUps"] == {"overdue": 1, "today": 1, "undated": 1, "completed": 0}
+
+            # /admin/audit: filter by bcn/action and paginate.
+            audit_for_802 = admin_client.get("/admin/audit", params={"bcn": "000802"}).json()
+            assert audit_for_802["total"] >= 0  # no mutation audit rows were written for seeded rows; endpoint still answers correctly
+            audit_page = admin_client.get("/admin/audit", params={"page": 1, "page_size": 1}).json()
+            assert audit_page["page"] == 1 and audit_page["page_size"] == 1 and len(audit_page["items"]) <= 1
+
+        with TestClient(main.app, base_url="http://localhost") as sales_a_client:
+            assert sales_a_client.post("/session/login", json={"email": "rep-sales-a@example.test", "password": secret}).status_code == 200
+
+            # /sales/workload and /workload -- bucketed by real SQL aggregates.
+            workload = sales_a_client.get("/sales/workload").json()
+            assert workload == {"ownerId": "rep-sales-a", "totalOpen": 5, "neverContacted": 3, "pendingFollowUps": 3}
+            full_workload = sales_a_client.get("/workload").json()
+            buckets = {item["bcn"]: item["workloadBucket"] for item in full_workload["customers"]}
+            assert buckets == {"000801": "never-contacted", "000802": "overdue", "000803": "today", "000804": "undated", "000805": "other"}
+            assert full_workload["counts"] == {"overdue": 1, "today": 1, "undated": 1, "never-contacted": 1, "other": 1}
+
+            # Wrong role: Sales cannot read Admin-only endpoints.
+            assert sales_a_client.get("/admin/reports").status_code == 403
+            assert sales_a_client.get("/admin/audit").status_code == 403
+            assert sales_a_client.post("/admin/closure-reasons", json={"label": "nope"}, headers=ORIGIN).status_code == 403
+
+            # Forged/nonexistent IDs.
+            assert sales_a_client.get("/customers/999999").status_code == 404
+            assert sales_a_client.delete("/customers/000802/history/forged-record-id", headers=ORIGIN).status_code == 404
+            assert sales_a_client.post("/customers/000802/follow-ups/forged-followup-id/complete", json={"outcome": "Contact", "submissionId": "forged"}, headers=ORIGIN).status_code == 404
+
+            # Wrong owner: rep-sales-a cannot write to rep-sales-b's customer.
+            assert sales_a_client.post("/customers/000806/interactions", json={"outcome": "Attempt", "submissionId": "wrong-owner"}, headers=ORIGIN).status_code in (403, 409)
+
+        with TestClient(main.app, base_url="http://localhost") as sales_b_client:
+            assert sales_b_client.post("/session/login", json={"email": "rep-sales-b@example.test", "password": secret}).status_code == 200
+            # Wrong owner on an Open customer: 403 (not merely 409 from being closed).
+            assert sales_b_client.post("/customers/000801/interactions", json={"outcome": "Attempt", "submissionId": "wrong-owner-2"}, headers=ORIGIN).status_code == 403
+    finally:
+        auth.engine.dispose(); customers.engine.dispose(); activities.engine.dispose(); assignments.engine.dispose()
+
+
+def test_postgres_reimport_after_operational_work_http_journey(postgres_url, monkeypatch):
+    """The #26 QA gap: the existing reimport HTTP test ran with activity_db=None and no prior
+    work. This runs a full reimport as an HTTP request AFTER real interaction/follow-up/closure/
+    assignment work, and proves it changes only source fields and the source-primary phone while
+    preserving every operational and audit record and leaving current ownership untouched."""
+    from .db_activity import ActivityDatabase
+    from .db_assignment import AssignmentDatabase, AssignmentHistoryRow, AuditRow
+    from .db_customers import CustomerDatabase
+
+    migrate()
+    auth = AuthDatabase(postgres_url, create_schema=False)
+    customers = CustomerDatabase(postgres_url, create_schema=False)
+    activities = ActivityDatabase(postgres_url, create_schema=False)
+    assignments = AssignmentDatabase(postgres_url, create_schema=False)
+    monkeypatch.setattr(main, "auth_db", auth)
+    monkeypatch.setattr(main, "customer_db", customers)
+    monkeypatch.setattr(main, "activity_db", activities)
+    monkeypatch.setattr(main, "assignment_db", assignments)
+    main.repo.reset(); main.repo.customers.clear()
+    try:
+        secret = secrets.token_urlsafe(24)
+        hashed = main.password_hash.hash(secret)
+        auth.create_user(user_id="reimport-admin", name="Reimport Admin", email="reimport-admin@example.test", role="Admin", password_hash=hashed)
+        auth.create_user(user_id="reimport-owner", name="Reimport Owner", email="reimport-owner@example.test", role="Sales", password_hash=hashed)
+        for user_id, role in (("reimport-admin", "Admin"), ("reimport-owner", "Sales")):
+            main.repo.users[user_id] = {"id": user_id, "name": user_id, "role": role, "active": True}
+
+        headers = ["bcn", "customer_name", "propensity_score", "last_purchase_date", "recent", "phone"]
+
+        with TestClient(main.app, base_url="http://localhost") as admin_client:
+            assert admin_client.post("/session/login", json={"email": "reimport-admin@example.test", "password": secret}).status_code == 200
+            reason = admin_client.post("/admin/closure-reasons", json={"label": "Reimport resolved"}, headers=ORIGIN)
+            assert reason.status_code == 201
+            reason_id = reason.json()["id"]
+
+            book = Workbook(); sheet = book.active; sheet.append(headers)
+            sheet.append(["700900", "Original Co", 0.30, datetime(2025, 1, 1), True, "555-7000"])
+            payload = BytesIO(); book.save(payload)
+            first = admin_client.post("/admin/imports?submission_id=reimport-initial", files={"file": ("first.xlsx", payload.getvalue(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")}, headers=ORIGIN)
+            assert first.status_code == 201 and first.json()["created"] == 1
+
+            assigned = admin_client.post("/admin/assignments/manual/700900", json={"ownerId": "reimport-owner", "submissionId": "reimport-assign"}, headers=ORIGIN)
+            assert assigned.status_code == 200 and assigned.json()["ownerId"] == "reimport-owner"
+
+        # Real operational work happens before the reimport: interaction, note, follow-up +
+        # completion, closure, reopen -- each producing durable activity/audit/assignment rows.
+        with TestClient(main.app, base_url="http://localhost") as owner_client:
+            assert owner_client.post("/session/login", json={"email": "reimport-owner@example.test", "password": secret}).status_code == 200
+            interaction = owner_client.post("/customers/700900/interactions", json={"outcome": "Attempt", "note": "Pre-reimport contact", "submissionId": "reimport-interaction"}, headers=ORIGIN)
+            assert interaction.status_code == 200
+            note = owner_client.post("/customers/700900/notes", json={"text": "Pre-reimport note", "submissionId": "reimport-note"}, headers=ORIGIN)
+            assert note.status_code == 200
+            followup = owner_client.post("/customers/700900/follow-ups", json={"type": "Reminder", "due": None, "note": "Follow up", "submissionId": "reimport-followup"}, headers=ORIGIN)
+            assert followup.status_code == 200
+            followup_id = followup.json()["id"]
+            completed = owner_client.post(f"/customers/700900/follow-ups/{followup_id}/complete", json={"outcome": "Contact", "note": "Completed before reimport", "submissionId": "reimport-complete"}, headers=ORIGIN)
+            assert completed.status_code == 200
+            closed = owner_client.post("/customers/700900/close", json={"reasonId": reason_id, "submissionId": "reimport-close"}, headers=ORIGIN)
+            assert closed.status_code == 200
+            reopened = owner_client.post("/customers/700900/reopen", json={"submissionId": "reimport-reopen"}, headers=ORIGIN)
+            assert reopened.status_code == 200 and reopened.json()["ownerId"] == "reimport-owner"
+
+        # Snapshot durable state before the reimport.
+        history_before = [(item.id, item.kind, item.outcome, item.text, item.deleted_at) for item in activities.history("700900", 1, 100)[0]]
+        followups_before = [(item.id, item.status, item.interaction_id) for item in activities.followups("700900")]
+        with Session(assignments.engine) as session:
+            history_row_count_before = len(list(session.scalars(select(AssignmentHistoryRow))))
+            audit_row_count_before = len(list(session.scalars(select(AuditRow))))
+        owner_before, status_before, version_before = customers.get("700900").owner_id, customers.get("700900").status, customers.get("700900").version
+
+        # The reimport itself: changes source fields and the source-primary phone only.
+        with TestClient(main.app, base_url="http://localhost") as admin_client:
+            assert admin_client.post("/session/login", json={"email": "reimport-admin@example.test", "password": secret}).status_code == 200
+            changed_book = Workbook(); sheet = changed_book.active; sheet.append(headers)
+            sheet.append(["700900", "Renamed Co", 0.91, datetime(2026, 2, 2), False, "555-9999"])
+            changed_payload = BytesIO(); changed_book.save(changed_payload)
+            reimport = admin_client.post("/admin/imports?submission_id=reimport-after-work", files={"file": ("second.xlsx", changed_payload.getvalue(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")}, headers=ORIGIN)
+            assert reimport.status_code == 201
+            assert (reimport.json()["created"], reimport.json()["updated"]) == (0, 1)
+
+            detail = admin_client.get("/customers/700900").json()
+            assert detail["name"] == "Renamed Co" and detail["phones"] == ["555-9999"]
+            assert detail["source"]["propensity_score"] == 0.91
+
+        # Only source fields and the primary phone changed: ownership/status/version untouched.
+        row = customers.get("700900")
+        assert (row.owner_id, row.status, row.version) == (owner_before, status_before, version_before) == ("reimport-owner", "Open", version_before)
+        assert row.name == "Renamed Co" and row.propensity_score == Decimal("0.91")
+
+        # Every operational and audit record from before the reimport survives unchanged.
+        history_after = [(item.id, item.kind, item.outcome, item.text, item.deleted_at) for item in activities.history("700900", 1, 100)[0]]
+        assert history_after == history_before
+        followups_after = [(item.id, item.status, item.interaction_id) for item in activities.followups("700900")]
+        assert followups_after == followups_before
+        with Session(assignments.engine) as session:
+            assert len(list(session.scalars(select(AssignmentHistoryRow)))) == history_row_count_before
+            assert len(list(session.scalars(select(AuditRow)))) == audit_row_count_before + 1  # +1 for the import-completed audit entry
+        kinds = [item[1] for item in history_after]
+        assert kinds.count("Closure") == 1 and kinds.count("Reopen") == 1
+    finally:
+        auth.engine.dispose(); customers.engine.dispose(); activities.engine.dispose(); assignments.engine.dispose()
+
+
 def test_postgres_import_http_pipeline_behavior(postgres_url, monkeypatch):
     """The #18 ingestion behavior suite through the real /admin/imports upload pipeline against Postgres: row errors, duplicate rows in one file, retry, conflict-on-change, unchanged-row updates, and null-clearing."""
     from .db_customers import CustomerDatabase

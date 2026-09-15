@@ -1,6 +1,6 @@
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from hashlib import sha256
-from sqlalchemy import DateTime, ForeignKey, Integer, JSON, String, Text, create_engine, select, func
+from sqlalchemy import DateTime, ForeignKey, Integer, JSON, String, Text, case, create_engine, select, func
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
 from sqlalchemy.pool import StaticPool
@@ -214,6 +214,45 @@ class ActivityDatabase:
         for bcn, outcome, date, count in rows:
             key = "attempts" if outcome == "Attempt" else "contacts"; by_customer.setdefault(bcn, {"attempts": 0, "contacts": 0})[key] += count; daily.setdefault(str(date), {"date": str(date), "attempts": 0, "contacts": 0})[key] += count
         return by_customer, daily
+
+    def owner_interaction_totals(self) -> dict[str, dict[str, int]]:
+        """Per-owner all-time attempt/contact counts, aggregated in SQL via a join against
+        customers -- never materializes the customer or activity table into Python."""
+        with Session(self.engine) as session:
+            owner_key = func.coalesce(CustomerRow.owner_id, "unassigned")
+            rows = session.execute(select(owner_key, ActivityRow.outcome, func.count(ActivityRow.id)).join(ActivityRow, ActivityRow.bcn == CustomerRow.bcn).where(ActivityRow.kind == "Interaction", ActivityRow.deleted_at.is_(None)).group_by(owner_key, ActivityRow.outcome)).all()
+        result: dict[str, dict[str, int]] = {}
+        for key, outcome, count in rows:
+            bucket = result.setdefault(key, {"attempts": 0, "contacts": 0}); bucket["attempts" if outcome == "Attempt" else "contacts"] += count
+        return result
+
+    def owner_never_contacted_counts(self) -> dict[str, int]:
+        """Per-owner count of customers with zero non-deleted interactions ever, via an
+        anti-join in SQL rather than loading customers/activities into application memory."""
+        with Session(self.engine) as session:
+            owner_key = func.coalesce(CustomerRow.owner_id, "unassigned")
+            contacted = select(ActivityRow.bcn).where(ActivityRow.kind == "Interaction", ActivityRow.deleted_at.is_(None)).distinct()
+            rows = session.execute(select(owner_key, func.count(CustomerRow.bcn)).where(CustomerRow.bcn.not_in(contacted)).group_by(owner_key)).all()
+        return dict(rows)
+
+    def owner_pending_followup_counts(self) -> dict[str, int]:
+        with Session(self.engine) as session:
+            owner_key = func.coalesce(CustomerRow.owner_id, "unassigned")
+            rows = session.execute(select(owner_key, func.count(FollowUpRow.id)).join(FollowUpRow, FollowUpRow.bcn == CustomerRow.bcn).where(FollowUpRow.status == "Open").group_by(owner_key)).all()
+        return dict(rows)
+
+    def followup_report_summary(self, today: date) -> dict[str, int]:
+        """Global overdue/today/undated/completed follow-up counts, aggregated in SQL instead
+        of loading the entire follow_ups table (`all_followups()`) into Python."""
+        with Session(self.engine) as session:
+            completed = session.scalar(select(func.count()).select_from(FollowUpRow).where(FollowUpRow.status == "Completed")) or 0
+            due_date = func.date(FollowUpRow.due)
+            bucket = case((FollowUpRow.due.is_(None), "undated"), (due_date < today, "overdue"), (due_date == today, "today"), else_="other")
+            rows = session.execute(select(bucket, func.count()).where(FollowUpRow.status == "Open").group_by(bucket)).all()
+        result = {"overdue": 0, "today": 0, "undated": 0, "completed": completed}
+        for key, count in rows:
+            if key in result: result[key] += count
+        return result
 
     def save_reason(self, reason: dict) -> None:
         with Session(self.engine) as session:

@@ -9,6 +9,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { dateTime } from "@/lib/derive";
+import { RequireAdmin } from "@/lib/guards";
 import { useStore } from "@/lib/store";
 
 export const Route = createFileRoute("/admin/audit")({
@@ -29,7 +30,7 @@ export const Route = createFileRoute("/admin/audit")({
 function AdminAudit() {
   const { auditLog, users } = useStore();
   return (
-    <>
+    <RequireAdmin>
       <PageHeader title="Audit Log" description="Every ownership, closure, import and administrative change." />
       <div className="overflow-x-auto rounded-lg border border-border bg-surface shadow-panel">
         <Table>
@@ -57,6 +58,6 @@ function AdminAudit() {
           </TableBody>
         </Table>
       </div>
-    </>
+    </RequireAdmin>
   );
 }

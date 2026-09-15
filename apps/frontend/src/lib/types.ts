@@ -107,15 +107,6 @@ export type ImportJob = {
   errors: string[];
 };
 
-export const CLOSURE_REASONS = [
-  "Not interested",
-  "Do not contact",
-  "Invalid/wrong contact",
-  "Customer already handled",
-  "Customer relationship ended",
-  "Successfully completed",
-  "Other",
-];
 
 export const FOLLOWUP_LABEL: Record<FollowUpType, string> = {
   appointment: "Customer appointment",

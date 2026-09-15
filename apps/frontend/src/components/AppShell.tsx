@@ -4,6 +4,7 @@ import {
   ClipboardList,
   Database,
   LayoutDashboard,
+  LogOut,
   PhoneCall,
   ScrollText,
   Upload,
@@ -12,13 +13,7 @@ import {
 } from "lucide-react";
 import type { ReactNode } from "react";
 import { useStore } from "@/lib/store";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { Button } from "@/components/ui/button";
 
 const salesNav = [
   { to: "/", label: "Dashboard", icon: LayoutDashboard },
@@ -35,7 +30,7 @@ const adminNav = [
 ] as const;
 
 export function AppShell({ children }: { children: ReactNode }) {
-  const { currentUser, users, setCurrentUserId } = useStore();
+  const { currentUser, signOut } = useStore();
 
   return (
     <div className="flex min-h-screen bg-background">
@@ -69,19 +64,15 @@ export function AppShell({ children }: { children: ReactNode }) {
           <p className="px-2 pb-1.5 text-[11px] uppercase tracking-wide text-sidebar-foreground/50">
             Signed in as
           </p>
-          <Select value={currentUser.id} onValueChange={setCurrentUserId}>
-            <SelectTrigger className="w-full border-sidebar-border bg-sidebar-accent text-sidebar-accent-foreground">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {users.map((u) => (
-                <SelectItem key={u.id} value={u.id}>
-                  {u.name} · {u.role}
-                  {u.active ? "" : " (inactive)"}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          <div className="flex items-center gap-2 rounded-md bg-sidebar-accent px-2.5 py-2 text-sidebar-accent-foreground">
+            <div className="min-w-0 flex-1 leading-tight">
+              <p className="truncate text-sm font-medium">{currentUser.name}</p>
+              <p className="text-[11px] text-sidebar-accent-foreground/60">{currentUser.role}</p>
+            </div>
+            <Button size="icon" variant="ghost" className="size-7 shrink-0" title="Sign out" onClick={signOut}>
+              <LogOut className="size-4" />
+            </Button>
+          </div>
         </div>
       </aside>
 

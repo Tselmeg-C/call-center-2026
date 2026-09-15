@@ -2,15 +2,18 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
   Outlet,
   Link,
+  Navigate,
   createRootRouteWithContext,
+  useLocation,
   useRouter,
 } from "@tanstack/react-router";
-import { useEffect } from "react";
+import { useEffect, type ReactNode } from "react";
 
 import appCss from "../styles.css?url";
 import { reportLovableError } from "../lib/lovable-error-reporting";
 import { AppShell } from "../components/AppShell";
 import { StoreProvider } from "@/lib/store";
+import { ServiceProvider, useSession } from "@/services/provider";
 import { Toaster } from "../components/ui/sonner";
 
 function NotFoundComponent() {
@@ -112,18 +115,41 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
   errorComponent: ErrorComponent,
 });
 
+/** Gate everything behind session state from the service layer (see _docs/authentication.md):
+ *  signed out visitors only ever see /login, and a signed-in visitor is bounced away from it. */
+function AuthGate({ children }: { children: ReactNode }) {
+  const { user, loading } = useSession();
+  const location = useLocation();
+  const onLoginRoute = location.pathname === "/login";
+
+  if (loading) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-background text-sm text-muted-foreground">
+        Loading…
+      </div>
+    );
+  }
+  if (!user) return onLoginRoute ? <>{children}</> : <Navigate to="/login" />;
+  if (onLoginRoute) return <Navigate to="/" />;
+  return (
+    <StoreProvider>
+      <AppShell>{children}</AppShell>
+    </StoreProvider>
+  );
+}
+
 function RootComponent() {
   const { queryClient } = Route.useRouteContext();
 
   return (
     <QueryClientProvider client={queryClient}>
-      <StoreProvider>
-        <AppShell>
+      <ServiceProvider>
+        <AuthGate>
           {/* Required: nested routes render here. Removing <Outlet /> breaks all child routes. */}
           <Outlet />
-        </AppShell>
+        </AuthGate>
         <Toaster />
-      </StoreProvider>
+      </ServiceProvider>
     </QueryClientProvider>
   );
 }

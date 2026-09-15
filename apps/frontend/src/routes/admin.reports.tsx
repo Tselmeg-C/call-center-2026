@@ -23,6 +23,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { bucketOf } from "@/lib/derive";
+import { RequireAdmin } from "@/lib/guards";
 import { useStore } from "@/lib/store";
 
 export const Route = createFileRoute("/admin/reports")({
@@ -94,7 +95,7 @@ function AdminReports() {
   const pieColors = ["var(--chart-1)", "var(--chart-2)", "var(--chart-3)", "var(--chart-4)", "var(--chart-5)"];
 
   return (
-    <>
+    <RequireAdmin>
       <PageHeader title="Reporting & KPIs" description="Assignment, activity and follow-up performance across the team." />
 
       <div className="mb-6 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
@@ -197,7 +198,7 @@ function AdminReports() {
           </TableBody>
         </Table>
       </div>
-    </>
+    </RequireAdmin>
   );
 }
 

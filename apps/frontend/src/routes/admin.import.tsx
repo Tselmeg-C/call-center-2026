@@ -5,6 +5,7 @@ import { toast } from "sonner";
 import { PageHeader } from "@/components/PageHeader";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { dateTime } from "@/lib/derive";
+import { RequireAdmin } from "@/lib/guards";
 import { useStore } from "@/lib/store";
 import type { ImportJob } from "@/lib/types";
 
@@ -29,7 +30,7 @@ function AdminImport() {
   const [result, setResult] = useState<ImportJob | null>(null);
 
   return (
-    <>
+    <RequireAdmin>
       <PageHeader
         title="Excel Import"
         description="Upsert by BCN. Master data is updated; activities, notes, follow-ups and ownership stay untouched."
@@ -53,13 +54,14 @@ function AdminImport() {
                 type="file"
                 accept=".xlsx,.xls,.csv"
                 className="hidden"
-                onChange={(e) => {
+                onChange={async (e) => {
                   const file = e.target.files?.[0];
                   if (!file) return;
-                  const job = recordImport(file.name);
+                  const job = await recordImport(file);
+                  if (inputRef.current) inputRef.current.value = "";
+                  if (!job) return;
                   setResult(job);
                   toast.success("Import completed", { description: `${job.rowsProcessed} rows processed` });
-                  if (inputRef.current) inputRef.current.value = "";
                 }}
               />
             </label>
@@ -102,7 +104,7 @@ function AdminImport() {
           </CardContent>
         </Card>
       </div>
-    </>
+    </RequireAdmin>
   );
 }
 

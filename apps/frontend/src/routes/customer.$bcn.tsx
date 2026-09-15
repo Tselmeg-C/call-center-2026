@@ -30,7 +30,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { currency, dateTime, openFollowUp, shortDate } from "@/lib/derive";
 import { useStore } from "@/lib/store";
-import { CLOSURE_REASONS, FOLLOWUP_LABEL, type ActivityOutcome, type FollowUpType } from "@/lib/types";
+import { FOLLOWUP_LABEL, type ActivityOutcome, type FollowUpType } from "@/lib/types";
 
 export const Route = createFileRoute("/customer/$bcn")({
   head: ({ params }) => ({
@@ -59,6 +59,7 @@ function CustomerDetail() {
     notes,
     followUps,
     assignmentHistory,
+    closureReasons,
     canWork,
     addActivity,
     addNote,
@@ -68,13 +69,14 @@ function CustomerDetail() {
   } = useStore();
 
   const customer = customers.find((c) => c.bcn === bcn);
+  const activeReasons = closureReasons.filter((r) => r.active);
   const [outcome, setOutcome] = useState<ActivityOutcome>("contact");
   const [activityNote, setActivityNote] = useState("");
   const [noteBody, setNoteBody] = useState("");
   const [fuType, setFuType] = useState<FollowUpType>("appointment");
   const [fuDate, setFuDate] = useState("");
   const [fuNote, setFuNote] = useState("");
-  const [closeReason, setCloseReason] = useState(CLOSURE_REASONS[0]!);
+  const [closeReasonId, setCloseReasonId] = useState("");
 
   if (!customer) {
     return (
@@ -97,8 +99,9 @@ function CustomerDetail() {
   const open = openFollowUp(followUps, bcn);
   const userName = (id: string) => users.find((u) => u.id === id)?.name ?? "Unknown";
 
-  const logActivity = (completeFollowUp: boolean) => {
-    addActivity(bcn, outcome, activityNote.trim(), completeFollowUp && open ? open.id : undefined);
+  const logActivity = async (completeFollowUp: boolean) => {
+    const succeeded = await addActivity(bcn, outcome, activityNote.trim(), completeFollowUp && open ? open.id : undefined);
+    if (!succeeded) return;
     setActivityNote("");
     toast.success(
       outcome === "contact" ? "Contact recorded" : "Attempt recorded",
@@ -391,13 +394,14 @@ function CustomerDetail() {
                 size="sm"
                 variant="secondary"
                 disabled={!editable || (fuType !== "needed" && !fuDate)}
-                onClick={() => {
-                  addFollowUp(
+                onClick={async () => {
+                  const succeeded = await addFollowUp(
                     bcn,
                     fuType,
                     fuType === "needed" ? null : new Date(fuDate).toISOString(),
                     fuNote.trim(),
                   );
+                  if (!succeeded) return;
                   setFuNote("");
                   setFuDate("");
                   toast.success("Follow-up scheduled");
@@ -423,8 +427,9 @@ function CustomerDetail() {
                 size="sm"
                 variant="secondary"
                 disabled={!editable || !noteBody.trim()}
-                onClick={() => {
-                  addNote(bcn, noteBody.trim());
+                onClick={async () => {
+                  const succeeded = await addNote(bcn, noteBody.trim());
+                  if (!succeeded) return;
                   setNoteBody("");
                   toast.success("Note added");
                 }}
@@ -444,23 +449,23 @@ function CustomerDetail() {
                   size="sm"
                   variant="outline"
                   disabled={!editable}
-                  onClick={() => {
-                    reopenCustomer(bcn);
-                    toast.success("Customer reopened");
+                  onClick={async () => {
+                    const succeeded = await reopenCustomer(bcn);
+                    if (succeeded) toast.success("Customer reopened");
                   }}
                 >
                   <RotateCcw className="size-4" /> Reopen customer
                 </Button>
               ) : (
                 <>
-                  <Select value={closeReason} onValueChange={setCloseReason} disabled={!editable}>
+                  <Select value={closeReasonId || activeReasons[0]?.id || ""} onValueChange={setCloseReasonId} disabled={!editable || activeReasons.length === 0}>
                     <SelectTrigger>
-                      <SelectValue />
+                      <SelectValue placeholder="Choose a reason" />
                     </SelectTrigger>
                     <SelectContent>
-                      {CLOSURE_REASONS.map((r) => (
-                        <SelectItem key={r} value={r}>
-                          {r}
+                      {activeReasons.map((r) => (
+                        <SelectItem key={r.id} value={r.id}>
+                          {r.label}
                         </SelectItem>
                       ))}
                     </SelectContent>
@@ -468,10 +473,12 @@ function CustomerDetail() {
                   <Button
                     size="sm"
                     variant="destructive"
-                    disabled={!editable}
-                    onClick={() => {
-                      closeCustomer(bcn, closeReason);
-                      toast.success("Customer closed", { description: closeReason });
+                    disabled={!editable || activeReasons.length === 0}
+                    onClick={async () => {
+                      const reasonId = closeReasonId || activeReasons[0]?.id;
+                      if (!reasonId) return;
+                      const succeeded = await closeCustomer(bcn, reasonId);
+                      if (succeeded) toast.success("Customer closed", { description: activeReasons.find((r) => r.id === reasonId)?.label });
                     }}
                   >
                     <XCircle className="size-4" /> Close customer

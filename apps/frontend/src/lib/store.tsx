@@ -1,5 +1,17 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
-import * as seed from "./seed";
+import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
+import { toast } from "sonner";
+import { useServices, useSession } from "@/services/provider";
+import type { AssignmentRule as ServiceRule, ClosureReason, Customer as ServiceCustomer } from "@/services/types";
+import {
+  fromFollowUpType,
+  newSubmissionId,
+  toActivities,
+  toAssignmentEvents,
+  toCustomer,
+  toFollowUp,
+  toNotes,
+  toUser,
+} from "@/lib/adapt";
 import type {
   Activity,
   ActivityOutcome,
@@ -12,13 +24,11 @@ import type {
   Note,
   User,
 } from "./types";
-import { loadBackendState } from "./api";
 
-const uid = () => Math.random().toString(36).slice(2, 10);
+type UiAssignmentRule = { id: string; name: string; priority: number; conditions: string; eligible: string[]; active: boolean };
 
 type Ctx = {
   currentUser: User;
-  setCurrentUserId: (id: string) => void;
   users: User[];
   customers: Customer[];
   activities: Activity[];
@@ -27,244 +37,254 @@ type Ctx = {
   assignmentHistory: AssignmentEvent[];
   auditLog: AuditEntry[];
   importJobs: ImportJob[];
-  assignmentRules: typeof seed.assignmentRules;
+  assignmentRules: UiAssignmentRule[];
+  closureReasons: ClosureReason[];
   canWork: (c: Customer) => boolean;
-  addActivity: (bcn: string, outcome: ActivityOutcome, note: string, followUpId?: string) => void;
-  addNote: (bcn: string, body: string) => void;
-  addFollowUp: (bcn: string, type: FollowUpType, dueAt: string | null, note: string) => void;
-  closeCustomer: (bcn: string, reason: string) => void;
-  reopenCustomer: (bcn: string) => void;
-  reassign: (bcn: string, toUserId: string | null, reason: string) => void;
-  runAssignment: () => { assigned: number };
-  toggleUserActive: (id: string) => void;
-  toggleRule: (id: string) => void;
-  recordImport: (fileName: string) => ImportJob;
+  signOut: () => void;
+  addActivity: (bcn: string, outcome: ActivityOutcome, note: string, followUpId?: string) => Promise<boolean>;
+  addNote: (bcn: string, body: string) => Promise<boolean>;
+  addFollowUp: (bcn: string, type: FollowUpType, dueAt: string | null, note: string) => Promise<boolean>;
+  closeCustomer: (bcn: string, reasonId: string) => Promise<boolean>;
+  reopenCustomer: (bcn: string) => Promise<boolean>;
+  reassign: (bcn: string, toUserId: string | null, reason: string) => Promise<boolean>;
+  runAssignment: () => Promise<{ assigned: number }>;
+  toggleUserActive: (id: string) => Promise<boolean>;
+  toggleRule: (id: string) => Promise<boolean>;
+  recordImport: (file: File) => Promise<ImportJob | null>;
 };
 
 const StoreContext = createContext<Ctx | null>(null);
 
+const ruleReasonText = (rule: ServiceRule) => `Assigns to ${rule.ownerId} while active (order ${rule.order})`;
+
 export function StoreProvider({ children }: { children: ReactNode }) {
-  const [currentUserId, setCurrentUserId] = useState("u2");
-  const [users, setUsers] = useState<User[]>(seed.users);
-  const [customers, setCustomers] = useState<Customer[]>(seed.customers);
-  const [activities, setActivities] = useState<Activity[]>(seed.activities);
-  const [notes, setNotes] = useState<Note[]>(seed.notes);
-  const [followUps, setFollowUps] = useState<FollowUp[]>(seed.followUps);
-  const [assignmentHistory, setAssignmentHistory] = useState<AssignmentEvent[]>(seed.assignmentHistory);
-  const [auditLog, setAuditLog] = useState<AuditEntry[]>(seed.auditLog);
-  const [importJobs, setImportJobs] = useState<ImportJob[]>(seed.importJobs);
-  const [assignmentRules, setAssignmentRules] = useState(seed.assignmentRules);
+  const services = useServices();
+  const { user: sessionUser } = useSession();
+  const [serviceCustomers, setServiceCustomers] = useState<ServiceCustomer[]>([]);
+  const [users, setUsers] = useState<User[]>([]);
+  const [closureReasons, setClosureReasons] = useState<ClosureReason[]>([]);
+  const [rules, setRules] = useState<ServiceRule[]>([]);
+  const [importJobs, setImportJobs] = useState<ImportJob[]>([]);
+  const [auditLog, setAuditLog] = useState<AuditEntry[]>([]);
+
+  const isAdmin = sessionUser?.role === "Admin";
 
   useEffect(() => {
+    if (!sessionUser) return;
     let active = true;
-    loadBackendState().then((state) => {
-      if (!active || !state) return;
-      setCurrentUserId(state.user.id);
-      setUsers((previous) => [state.user, ...previous.filter((item) => item.id !== state.user.id)]);
-      if (state.customers.length) setCustomers(state.customers);
+    void services.listCustomers({ page_size: 100 }).then((result) => {
+      if (active && result.ok) setServiceCustomers(result.data.items);
     });
+    void services.listClosureReasons().then((result) => {
+      if (active && result.ok) setClosureReasons(result.data);
+    });
+    if (isAdmin) {
+      void services.listUsers().then((result) => {
+        if (active && result.ok) setUsers(result.data.map(toUser));
+      });
+      void services.listAssignmentRules().then((result) => {
+        if (active && result.ok) setRules(result.data);
+      });
+      void services.audit({ page_size: 100 }).then((result) => {
+        if (active && result.ok) {
+          setAuditLog(result.data.items.map((event) => ({ id: event.id, at: event.timestamp, actorId: event.actorId, action: event.action, target: event.target, ...(Object.keys(event.details).length ? { detail: JSON.stringify(event.details) } : {}) })));
+        }
+      });
+    }
     return () => {
       active = false;
     };
-  }, []);
+  }, [sessionUser, isAdmin, services]);
 
-  const currentUser = users.find((u) => u.id === currentUserId) ?? users[0]!;
-
-  const audit = useCallback(
-    (action: string, target: string, detail?: string) =>
-      setAuditLog((prev) => [
-        {
-          id: uid(),
-          at: new Date().toISOString(),
-          actorId: currentUserId,
-          action,
-          target,
-          ...(detail ? { detail } : {}),
-        },
-        ...prev,
-      ]),
-    [currentUserId],
-  );
-
-  const canWork = useCallback(
-    (c: Customer) => currentUser.role === "admin" || c.ownerId === currentUser.id,
-    [currentUser],
-  );
-
-  const addActivity = useCallback<Ctx["addActivity"]>((bcn, outcome, note, followUpId) => {
-    const at = new Date().toISOString();
-    setActivities((prev) => [{ id: uid(), bcn, outcome, at, userId: currentUserId, ...(note ? { note } : {}) }, ...prev]);
-    setCustomers((prev) =>
-      prev.map((c) =>
-        c.bcn === bcn && c.status !== "closed"
-          ? { ...c, status: outcome === "contact" ? "contacted" : c.status === "contacted" ? "contacted" : "attempted" }
-          : c,
-      ),
-    );
-    if (followUpId) {
-      setFollowUps((prev) => prev.map((f) => (f.id === followUpId ? { ...f, completedAt: at } : f)));
-    }
-  }, [currentUserId]);
-
-  const addNote = useCallback<Ctx["addNote"]>((bcn, body) => {
-    setNotes((prev) => [{ id: uid(), bcn, at: new Date().toISOString(), userId: currentUserId, body }, ...prev]);
-  }, [currentUserId]);
-
-  const addFollowUp = useCallback<Ctx["addFollowUp"]>((bcn, type, dueAt, note) => {
-    setFollowUps((prev) => [
-      { id: uid(), bcn, type, dueAt, userId: currentUserId, ...(note ? { note } : {}) },
-      ...prev,
-    ]);
-  }, [currentUserId]);
-
-  const closeCustomer = useCallback<Ctx["closeCustomer"]>((bcn, reason) => {
-    setCustomers((prev) => prev.map((c) => (c.bcn === bcn ? { ...c, status: "closed", closureReason: reason } : c)));
-    audit("Customer closed", bcn, reason);
-  }, [audit]);
-
-  const reopenCustomer = useCallback<Ctx["reopenCustomer"]>((bcn) => {
-    setCustomers((prev) =>
-      prev.map((c) => {
-        if (c.bcn !== bcn) return c;
-        const hasContact = seed.activities.some((a) => a.bcn === bcn && a.outcome === "contact");
-        return { ...c, closureReason: undefined, status: hasContact ? "contacted" : "attempted" };
-      }),
-    );
-    audit("Customer reopened", bcn);
-  }, [audit]);
-
-  const reassign = useCallback<Ctx["reassign"]>((bcn, toUserId, reason) => {
-    setCustomers((prev) => {
-      const target = prev.find((c) => c.bcn === bcn);
-      if (target) {
-        setAssignmentHistory((h) => [
-          { id: uid(), bcn, fromUserId: target.ownerId, toUserId, at: new Date().toISOString(), reason },
-          ...h,
-        ]);
+  // Sales sessions can't call the Admin-only /admin/users listing (correctly, per contract), so
+  // they get a "known users" set built from what customer ownership already tells them plus
+  // themselves. Good enough for owner-name display and filters on Sales-facing screens.
+  const effectiveUsers = useMemo<User[]>(() => {
+    if (isAdmin) return users;
+    const known = new Map<string, User>();
+    if (sessionUser) known.set(sessionUser.id, toUser(sessionUser));
+    for (const customer of serviceCustomers) {
+      if (customer.ownerId && customer.ownerName && !known.has(customer.ownerId)) {
+        known.set(customer.ownerId, { id: customer.ownerId, name: customer.ownerName, email: "", role: "sales", active: true });
       }
-      return prev.map((c) => (c.bcn === bcn ? { ...c, ownerId: toUserId } : c));
-    });
-    audit("Ownership changed", bcn, reason);
-  }, [audit]);
+    }
+    return [...known.values()];
+  }, [isAdmin, users, sessionUser, serviceCustomers]);
 
-  const runAssignment = useCallback<Ctx["runAssignment"]>(() => {
-    let assigned = 0;
-    const eligible = users.filter((u) => u.role === "sales" && u.active);
-    setCustomers((prev) => {
-      const load = new Map(eligible.map((u) => [u.id, prev.filter((c) => c.ownerId === u.id && c.status !== "closed").length]));
-      const next = prev.map((c) => {
-        if (c.ownerId || c.status === "closed") return c;
-        const rule = assignmentRules
-          .filter((r) => r.active)
-          .sort((a, b) => a.priority - b.priority)
-          .find((r) => r.conditions.includes("propensity_tier = A") && c.propensityTier === "A");
-        const pool = rule ? rule.eligible.filter((id) => load.has(id)) : eligible.map((u) => u.id);
-        if (!pool.length) return c;
-        const winner = pool.sort((a, b) => (load.get(a) ?? 0) - (load.get(b) ?? 0))[0]!;
-        load.set(winner, (load.get(winner) ?? 0) + 1);
-        assigned += 1;
-        setAssignmentHistory((h) => [
-          {
-            id: uid(),
-            bcn: c.bcn,
-            fromUserId: null,
-            toUserId: winner,
-            at: new Date().toISOString(),
-            reason: rule ? `Rule: ${rule.name}` : "Balanced workload fallback",
-          },
-          ...h,
-        ]);
-        return { ...c, ownerId: winner };
-      });
-      return next;
-    });
-    audit("Assignment run", "Unassigned customers");
-    return { assigned };
-  }, [assignmentRules, audit, users]);
+  const customers = useMemo(() => serviceCustomers.map(toCustomer), [serviceCustomers]);
+  const activities = useMemo(() => serviceCustomers.flatMap(toActivities), [serviceCustomers]);
+  const notes = useMemo(() => serviceCustomers.flatMap(toNotes), [serviceCustomers]);
+  const followUps = useMemo(
+    () => serviceCustomers.flatMap((customer) => customer.followUps.filter((item) => item.status !== "Cancelled").map(toFollowUp)),
+    [serviceCustomers],
+  );
+  const assignmentHistory = useMemo(() => serviceCustomers.flatMap(toAssignmentEvents), [serviceCustomers]);
+  const assignmentRules = useMemo<UiAssignmentRule[]>(
+    () => rules.map((rule) => ({ id: rule.id, name: rule.name, priority: rule.order, conditions: ruleReasonText(rule), eligible: [rule.ownerId], active: rule.active })),
+    [rules],
+  );
 
-  const toggleUserActive = useCallback<Ctx["toggleUserActive"]>((id) => {
-    setUsers((prev) => prev.map((u) => (u.id === id ? { ...u, active: !u.active } : u)));
-    setCustomers((prev) => {
-      const user = users.find((u) => u.id === id);
-      if (!user || !user.active) return prev;
-      return prev.map((c) => (c.ownerId === id && c.status !== "closed" ? { ...c, ownerId: null } : c));
-    });
-    const user = users.find((u) => u.id === id);
-    audit(user?.active ? "User deactivated" : "User activated", user?.name ?? id);
-  }, [audit, users]);
+  const replaceCustomer = (updated: ServiceCustomer) =>
+    setServiceCustomers((prev) => prev.map((item) => (item.bcn === updated.bcn ? updated : item)));
 
-  const toggleRule = useCallback<Ctx["toggleRule"]>((id) => {
-    setAssignmentRules((prev) => prev.map((r) => (r.id === id ? { ...r, active: !r.active } : r)));
-    audit("Assignment rule changed", id);
-  }, [audit]);
+  const reportError = (message: string) => toast.error(message);
 
-  const recordImport = useCallback<Ctx["recordImport"]>((fileName) => {
-    const rows = 800 + Math.floor(Math.random() * 600);
-    const created = Math.floor(Math.random() * 25);
+  const canWork = (c: Customer) => !!sessionUser && (sessionUser.role === "Admin" || c.ownerId === sessionUser.id);
+
+  const addActivity: Ctx["addActivity"] = async (bcn, outcome, note, followUpId) => {
+    const serviceOutcome = outcome === "contact" ? "Contact" : "Attempt";
+    const result = followUpId
+      ? await services.completeFollowUp(bcn, followUpId, { outcome: serviceOutcome, note: note || null, submissionId: newSubmissionId() })
+      : await services.createInteraction(bcn, { outcome: serviceOutcome, note: note || null, submissionId: newSubmissionId() });
+    if (!result.ok) {
+      reportError(result.error.message);
+      return false;
+    }
+    const refreshed = await services.getCustomer(bcn);
+    if (refreshed.ok) replaceCustomer(refreshed.data);
+    return true;
+  };
+
+  const addNote: Ctx["addNote"] = async (bcn, body) => {
+    const result = await services.createNote(bcn, { text: body, submissionId: newSubmissionId() });
+    if (!result.ok) {
+      reportError(result.error.message);
+      return false;
+    }
+    const refreshed = await services.getCustomer(bcn);
+    if (refreshed.ok) replaceCustomer(refreshed.data);
+    return true;
+  };
+
+  const addFollowUp: Ctx["addFollowUp"] = async (bcn, type, dueAt, note) => {
+    const result = await services.createFollowUp(bcn, { type: fromFollowUpType(type), due: dueAt, note: note || "Follow-up", submissionId: newSubmissionId() });
+    if (!result.ok) {
+      reportError(result.error.message);
+      return false;
+    }
+    const refreshed = await services.getCustomer(bcn);
+    if (refreshed.ok) replaceCustomer(refreshed.data);
+    return true;
+  };
+
+  const closeCustomer: Ctx["closeCustomer"] = async (bcn, reasonId) => {
+    const result = await services.closeCustomer(bcn, { reasonId, submissionId: newSubmissionId() });
+    if (!result.ok) {
+      reportError(result.error.message);
+      return false;
+    }
+    replaceCustomer(result.data);
+    return true;
+  };
+
+  const reopenCustomer: Ctx["reopenCustomer"] = async (bcn) => {
+    const result = await services.reopenCustomer(bcn, { submissionId: newSubmissionId() });
+    if (!result.ok) {
+      reportError(result.error.message);
+      return false;
+    }
+    replaceCustomer(result.data);
+    return true;
+  };
+
+  const reassign: Ctx["reassign"] = async (bcn, toUserId) => {
+    const target = serviceCustomers.find((item) => item.bcn === bcn);
+    const result = await services.assignCustomer(bcn, toUserId, newSubmissionId(), target?.version);
+    if (!result.ok) {
+      reportError(result.error.message);
+      return false;
+    }
+    replaceCustomer(result.data);
+    return true;
+  };
+
+  const runAssignment: Ctx["runAssignment"] = async () => {
+    const result = await services.runAssignments("unassigned", newSubmissionId());
+    if (!result.ok) {
+      reportError(result.error.message);
+      return { assigned: 0 };
+    }
+    const refreshed = await services.listCustomers({ page_size: 100 });
+    if (refreshed.ok) setServiceCustomers(refreshed.data.items);
+    return { assigned: result.data.assigned };
+  };
+
+  const toggleUserActive: Ctx["toggleUserActive"] = async (id) => {
+    const target = users.find((item) => item.id === id);
+    if (!target) return false;
+    const result = await services.updateUser(id, { active: !target.active });
+    if (!result.ok) {
+      reportError(result.error.message);
+      return false;
+    }
+    setUsers((prev) => prev.map((item) => (item.id === id ? toUser(result.data) : item)));
+    const refreshed = await services.listCustomers({ page_size: 100 });
+    if (refreshed.ok) setServiceCustomers(refreshed.data.items);
+    return true;
+  };
+
+  const toggleRule: Ctx["toggleRule"] = async (id) => {
+    const target = rules.find((item) => item.id === id);
+    if (!target) return false;
+    const result = await services.updateAssignmentRule(id, { active: !target.active });
+    if (!result.ok) {
+      reportError(result.error.message);
+      return false;
+    }
+    setRules((prev) => prev.map((item) => (item.id === id ? result.data : item)));
+    return true;
+  };
+
+  const recordImport: Ctx["recordImport"] = async (file) => {
+    const result = await services.importWorkbook(file, newSubmissionId());
+    if (!result.ok) {
+      reportError(result.error.message);
+      return null;
+    }
     const job: ImportJob = {
-      id: uid(),
-      fileName,
-      at: new Date().toISOString(),
-      rowsProcessed: rows,
-      created,
-      updated: rows - created - 2,
-      errors: ["Row 118: missing bcn", "Row 664: duplicate bcn in file"],
+      id: result.data.jobId,
+      fileName: result.data.filename,
+      at: result.data.completedAt,
+      rowsProcessed: result.data.processed,
+      created: result.data.created,
+      updated: result.data.updated,
+      errors: result.data.errors.map((item) => `Row ${item.row}: ${item.reason}`),
     };
     setImportJobs((prev) => [job, ...prev]);
-    audit("Import completed", fileName, `${rows} rows / ${created} created`);
+    const refreshed = await services.listCustomers({ page_size: 100 });
+    if (refreshed.ok) setServiceCustomers(refreshed.data.items);
     return job;
-  }, [audit]);
+  };
 
-  const value = useMemo<Ctx>(
-    () => ({
-      currentUser,
-      setCurrentUserId,
-      users,
-      customers,
-      activities,
-      notes,
-      followUps,
-      assignmentHistory,
-      auditLog,
-      importJobs,
-      assignmentRules,
-      canWork,
-      addActivity,
-      addNote,
-      addFollowUp,
-      closeCustomer,
-      reopenCustomer,
-      reassign,
-      runAssignment,
-      toggleUserActive,
-      toggleRule,
-      recordImport,
-    }),
-    [
-      currentUser,
-      users,
-      customers,
-      activities,
-      notes,
-      followUps,
-      assignmentHistory,
-      auditLog,
-      importJobs,
-      assignmentRules,
-      canWork,
-      addActivity,
-      addNote,
-      addFollowUp,
-      closeCustomer,
-      reopenCustomer,
-      reassign,
-      runAssignment,
-      toggleUserActive,
-      toggleRule,
-      recordImport,
-    ],
-  );
+  const value: Ctx | null = sessionUser
+    ? {
+        currentUser: toUser(sessionUser),
+        users: effectiveUsers,
+        customers,
+        activities,
+        notes,
+        followUps,
+        assignmentHistory,
+        auditLog,
+        importJobs,
+        assignmentRules,
+        closureReasons,
+        canWork,
+        signOut: () => void services.logout(),
+        addActivity,
+        addNote,
+        addFollowUp,
+        closeCustomer,
+        reopenCustomer,
+        reassign,
+        runAssignment,
+        toggleUserActive,
+        toggleRule,
+        recordImport,
+      }
+    : null;
 
+  if (!value) return null;
   return <StoreContext.Provider value={value}>{children}</StoreContext.Provider>;
 }
 

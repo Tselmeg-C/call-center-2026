@@ -11,6 +11,7 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as AllCustomersRouteImport } from './routes/all-customers'
+import { Route as LoginRouteImport } from './routes/login'
 import { Route as MyCustomersRouteImport } from './routes/my-customers'
 import { Route as AdminAssignmentRouteImport } from './routes/admin.assignment'
 import { Route as AdminAuditRouteImport } from './routes/admin.audit'
@@ -27,6 +28,11 @@ const IndexRoute = IndexRouteImport.update({
 const AllCustomersRoute = AllCustomersRouteImport.update({
   id: '/all-customers',
   path: '/all-customers',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const LoginRoute = LoginRouteImport.update({
+  id: '/login',
+  path: '/login',
   getParentRoute: () => rootRouteImport,
 } as any)
 const MyCustomersRoute = MyCustomersRouteImport.update({
@@ -68,6 +74,7 @@ const CustomerBcnRoute = CustomerBcnRouteImport.update({
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/all-customers': typeof AllCustomersRoute
+  '/login': typeof LoginRoute
   '/my-customers': typeof MyCustomersRoute
   '/admin/assignment': typeof AdminAssignmentRoute
   '/admin/audit': typeof AdminAuditRoute
@@ -79,6 +86,7 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/all-customers': typeof AllCustomersRoute
+  '/login': typeof LoginRoute
   '/my-customers': typeof MyCustomersRoute
   '/admin/assignment': typeof AdminAssignmentRoute
   '/admin/audit': typeof AdminAuditRoute
@@ -91,6 +99,7 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/all-customers': typeof AllCustomersRoute
+  '/login': typeof LoginRoute
   '/my-customers': typeof MyCustomersRoute
   '/admin/assignment': typeof AdminAssignmentRoute
   '/admin/audit': typeof AdminAuditRoute
@@ -104,6 +113,7 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/all-customers'
+    | '/login'
     | '/my-customers'
     | '/admin/assignment'
     | '/admin/audit'
@@ -115,6 +125,7 @@ export interface FileRouteTypes {
   to:
     | '/'
     | '/all-customers'
+    | '/login'
     | '/my-customers'
     | '/admin/assignment'
     | '/admin/audit'
@@ -126,6 +137,7 @@ export interface FileRouteTypes {
     | '__root__'
     | '/'
     | '/all-customers'
+    | '/login'
     | '/my-customers'
     | '/admin/assignment'
     | '/admin/audit'
@@ -138,6 +150,7 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   AllCustomersRoute: typeof AllCustomersRoute
+  LoginRoute: typeof LoginRoute
   MyCustomersRoute: typeof MyCustomersRoute
   AdminAssignmentRoute: typeof AdminAssignmentRoute
   AdminAuditRoute: typeof AdminAuditRoute
@@ -161,6 +174,13 @@ declare module '@tanstack/react-router' {
       path: '/all-customers'
       fullPath: '/all-customers'
       preLoaderRoute: typeof AllCustomersRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/login': {
+      id: '/login'
+      path: '/login'
+      fullPath: '/login'
+      preLoaderRoute: typeof LoginRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/my-customers': {
@@ -218,6 +238,7 @@ declare module '@tanstack/react-router' {
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AllCustomersRoute: AllCustomersRoute,
+  LoginRoute: LoginRoute,
   MyCustomersRoute: MyCustomersRoute,
   AdminAssignmentRoute: AdminAssignmentRoute,
   AdminAuditRoute: AdminAuditRoute,

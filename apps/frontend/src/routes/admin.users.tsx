@@ -11,6 +11,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { RequireAdmin } from "@/lib/guards";
 import { useStore } from "@/lib/store";
 
 export const Route = createFileRoute("/admin/users")({
@@ -32,7 +33,7 @@ function AdminUsers() {
   const { users, customers, toggleUserActive } = useStore();
 
   return (
-    <>
+    <RequireAdmin>
       <PageHeader
         title="Users & Roles"
         description="Deactivating a salesperson releases their open customers to the unassigned pool; history is preserved."
@@ -77,9 +78,9 @@ function AdminUsers() {
                       size="sm"
                       variant={u.active ? "outline" : "secondary"}
                       disabled={u.role === "admin"}
-                      onClick={() => {
-                        toggleUserActive(u.id);
-                        toast.success(u.active ? `${u.name} deactivated` : `${u.name} activated`);
+                      onClick={async () => {
+                        const succeeded = await toggleUserActive(u.id);
+                        if (succeeded) toast.success(u.active ? `${u.name} deactivated` : `${u.name} activated`);
                       }}
                     >
                       {u.active ? "Deactivate" : "Activate"}
@@ -91,6 +92,6 @@ function AdminUsers() {
           </TableBody>
         </Table>
       </div>
-    </>
+    </RequireAdmin>
   );
 }

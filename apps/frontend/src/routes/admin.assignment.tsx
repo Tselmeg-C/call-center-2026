@@ -23,6 +23,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { dateTime } from "@/lib/derive";
+import { RequireAdmin } from "@/lib/guards";
 import { useStore } from "@/lib/store";
 
 export const Route = createFileRoute("/admin/assignment")({
@@ -51,14 +52,14 @@ function AdminAssignment() {
   const userName = (id: string | null) => (id ? (users.find((u) => u.id === id)?.name ?? id) : "Unassigned");
 
   return (
-    <>
+    <RequireAdmin>
       <PageHeader
         title="Assignment"
         description="Rules are priority ordered and first-match-wins; unmatched customers fall back to the lightest workload."
         actions={
           <Button
-            onClick={() => {
-              const { assigned } = runAssignment();
+            onClick={async () => {
+              const { assigned } = await runAssignment();
               toast.success(
                 assigned ? `${assigned} customers assigned` : "Nothing to assign",
                 assigned ? { description: "Rules applied, then balanced workload." } : undefined,
@@ -134,8 +135,9 @@ function AdminAssignment() {
               <Button
                 variant="secondary"
                 disabled={!manualBcn || !manualOwner}
-                onClick={() => {
-                  reassign(manualBcn, manualOwner === "none" ? null : manualOwner, "Manual admin reassignment");
+                onClick={async () => {
+                  const succeeded = await reassign(manualBcn, manualOwner === "none" ? null : manualOwner, "Manual admin reassignment");
+                  if (!succeeded) return;
                   toast.success("Ownership updated");
                   setManualBcn("");
                   setManualOwner("");
@@ -206,6 +208,6 @@ function AdminAssignment() {
           </CardContent>
         </Card>
       </div>
-    </>
+    </RequireAdmin>
   );
 }

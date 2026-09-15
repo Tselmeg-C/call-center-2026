@@ -1056,8 +1056,21 @@ def workload_contract(user: Annotated[User, Depends(current_user)]) -> dict:
         for row, phones in owned:
             summary = followups[row.bcn]; bucket = "overdue" if summary["overdue"] else "today" if summary["today"] else "undated" if summary["undated"] else "never-contacted" if not interactions.get(row.bcn) else "other"; counts[bucket] += 1; customers.append(Customer.model_validate({"bcn": row.bcn, "name": row.name, "ownerId": row.owner_id, "ownerName": repo.users.get(row.owner_id or "", {}).get("name"), "status": row.status, "phones": phones, "source": row.source, "version": row.version, "histories": []}).model_dump() | {"workloadBucket": bucket, "relevantDue": None})
         return {"asOf": datetime.now(timezone.utc).isoformat(), "today": today, "counts": counts, "customers": customers}
-    owned = [row for row in readable_rows() if row["ownerId"] == user.id and row["status"] == "Open"]
-    return {"asOf": datetime.now(timezone.utc).isoformat(), "today": datetime.now(timezone.utc).date().isoformat(), "counts": {"overdue": 0, "today": 0, "undated": 0, "never-contacted": sum(1 for row in owned if not any(event.get("kind") == "Interaction" and not event.get("deleted") for event in row["histories"])), "other": 0}, "customers": [Customer.model_validate(row).model_dump() | {"workloadBucket": None, "relevantDue": None} for row in owned]}
+    today = datetime.now(timezone.utc).date().isoformat(); owned = [row for row in readable_rows() if row["ownerId"] == user.id and row["status"] == "Open"]
+    open_followups_by_bcn: dict[str, list[dict]] = {}
+    for item in readable_followups():
+        if item["status"] == "Open": open_followups_by_bcn.setdefault(item["bcn"], []).append(item)
+    counts = {bucket: 0 for bucket in ("overdue", "today", "undated", "never-contacted", "other")}; customers = []
+    for row in owned:
+        opens = open_followups_by_bcn.get(row["bcn"], [])
+        overdue = sum(1 for item in opens if item.get("due") and item["due"][:10] < today)
+        due_today = sum(1 for item in opens if item.get("due") and item["due"][:10] == today)
+        undated = sum(1 for item in opens if not item.get("due"))
+        contacted = any(event.get("kind") == "Interaction" and not event.get("deleted") for event in row["histories"])
+        bucket = "overdue" if overdue else "today" if due_today else "undated" if undated else "never-contacted" if not contacted else "other"
+        counts[bucket] += 1
+        customers.append(Customer.model_validate(row).model_dump() | {"workloadBucket": bucket, "relevantDue": None})
+    return {"asOf": datetime.now(timezone.utc).isoformat(), "today": today, "counts": counts, "customers": customers}
 
 @app.get("/admin/reports")
 def admin_reports(start: str | None = None, end: str | None = None, _: Annotated[User, Depends(admin_user)] = None) -> dict:

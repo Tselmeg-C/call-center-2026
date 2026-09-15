@@ -536,14 +536,22 @@ def reopen_customer(bcn: str, body: LifecycleRequest, user: Annotated[User, Depe
         try: persisted = activity_db.get_idempotent(actor_id=user.id, operation="reopen", submission_id=body.submissionId, payload=payload)
         except ValueError as exc: raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
         if persisted: return Customer.model_validate(row)
+    # Restore the prior owner only if still an active Sales user (same repo.users snapshot check
+    # as main.py:624/979/1004) -- otherwise release ownership, same as the deactivation path.
+    prior_owner_id = row["ownerId"]
+    release_owner = prior_owner_id is not None and not any(item["id"] == prior_owner_id and item["role"] == "Sales" and item["active"] for item in repo.users.values())
     timestamp = datetime.now(timezone.utc).isoformat(); row["status"] = "Open"; row["version"] += 1; event = {"id": f"reopen-{bcn}-{row['version']}", "bcn": bcn, "kind": "Reopen", "actor": user.name, "actorId": user.id, "timestamp": timestamp}; row["histories"].append(event)
+    if release_owner:
+        row["ownerId"] = None; row["ownerName"] = None
+        row["histories"].append({"kind": "Assignment", "actor": user.name, "actorId": user.id, "oldOwner": prior_owner_id, "newOwner": None, "reason": "Owner no longer active Sales", "timestamp": timestamp})
     result = Customer.model_validate(row)
     if activity_db is not None:
-        try: activity_db.reopen_customer(bcn, event, owner_id=row["ownerId"], status=row["status"], version=row["version"], actor_id=user.id, submission_id=body.submissionId, payload=payload, result=result.model_dump())
+        try: activity_db.reopen_customer(bcn, event, owner_id=row["ownerId"], status=row["status"], version=row["version"], actor_id=user.id, submission_id=body.submissionId, payload=payload, result=result.model_dump(), released_owner_id=prior_owner_id if release_owner else None)
         except IntegrityError as exc: raise HTTPException(status.HTTP_409_CONFLICT, "Customer reopen is already being processed.") from exc
     else:
         persist_activity({**event, "text": None})
         if customer_db is not None: customer_db.save_operational(bcn=bcn, owner_id=row["ownerId"], status=row["status"], version=row["version"])
+        if release_owner: append_audit(user.id, "Customer ownership released", bcn, {"oldOwner": prior_owner_id, "newOwner": None, "reason": "Owner no longer active Sales"})
     append_audit(user.id, "Customer reopened", bcn, {})
     repo.submissions[local_key] = {"payload": payload, "result": result.model_dump()}
     return result

@@ -5,7 +5,7 @@ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
 from sqlalchemy.pool import StaticPool
 from .db_auth import StorageError
-from .db_assignment import AuditRow
+from .db_assignment import AssignmentHistoryRow, AuditRow
 from .db_customers import CustomerRow
 
 class ActivityBase(DeclarativeBase): pass
@@ -159,14 +159,21 @@ class ActivityDatabase:
                 session.add(IdempotencyRow(actor_id=idempotency["actor_id"], operation=idempotency["operation"], submission_id=idempotency["submission_id"], fingerprint=fingerprint(idempotency["payload"]), result=idempotency["result"], completed_at=datetime.now(timezone.utc)))
             session.add(row); session.commit()
 
-    def reopen_customer(self, bcn: str, event: dict, *, owner_id: str | None, status: str, version: int, actor_id: str, submission_id: str, payload: str, result: dict) -> None:
-        """Commit the customer's owner/status/version correction, the reopen event, and the retry
-        record in the same transaction (same physical database as customer_db, via this engine)."""
+    def reopen_customer(self, bcn: str, event: dict, *, owner_id: str | None, status: str, version: int, actor_id: str, submission_id: str, payload: str, result: dict, released_owner_id: str | None = None) -> None:
+        """Commit the customer's owner/status/version correction, the reopen event, the retry
+        record, and (when released_owner_id is given) the ownership-release assignment_history/
+        audit_events rows, all in the same transaction (same physical database as customer_db and
+        assignment_db, via this engine) -- never via assignment_db.append_assignment/append_audit,
+        which each open and commit their own separate session."""
         with Session(self.engine) as session:
             customer = session.get(CustomerRow, bcn, with_for_update=True)
             if customer is not None:
                 customer.owner_id, customer.status, customer.version = owner_id, status, version
             session.add(ActivityRow(id=event["id"], bcn=bcn, actor_id=actor_id, kind="Reopen", text=None, created_at=datetime.fromisoformat(event["timestamp"])))
+            if released_owner_id is not None:
+                released_at = datetime.now(timezone.utc)
+                session.add(AssignmentHistoryRow(bcn=bcn, actor_id=actor_id, old_owner_id=released_owner_id, new_owner_id=None, reason="Owner no longer active Sales", created_at=released_at))
+                session.add(AuditRow(actor_id=actor_id, action="Customer ownership released", target=bcn, details={"oldOwner": released_owner_id, "newOwner": None, "reason": "Owner no longer active Sales"}, created_at=released_at))
             session.add(IdempotencyRow(actor_id=actor_id, operation="reopen", submission_id=submission_id, fingerprint=fingerprint(payload), result=result, completed_at=datetime.now(timezone.utc)))
             session.commit()
 

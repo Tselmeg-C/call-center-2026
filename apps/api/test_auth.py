@@ -303,15 +303,20 @@ def test_close_lifecycle_rolls_back_on_activity_conflict() -> None:
 def test_reopen_customer_commits_owner_status_and_idempotency_atomically(tmp_path) -> None:
     """Regression for the #25 QA bug: reopen used to be three independently committed writes
     (activity event, customer operational row, idempotency record). reopen_customer must commit
-    all three together, and an injected failure must leave none of them applied."""
+    all three together, and an injected failure must leave none of them applied. Also covers #30:
+    when ownership is released on reopen, the assignment_history/audit_events rows written in the
+    same call must commit -- and roll back -- together with everything else too."""
     from datetime import datetime, timezone
+    from sqlalchemy import func, select
     from sqlalchemy.exc import IntegrityError
     from .db_activity import ActivityRow
+    from .db_assignment import AssignmentDatabase, AssignmentHistoryRow, AuditRow
     from .db_customers import CustomerDatabase
 
     url = f"sqlite+pysqlite:///{tmp_path / 'reopen.db'}"
     customers = CustomerDatabase(url)
     activities = ActivityDatabase(url)
+    assignments = AssignmentDatabase(url)
     try:
         customers.upsert_source(bcn="000123", name="Synthetic", source={})
         customers.save_operational(bcn="000123", owner_id="sales", status="Closed", version=2)
@@ -332,8 +337,77 @@ def test_reopen_customer_commits_owner_status_and_idempotency_atomically(tmp_pat
         else: assert False
         assert (customers.get("000123").status, customers.get("000123").version, customers.get("000123").owner_id) == ("Open", 3, "sales")
         assert activities.get_idempotent(actor_id="sales", operation="reopen", submission_id="reopen-2", payload="p2") is None
+
+        # #30 release path: a successful release writes exactly one assignment_history row and one
+        # audit_events row alongside owner/status/version and the idempotency record.
+        customers.save_operational(bcn="000123", owner_id="sales", status="Closed", version=4)
+        activities.reopen_customer("000123", {"id": "reopen-000123-5", "timestamp": datetime.now(timezone.utc).isoformat()}, owner_id=None, status="Open", version=5, actor_id="sales", submission_id="reopen-3", payload="000123|reopen-release", result={"status": "Open", "ownerId": None}, released_owner_id="sales")
+        assert (customers.get("000123").status, customers.get("000123").version, customers.get("000123").owner_id) == ("Open", 5, None)
+        with Session(assignments.engine) as session:
+            history_row = session.execute(select(AssignmentHistoryRow).where(AssignmentHistoryRow.bcn == "000123")).scalar_one()
+            assert history_row.old_owner_id == "sales" and history_row.new_owner_id is None and history_row.reason == "Owner no longer active Sales"
+            audit_row = session.execute(select(AuditRow).where(AuditRow.target == "000123", AuditRow.action == "Customer ownership released")).scalar_one()
+            assert audit_row.actor_id == "sales" and audit_row.details == {"oldOwner": "sales", "newOwner": None, "reason": "Owner no longer active Sales"}
+
+        # An injected failure on a release write rolls back the assignment_history/audit_events rows
+        # together with owner/status/version and the idempotency record -- no partial release survives.
+        with activities.engine.begin() as connection:
+            connection.execute(ActivityRow.__table__.insert().values(id="reopen-000123-6", bcn="000123", actor_id="sales", kind="Existing", created_at=datetime.now(timezone.utc)))
+        try:
+            activities.reopen_customer("000123", {"id": "reopen-000123-6", "timestamp": datetime.now(timezone.utc).isoformat()}, owner_id=None, status="Open", version=6, actor_id="sales", submission_id="reopen-4", payload="p4", result={}, released_owner_id="sales")
+        except IntegrityError: pass
+        else: assert False
+        assert (customers.get("000123").status, customers.get("000123").version, customers.get("000123").owner_id) == ("Open", 5, None)
+        assert activities.get_idempotent(actor_id="sales", operation="reopen", submission_id="reopen-4", payload="p4") is None
+        with Session(assignments.engine) as session:
+            assert session.scalar(select(func.count()).select_from(AssignmentHistoryRow).where(AssignmentHistoryRow.bcn == "000123")) == 1
+            assert session.scalar(select(func.count()).select_from(AuditRow).where(AuditRow.target == "000123", AuditRow.action == "Customer ownership released")) == 1
     finally:
-        customers.engine.dispose(); activities.engine.dispose()
+        customers.engine.dispose(); activities.engine.dispose(); assignments.engine.dispose()
+
+def test_reopen_releases_ownership_when_owner_not_active_sales_memory_mode() -> None:
+    """#30, memory mode: reopen must apply the same active-Sales rule as PostgreSQL mode through the
+    real HTTP endpoint -- covering the prior owner still being active Sales (retained, unchanged),
+    role changed away from Sales while still active, an owner id no longer present in the user store
+    at all, and a customer that was already unassigned at close time (no spurious history entry)."""
+    repo.reset()
+    admin = provision_user(type("P", (), {"name": "Admin", "email": "admin@example.test", "role": "Admin", "password": "correct horse battery staple"})())
+    repo.users["sales-active"] = {"id": "sales-active", "name": "Active Sales", "email": "active@example.test", "role": "Sales", "active": True, "password": ""}
+    repo.users["sales-demoted"] = {"id": "sales-demoted", "name": "Demoted", "email": "demoted@example.test", "role": "Admin", "active": True, "password": ""}
+    repo.customers["900001"] = {"bcn": "900001", "name": "Retained Co", "ownerId": "sales-active", "ownerName": "Active Sales", "status": "Closed", "phones": [], "source": {}, "version": 0, "histories": []}
+    repo.customers["900002"] = {"bcn": "900002", "name": "Demoted Co", "ownerId": "sales-demoted", "ownerName": "Demoted", "status": "Closed", "phones": [], "source": {}, "version": 0, "histories": []}
+    repo.customers["900003"] = {"bcn": "900003", "name": "Ghost Owner Co", "ownerId": "sales-ghost", "ownerName": "Ghost", "status": "Closed", "phones": [], "source": {}, "version": 0, "histories": []}
+    repo.customers["900004"] = {"bcn": "900004", "name": "Already Unassigned Co", "ownerId": None, "ownerName": None, "status": "Closed", "phones": [], "source": {}, "version": 0, "histories": []}
+    client = TestClient(app, base_url="http://localhost"); origin = {"origin": "http://localhost:3000"}
+    assert client.post("/session/login", json={"email": admin.email, "password": "correct horse battery staple"}).status_code == 200
+
+    retained = client.post("/customers/900001/reopen", json={"submissionId": "retained"}, headers=origin)
+    assert retained.status_code == 200
+    retained_body = retained.json()
+    assert retained_body["ownerId"] == "sales-active" and retained_body["ownerName"] == "Active Sales"
+    assert not any(item["kind"] == "Assignment" for item in retained_body["histories"])
+
+    demoted = client.post("/customers/900002/reopen", json={"submissionId": "demoted"}, headers=origin)
+    assert demoted.status_code == 200
+    demoted_body = demoted.json()
+    assert demoted_body["ownerId"] is None and demoted_body["ownerName"] is None and demoted_body["status"] == "Open"
+    demoted_entries = [item for item in demoted_body["histories"] if item["kind"] == "Assignment"]
+    assert len(demoted_entries) == 1 and demoted_entries[0]["oldOwner"] == "sales-demoted" and demoted_entries[0]["newOwner"] is None and demoted_entries[0]["reason"] == "Owner no longer active Sales"
+    replay = client.post("/customers/900002/reopen", json={"submissionId": "demoted"}, headers=origin)
+    assert replay.status_code == 200 and replay.json() == demoted_body
+
+    ghost = client.post("/customers/900003/reopen", json={"submissionId": "ghost"}, headers=origin)
+    assert ghost.status_code == 200
+    ghost_body = ghost.json()
+    assert ghost_body["ownerId"] is None and ghost_body["ownerName"] is None
+    ghost_entries = [item for item in ghost_body["histories"] if item["kind"] == "Assignment"]
+    assert len(ghost_entries) == 1 and ghost_entries[0]["oldOwner"] == "sales-ghost" and ghost_entries[0]["newOwner"] is None
+
+    unassigned = client.post("/customers/900004/reopen", json={"submissionId": "unassigned"}, headers=origin)
+    assert unassigned.status_code == 200
+    unassigned_body = unassigned.json()
+    assert unassigned_body["ownerId"] is None and unassigned_body["status"] == "Open"
+    assert not any(item["kind"] == "Assignment" for item in unassigned_body["histories"])
 
 def test_real_http_admin_sales_journey() -> None:
     repo.reset()

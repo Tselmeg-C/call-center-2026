@@ -875,6 +875,49 @@ def test_postgres_activity_lifecycle_http_journey(postgres_url, monkeypatch):
         assert customers.get("000860").status == "Open" and customers.get("000860").owner_id == "journey-owner"
         reasons = {row.id: row.label for row in activities.reasons()}
         assert reasons[reason_id] == "Journey resolved"
+
+        # #30 coverage gap flagged in #25's QA pass: a second customer, closed while its owner was
+        # still active Sales, then reopened only after that owner is deactivated -- ownership must
+        # release (ownerId/ownerName null) with the Assignment history entry plus the
+        # assignment_history/audit_events rows, all written atomically inside reopen_customer.
+        from .db_assignment import AssignmentDatabase, AssignmentHistoryRow, AuditRow
+
+        customers.upsert_source(bcn="000861", name="Journey Release Co", source={})
+        customers.save_operational(bcn="000861", owner_id="journey-owner", status="Open", version=0)
+
+        with TestClient(main.app, base_url="http://localhost") as owner_client:
+            assert owner_client.post("/session/login", json={"email": "journey-owner@example.test", "password": secret}).status_code == 200
+            closed_release = owner_client.post("/customers/000861/close", json={"reasonId": reason_id, "submissionId": "journey-release-close"}, headers=ORIGIN)
+            assert closed_release.status_code == 200 and closed_release.json()["status"] == "Closed"
+
+        with TestClient(main.app, base_url="http://localhost") as admin_client:
+            assert admin_client.post("/session/login", json={"email": "journey-admin@example.test", "password": secret}).status_code == 200
+            deactivated = admin_client.patch("/admin/users/journey-owner", json={"active": False}, headers=ORIGIN)
+            assert deactivated.status_code == 200 and deactivated.json()["active"] is False
+
+            reopened_release = admin_client.post("/customers/000861/reopen", json={"submissionId": "journey-release-reopen"}, headers=ORIGIN)
+            assert reopened_release.status_code == 200, reopened_release.text
+            released_body = reopened_release.json()
+            assert released_body["status"] == "Open" and released_body["ownerId"] is None and released_body["ownerName"] is None
+            release_entries = [item for item in released_body["histories"] if item["kind"] == "Assignment"]
+            assert len(release_entries) == 1 and release_entries[0]["oldOwner"] == "journey-owner" and release_entries[0]["newOwner"] is None and release_entries[0]["reason"] == "Owner no longer active Sales"
+
+            replay_release = admin_client.post("/customers/000861/reopen", json={"submissionId": "journey-release-reopen"}, headers=ORIGIN)
+            assert replay_release.status_code == 200 and replay_release.json() == released_body
+
+        assert customers.get("000861").status == "Open" and customers.get("000861").owner_id is None
+        release_kinds = [item.kind for item in activities.history("000861")[0]]
+        assert release_kinds.count("Reopen") == 1
+
+        assignments = AssignmentDatabase(postgres_url, create_schema=False)
+        try:
+            with Session(assignments.engine) as session:
+                history_row = session.execute(select(AssignmentHistoryRow).where(AssignmentHistoryRow.bcn == "000861")).scalar_one()
+                assert history_row.old_owner_id == "journey-owner" and history_row.new_owner_id is None and history_row.reason == "Owner no longer active Sales"
+                audit_row = session.execute(select(AuditRow).where(AuditRow.target == "000861", AuditRow.action == "Customer ownership released")).scalar_one()
+                assert audit_row.actor_id == "journey-admin" and audit_row.details == {"oldOwner": "journey-owner", "newOwner": None, "reason": "Owner no longer active Sales"}
+        finally:
+            assignments.engine.dispose()
     finally:
         auth.engine.dispose(); customers.engine.dispose(); activities.engine.dispose()
 
@@ -1624,13 +1667,19 @@ assert client.post("/session/login", json={"email": admin.email, "password": sec
 origin = {"origin": "http://localhost:3000"}
 sales_secret = secrets.token_urlsafe(24)
 sales = client.post("/admin/users", json={"name": "Restart Sales", "email": "restart-activity-sales@example.test", "role": "Sales", "password": sales_secret}, headers=origin).json()
+# A second, independent owner for the #30 release scenario below, so deactivating it cannot
+# side-effect the first owner's still-Open 800200 (which must stay assigned across the restart).
+sales2_secret = secrets.token_urlsafe(24)
+sales2 = client.post("/admin/users", json={"name": "Restart Release Sales", "email": "restart-activity-sales2@example.test", "role": "Sales", "password": sales2_secret}, headers=origin).json()
 reason = client.post("/admin/closure-reasons", json={"label": "Restart resolved"}, headers=origin).json()
-book = Workbook(); book.active.append(["bcn", "customer_name"]); book.active.append(["800200", "Restart Activity Co"])
+book = Workbook(); book.active.append(["bcn", "customer_name"]); book.active.append(["800200", "Restart Activity Co"]); book.active.append(["800201", "Restart Release Co"])
 payload = BytesIO(); book.save(payload)
 imported = client.post("/admin/imports?submission_id=restart-activity-import", files={"file": ("restart.xlsx", payload.getvalue(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")}, headers=origin)
 assert imported.status_code == 201, imported.text
 assigned = client.post("/admin/assignments/manual/800200", json={"ownerId": sales["id"], "submissionId": "restart-activity-assign"}, headers=origin)
 assert assigned.status_code == 200, assigned.text
+assigned_release = client.post("/admin/assignments/manual/800201", json={"ownerId": sales2["id"], "submissionId": "restart-release-assign"}, headers=origin)
+assert assigned_release.status_code == 200, assigned_release.text
 client.post("/session/logout", headers=origin)
 
 assert client.post("/session/login", json={"email": sales["email"], "password": sales_secret}).status_code == 200
@@ -1652,11 +1701,32 @@ closed = client.post("/customers/800200/close", json={"reasonId": reason["id"], 
 assert closed.status_code == 200, closed.text
 reopened = client.post("/customers/800200/reopen", json={"submissionId": "restart-reopen"}, headers=origin)
 assert reopened.status_code == 200, reopened.text
-print(json.dumps({"salesId": sales["id"], "reasonId": reason["id"], "noteId": note_id, "openFollowupId": kept_open.json()["id"], "completedFollowupId": to_complete_id}))
+client.post("/session/logout", headers=origin)
+
+# #30: a second customer, owned by a second, independent Sales user, closed while that owner is
+# still active Sales, then reopened by an admin only after that owner is deactivated -- ownership
+# must release and the release rows must survive the restart below alongside the rest of this
+# test's activity/lifecycle coverage. Deactivating sales2 must not touch sales/800200 above.
+assert client.post("/session/login", json={"email": sales2["email"], "password": sales2_secret}).status_code == 200
+closed_release = client.post("/customers/800201/close", json={"reasonId": reason["id"], "submissionId": "restart-release-close"}, headers=origin)
+assert closed_release.status_code == 200, closed_release.text
+client.post("/session/logout", headers=origin)
+
+assert client.post("/session/login", json={"email": admin.email, "password": secret}).status_code == 200
+deactivated = client.patch(f"/admin/users/{sales2['id']}", json={"active": False}, headers=origin)
+assert deactivated.status_code == 200 and deactivated.json()["active"] is False, deactivated.text
+reopened_release = client.post("/customers/800201/reopen", json={"submissionId": "restart-release-reopen"}, headers=origin)
+assert reopened_release.status_code == 200, reopened_release.text
+assert reopened_release.json()["ownerId"] is None and reopened_release.json()["ownerName"] is None
+
+print(json.dumps({"salesId": sales["id"], "sales2Id": sales2["id"], "reasonId": reason["id"], "noteId": note_id, "openFollowupId": kept_open.json()["id"], "completedFollowupId": to_complete_id}))
 '''
     verify = '''
 import json, sys
-from apps.api.main import activity_db, customer_db
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+from apps.api.main import activity_db, customer_db, assignment_db
+from apps.api.db_assignment import AssignmentHistoryRow, AuditRow
 info = json.load(sys.stdin)
 bcn = "800200"
 
@@ -1682,6 +1752,18 @@ assert by_id[completed_followup.interaction_id].text == "Completed before restar
 
 customer = customer_db.get(bcn)
 assert customer.status == "Open" and customer.owner_id == info["salesId"]
+
+# #30: released ownership on the second customer, and its assignment_history/audit_events rows,
+# survived the restart.
+released_customer = customer_db.get("800201")
+assert released_customer.status == "Open" and released_customer.owner_id is None
+release_reopen = next(row for row in activity_db.history("800201")[0] if row.kind == "Reopen")
+assert release_reopen is not None
+with Session(assignment_db.engine) as session:
+    history_row = session.execute(select(AssignmentHistoryRow).where(AssignmentHistoryRow.bcn == "800201", AssignmentHistoryRow.reason == "Owner no longer active Sales")).scalar_one()
+    assert history_row.old_owner_id == info["sales2Id"] and history_row.new_owner_id is None
+    audit_row = session.execute(select(AuditRow).where(AuditRow.target == "800201", AuditRow.action == "Customer ownership released")).scalar_one()
+    assert audit_row.details["oldOwner"] == info["sales2Id"]
 '''
     env = os.environ | {"CALL_CENTER_STORAGE": "postgres", "DATABASE_URL": postgres_url}
     first = subprocess.run([sys.executable, "-c", seed], env=env, capture_output=True)

@@ -32,12 +32,13 @@ Dev and prod use the *same* variable names; only the values differ (dev typicall
 `OTEL_EXPORTER_OTLP_ENDPOINT` unset entirely and runs with OTel disabled, while prod sets all
 four once #27 supplies the Grafana Cloud instance).
 
-Every span, log record, and metric label passes through an explicit attribute allowlist
-(`otel_setup.ALLOWED_ATTRIBUTES` and the per-metric `Views`) before export: only route, method,
-status code, DB system/operation, and the existing `x-request-id` are ever allowed through --
-cookies, auth headers, connection strings, and note/workbook free text are structurally
-impossible to export, not just absent by convention. `apps/api/test_otel.py` asserts this against
-in-memory OTel exporters (never a live endpoint).
+Every span, log record, and metric label -- including each metric data point's exemplars --
+passes through an explicit attribute allowlist (`otel_setup.ALLOWED_ATTRIBUTES`, the per-metric
+`Views`, and `otel_setup._redact_metrics_data` for the exemplar path the `Views` alone don't
+cover) before export: only route, method, status code, DB system/operation, and the existing
+`x-request-id` are ever allowed through -- cookies, auth headers, connection strings, and
+note/workbook free text are structurally impossible to export, not just absent by convention.
+`apps/api/test_otel.py` asserts this against in-memory OTel exporters (never a live endpoint).
 
 `_docs/grafana-dashboard.json` is a validated Grafana dashboard JSON model (not uploaded to any
 live account -- see #27) with request rate/error rate/duration panels for `/customers`,

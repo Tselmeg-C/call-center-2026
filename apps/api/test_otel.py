@@ -19,6 +19,7 @@ from fastapi.testclient import TestClient
 from opentelemetry.sdk._logs.export import InMemoryLogRecordExporter
 from opentelemetry.sdk.metrics.export import InMemoryMetricReader
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+from sqlalchemy import create_engine
 
 from . import otel_setup
 from .db_auth import AuthDatabase
@@ -75,6 +76,36 @@ def test_deployment_environment_resource_attribute(monkeypatch):
     try:
         assert state["tracer_provider"].resource.attributes["deployment.environment"] == "prod"
     finally:
+        otel_setup.shutdown_otel(scratch_app)
+
+
+def test_instrumenting_multiple_engines_does_not_duplicate_connect_spans(monkeypatch):
+    """Regression test for the leak QA reproduced: main.py's own pattern is one
+    instrument_engine() call per adapter engine, in a loop over 4 engines. Instrumenting
+    N engines that way must still produce exactly one "connect" span per actual
+    engine.connect() call -- not N, which is what SQLAlchemyInstrumentor()._instrument
+    (engine=...) used to leak (it re-wrapped Engine.connect, a class-level/shared
+    monkeypatch, once per call, and wrapt does not dedupe repeated wraps)."""
+    monkeypatch.delenv("OTEL_EXPORTER_OTLP_ENDPOINT", raising=False)
+    scratch_app = FastAPI()
+    span_exporter = InMemorySpanExporter()
+    state = otel_setup.configure_otel(scratch_app, span_exporter=span_exporter)
+    assert state is not None
+    engines = [create_engine("sqlite+pysqlite:///:memory:") for _ in range(3)]
+    try:
+        for engine in engines:
+            otel_setup.instrument_engine(engine)
+
+        for index, engine in enumerate(engines):
+            span_exporter.clear()
+            with engine.connect():
+                pass
+            state["tracer_provider"].force_flush()
+            connect_spans = [s for s in span_exporter.get_finished_spans() if s.name == "connect"]
+            assert len(connect_spans) == 1, (index, connect_spans)
+    finally:
+        for engine in engines:
+            engine.dispose()
         otel_setup.shutdown_otel(scratch_app)
 
 
@@ -167,7 +198,7 @@ def test_request_id_correlates_span_and_log(otel):
 
 
 def test_sensitive_values_are_redacted(otel):
-    span_exporter, log_exporter, metric_reader, _database = otel
+    span_exporter, log_exporter, metric_reader, database = otel
     secret_cookie = "call_center_session=super-secret-session-token"
     secret_auth = "Bearer super-secret-bearer-token"
     fake_connection_string = "postgresql://dbuser:hunter2@internal-db.example:5432/call_center"
@@ -178,6 +209,10 @@ def test_sensitive_values_are_redacted(otel):
         params={"q": f"{fake_connection_string} {note_text}"},
         headers={"Cookie": secret_cookie, "Authorization": secret_auth},
     )
+    # A real connect+query cycle on the already-instrumented engine, so the
+    # db.client.connections.usage gauge gets a fresh measurement -- and, since it's taken
+    # while the "connect" span is the current recording span, an exemplar -- to check below.
+    database.issue("otel-redact-test-user")
     _flush()
 
     secrets = ["super-secret-session-token", "super-secret-bearer-token", "hunter2", "churn risk", fake_connection_string]
@@ -201,6 +236,7 @@ def test_sensitive_values_are_redacted(otel):
             assert secret not in " ".join(str(v) for v in attrs.values())
 
     metrics_data = metric_reader.get_metrics_data()
+    connection_usage_points = []
     for rm in metrics_data.resource_metrics:
         for sm in rm.scope_metrics:
             for metric in sm.metrics:
@@ -208,3 +244,22 @@ def test_sensitive_values_are_redacted(otel):
                     for value in dp.attributes.values():
                         for secret in secrets:
                             assert secret not in str(value)
+                    # The gap QA found: a View-dropped attribute (like "pool.name") never
+                    # showed up in dp.attributes, but survived unredacted in exemplars.
+                    for exemplar in dp.exemplars:
+                        assert "pool.name" not in exemplar.filtered_attributes, exemplar.filtered_attributes
+                        for value in exemplar.filtered_attributes.values():
+                            for secret in secrets:
+                                assert secret not in str(value)
+                    if metric.name == "db.client.connections.usage":
+                        connection_usage_points.append(dp)
+
+    # Not just "no secrets leaked" -- the connection-pool gauge's exemplars must actually have
+    # been exercised by this test (via database.issue() above), and pool.name must be dropped
+    # from them exactly as it is from the main attribute set, per the View comment/deployment.md.
+    assert connection_usage_points
+    assert any(dp.exemplars for dp in connection_usage_points), "expected at least one exemplar"
+    for dp in connection_usage_points:
+        assert "pool.name" not in dp.attributes
+        for exemplar in dp.exemplars:
+            assert "pool.name" not in exemplar.filtered_attributes

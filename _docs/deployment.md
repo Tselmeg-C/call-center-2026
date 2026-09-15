@@ -30,3 +30,41 @@ POSTGRES_PASSWORD=<local-only-value> docker compose -f infra/docker-compose.yml 
 This is additive: the non-container `npm run dev` / `apps/api/start.sh` workflow keeps working unchanged, and nothing here requires containers for day-to-day development.
 
 `infra/smoke-test.sh` (`npm run smoke:containers`) is the container-run smoke check: it builds both images, starts `infra/docker-compose.test.yml`'s Postgres, runs the API and frontend containers against it, and asserts `/health/ready` returns healthy and the frontend serves its index page.
+
+## Publishing images to GHCR
+
+Every push to `main` that passes `check` in `.github/workflows/frontend.yml` runs a `publish` job (`needs: check`) that builds and pushes both images to GitHub Container Registry, from the same `apps/api/Dockerfile` and `apps/frontend/Dockerfile` used for the local `docker build` commands above -- CI does not diverge from them. Pull requests (including from forks) only run the `docker build` steps; nothing is ever pushed off `main`.
+
+Images are published as:
+
+- `ghcr.io/<owner>/<repo>-api`
+- `ghcr.io/<owner>/<repo>-frontend`
+
+with `<owner>` and `<repo>` lowercased (GHCR requires lowercase paths). For this repository that's `ghcr.io/tselmeg-c/call-center-2026-api` and `ghcr.io/tselmeg-c/call-center-2026-frontend`. Each successful `main` push tags both images with the full commit SHA and moves the `latest` tag to point at that same build -- `latest` is the newest `main` build, a commit SHA is a pinned, reproducible one.
+
+These images are published at GHCR's default visibility for a `GITHUB_TOKEN`-authored package, which is **private**. This is deliberate, not an oversight: pulling them (including for the `docker pull`/`docker run` below) requires being authenticated to GHCR with access to this repository.
+
+```sh
+docker pull ghcr.io/tselmeg-c/call-center-2026-api:<sha>
+docker run --rm -p 8000:8000 \
+  -e CALL_CENTER_STORAGE=postgres \
+  -e DATABASE_URL=postgresql+psycopg://user:pass@host:5432/call_center \
+  -e FRONTEND_ORIGIN=https://app.example.com \
+  -e PORT=8000 \
+  -e WEB_CONCURRENCY=1 \
+  ghcr.io/tselmeg-c/call-center-2026-api:<sha>
+
+docker pull ghcr.io/tselmeg-c/call-center-2026-frontend:<sha>
+docker run --rm -p 8080:8080 -e PORT=8080 \
+  ghcr.io/tselmeg-c/call-center-2026-frontend:<sha>
+```
+
+Swap `<sha>` for `latest` to run the newest `main` build instead of a pinned commit. These are the same environment variables documented above for the local build (`CALL_CENTER_STORAGE`, `DATABASE_URL`, `FRONTEND_ORIGIN`, `PORT`, `WEB_CONCURRENCY`) -- nothing changes about how the API or frontend behave once they're running in a container pulled from GHCR versus one built locally.
+
+## Promoting a published tag to production
+
+`.github/workflows/promote-production.yml` is a manual, `workflow_dispatch`-only workflow that takes an image tag (a commit SHA or `latest`) and points Railway's production service at that exact, already-published tag. It runs under the `production` GitHub Environment and never runs `docker build` -- it only re-points Railway at an image GHCR already has. Before touching Railway it verifies the given tag exists in GHCR for *both* `-api` and `-frontend` images (`docker manifest inspect`); if either is missing, the run fails with no Railway change made.
+
+The actual "point Railway at this image" step is currently a documented placeholder: this workflow does not yet have a `RAILWAY_TOKEN` secret or the production project/service IDs (those land with #27/#28). The tag-existence verification is fully real and runs regardless. Once `RAILWAY_TOKEN` and the service IDs exist, the placeholder step in the workflow file documents exactly what to replace it with.
+
+**Manual one-time setup required**: the `production` environment's required-reviewer protection rule cannot be created by CI -- this repo's `GITHUB_TOKEN` gets a 403 on `PUT .../environments/production`. A repo admin must add it manually: GitHub web UI -> Settings -> Environments -> `production` -> Required reviewers -> add `Tselmeg-C`. Until that's done, `workflow_dispatch` runs against the `production` environment proceed without a human approval gate.

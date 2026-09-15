@@ -52,3 +52,11 @@ jobs:
         run: |
           alembic -c apps/api/alembic.ini upgrade head
           python -m apps.api.postgres_smoke
+      - name: PostgreSQL benchmark smoke
+        # CI runs the small `ci` scale (hundreds of rows, not the 10k/150k full scale) purely to
+        # prove benchmark.py's seed/HTTP/EXPLAIN pipeline executes against real PostgreSQL; it is
+        # not evidence of the 1s/p95 target at full scale -- see _docs/persistence.md for that.
+        env:
+          DATABASE_URL: postgresql+psycopg://postgres@localhost:5432/call_center_ci
+          BENCHMARK_SCALE: ci
+        run: python -m apps.api.benchmark

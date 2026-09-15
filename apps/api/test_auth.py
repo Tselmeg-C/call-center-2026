@@ -232,6 +232,28 @@ def test_assignment_order_fallback_and_unchanged_owner(monkeypatch) -> None:
     finally:
         repo.reset()
 
+def test_assignment_fallback_rejects_invalid_members_without_partial_write() -> None:
+    repo.reset(); admin = provision_user(type("P", (), {"name": "Admin", "email": "admin@example.test", "role": "Admin", "password": "correct horse battery staple"})())
+    repo.users["sales-river"] = {"id": "sales-river", "name": "River Sales", "email": "river@example.test", "role": "Sales", "active": True, "password": "unused"}
+    client = TestClient(app, base_url="http://localhost"); client.post("/session/login", json={"email": admin.email, "password": "correct horse battery staple"})
+    assert client.put("/admin/assignment-fallback", json=["sales-river"], headers={"origin": "http://localhost:3000"}).json() == ["sales-river"]
+    rejected = client.put("/admin/assignment-fallback", json=["sales-river", "ghost-user"], headers={"origin": "http://localhost:3000"})
+    assert rejected.status_code == 422
+    assert client.get("/admin/assignment-fallback", headers={"origin": "http://localhost:3000"}).json() == ["sales-river"]
+
+def test_audit_endpoint_returns_only_whitelisted_detail_keys(tmp_path, monkeypatch) -> None:
+    from . import main
+    database = AssignmentDatabase(f"sqlite+pysqlite:///{tmp_path / 'audit.db'}")
+    monkeypatch.setattr(main, "assignment_db", database)
+    try:
+        database.append_audit(actor_id="admin", action="Customer assigned", target="000123", details={"oldOwner": None, "newOwner": "sales", "secret": "should-not-appear", "password": "nope"})
+        result = main.admin_audit(page=1, page_size=25)
+        item = result["items"][0]
+        assert set(item) == {"id", "actor", "actorId", "action", "target", "timestamp", "details"}
+        assert item["details"] == {"oldOwner": None, "newOwner": "sales"}
+    finally:
+        database.engine.dispose()
+
 def test_activity_idempotency_replays_and_rejects_payload_reuse() -> None:
     database = ActivityDatabase("sqlite+pysqlite:///:memory:")
     assert database.save_idempotent(actor_id="u1", operation="note", submission_id="s1", payload="hello", result={"id": "n1"}) == {"id": "n1"}
@@ -277,6 +299,42 @@ def test_close_lifecycle_rolls_back_on_activity_conflict() -> None:
     except IntegrityError: pass
     else: assert False
     assert database.followups("000123")[0].status == "Open" and database.get_idempotent(actor_id="u1", operation="close", submission_id="close-rollback", payload="p") is None
+
+def test_reopen_customer_commits_owner_status_and_idempotency_atomically(tmp_path) -> None:
+    """Regression for the #25 QA bug: reopen used to be three independently committed writes
+    (activity event, customer operational row, idempotency record). reopen_customer must commit
+    all three together, and an injected failure must leave none of them applied."""
+    from datetime import datetime, timezone
+    from sqlalchemy.exc import IntegrityError
+    from .db_activity import ActivityRow
+    from .db_customers import CustomerDatabase
+
+    url = f"sqlite+pysqlite:///{tmp_path / 'reopen.db'}"
+    customers = CustomerDatabase(url)
+    activities = ActivityDatabase(url)
+    try:
+        customers.upsert_source(bcn="000123", name="Synthetic", source={})
+        customers.save_operational(bcn="000123", owner_id="sales", status="Closed", version=2)
+
+        activities.reopen_customer("000123", {"id": "reopen-000123-3", "timestamp": datetime.now(timezone.utc).isoformat()}, owner_id="sales", status="Open", version=3, actor_id="sales", submission_id="reopen-1", payload="000123|reopen", result={"status": "Open"})
+        assert (customers.get("000123").status, customers.get("000123").version, customers.get("000123").owner_id) == ("Open", 3, "sales")
+        assert activities.get_idempotent(actor_id="sales", operation="reopen", submission_id="reopen-1", payload="000123|reopen") == {"status": "Open"}
+        with Session(activities.engine) as session:
+            assert session.get(ActivityRow, "reopen-000123-3").kind == "Reopen"
+
+        # A conflicting activity id (simulating an injected failure partway through) rolls back the
+        # whole write: owner/status/version and the idempotency record stay unchanged together.
+        with activities.engine.begin() as connection:
+            connection.execute(ActivityRow.__table__.insert().values(id="reopen-000123-4", bcn="000123", actor_id="sales", kind="Existing", created_at=datetime.now(timezone.utc)))
+        try:
+            activities.reopen_customer("000123", {"id": "reopen-000123-4", "timestamp": datetime.now(timezone.utc).isoformat()}, owner_id=None, status="Open", version=4, actor_id="sales", submission_id="reopen-2", payload="p2", result={})
+        except IntegrityError: pass
+        else: assert False
+        assert (customers.get("000123").status, customers.get("000123").version, customers.get("000123").owner_id) == ("Open", 3, "sales")
+        assert activities.get_idempotent(actor_id="sales", operation="reopen", submission_id="reopen-2", payload="p2") is None
+    finally:
+        customers.engine.dispose(); activities.engine.dispose()
+
 def test_real_http_admin_sales_journey() -> None:
     repo.reset()
     admin = provision_user(type("P", (), {"name": "Admin", "email": "admin@example.test", "role": "Admin", "password": "correct horse battery staple"})())
@@ -367,6 +425,33 @@ def test_import_storage_failure_restores_in_memory_staging(monkeypatch) -> None:
     failing = FailingCustomerDB(); monkeypatch.setattr(main, "customer_db", failing)
     response = client.post("/admin/imports?submission_id=rollback", files={"file": ("source.xlsx", payload.getvalue(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")}, headers={"origin": "http://localhost:3000"})
     assert response.status_code == 422 and "999999" not in repo.customers and failing.failed["status"] == "Failed"
+
+def test_import_accepts_header_only_workbook_with_zero_totals() -> None:
+    repo.reset()
+    admin = provision_user(type("P", (), {"name": "Admin", "email": "admin@example.test", "role": "Admin", "password": "correct horse battery staple"})())
+    client = TestClient(app, base_url="http://localhost"); client.post("/session/login", json={"email": admin.email, "password": "correct horse battery staple"})
+    workbook = Workbook(); workbook.active.append(["bcn", "customer_name"])
+    payload = BytesIO(); workbook.save(payload)
+    response = client.post("/admin/imports?submission_id=empty-book", files={"file": ("empty.xlsx", payload.getvalue(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")}, headers={"origin": "http://localhost:3000"})
+    body = response.json()
+    assert response.status_code == 201
+    assert (body["processed"], body["created"], body["updated"], body["errorRows"], body["status"]) == (0, 0, 0, 0, "Completed")
+
+def test_import_rejects_wrong_extension_without_persisting_a_job() -> None:
+    repo.reset()
+    admin = provision_user(type("P", (), {"name": "Admin", "email": "admin@example.test", "role": "Admin", "password": "correct horse battery staple"})())
+    client = TestClient(app, base_url="http://localhost"); client.post("/session/login", json={"email": admin.email, "password": "correct horse battery staple"})
+    response = client.post("/admin/imports?submission_id=wrong-ext", files={"file": ("customers.csv", b"bcn,customer_name\n000123,Renamed\n", "text/csv")}, headers={"origin": "http://localhost:3000"})
+    assert response.status_code == 422
+    assert client.get("/admin/imports/wrong-ext").status_code == 404
+
+def test_import_rejects_corrupt_workbook_archive_without_persisting_a_job() -> None:
+    repo.reset()
+    admin = provision_user(type("P", (), {"name": "Admin", "email": "admin@example.test", "role": "Admin", "password": "correct horse battery staple"})())
+    client = TestClient(app, base_url="http://localhost"); client.post("/session/login", json={"email": admin.email, "password": "correct horse battery staple"})
+    response = client.post("/admin/imports?submission_id=corrupt-zip", files={"file": ("corrupt.xlsx", b"this is not a real zip archive", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")}, headers={"origin": "http://localhost:3000"})
+    assert response.status_code == 422
+    assert client.get("/admin/imports/corrupt-zip").status_code == 404
 
 def test_memory_assignment_retry_is_scoped_to_actor() -> None:
     repo.reset()

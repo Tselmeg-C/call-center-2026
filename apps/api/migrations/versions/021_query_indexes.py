@@ -11,9 +11,8 @@ def upgrade():
         for name, table, columns in (
             ("ix_customers_owner_status", "customers", ["owner_id", "status"]),
             ("ix_customer_phones_bcn", "customer_phones", ["bcn"]),
-            ("ix_activities_bcn_created", "activities", ["bcn", "created_at"]),
             ("ix_follow_ups_bcn_status_due", "follow_ups", ["bcn", "status", "due"]),
-            ("ix_audit_events_created", "audit_events", ["created_at", "id"]),
+            ("ix_audit_events_created_id", "audit_events", ["created_at", "id"]),
         ):
             op.create_index(name, table, columns)
 

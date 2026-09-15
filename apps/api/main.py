@@ -33,6 +33,12 @@ app.add_middleware(CORSMiddleware, allow_origins=ALLOWED_ORIGINS, allow_credenti
 password_hash = PasswordHash.recommended()
 SESSION_SECONDS = 8 * 60 * 60
 ALEMBIC_HEAD = "028_import_fingerprint"
+# Every key any append_audit/append_assignment caller writes today; the audit endpoint
+# strips anything else so a future detail field never leaks unreviewed (never a credential).
+AUDIT_DETAIL_KEYS = {"name", "ownerId", "position", "active", "oldOwner", "newOwner", "source", "reason", "role", "outcome", "recordId", "reasonId", "created", "updated", "errors", "label"}
+# The customer detail endpoint embeds only the most recent page of history (query-layer bounded,
+# never an unbounded dump); the full history is available paginated via /customers/{bcn}/history.
+DETAIL_HISTORY_PAGE_SIZE = 25
 
 
 @app.exception_handler(StorageError)
@@ -351,7 +357,7 @@ def get_customer(bcn: str, user: Annotated[User, Depends(current_user)]) -> Cust
         histories = []
         followups = []
         if activity_db is not None:
-            histories = [{"id": item.id, "bcn": item.bcn, "kind": item.kind, "outcome": item.outcome, "text": None if item.deleted_at else item.text, "actorId": item.actor_id, "timestamp": item.created_at.isoformat(), "deleted": item.deleted_at is not None, "deletedBy": item.deleted_by, "deletedAt": item.deleted_at.isoformat() if item.deleted_at else None} for item in activity_db.history(bcn, 1, 10000)[0]]
+            histories = [{"id": item.id, "bcn": item.bcn, "kind": item.kind, "outcome": item.outcome, "text": None if item.deleted_at else item.text, "actorId": item.actor_id, "timestamp": item.created_at.isoformat(), "deleted": item.deleted_at is not None, "deletedBy": item.deleted_by, "deletedAt": item.deleted_at.isoformat() if item.deleted_at else None} for item in activity_db.history(bcn, 1, DETAIL_HISTORY_PAGE_SIZE)[0]]
             followups = [{"id": item.id, "bcn": item.bcn, "type": item.type, "due": item.due.isoformat() if item.due else None, "note": item.note, "status": item.status, "interactionId": item.interaction_id, "actorId": item.actor_id, "createdAt": item.created_at.isoformat(), "updatedAt": item.updated_at.isoformat()} for item in activity_db.followups(bcn)]
         row = {"bcn": db_row.bcn, "name": db_row.name, "ownerId": db_row.owner_id, "ownerName": repo.users.get(db_row.owner_id or "", {}).get("name"), "status": db_row.status, "phones": customer_db.phones(bcn) if customer_db is not None else [], "source": db_row.source, "version": db_row.version, "histories": histories, "followUps": followups}
     else: row = repo.customers.get(bcn)
@@ -362,6 +368,7 @@ def get_customer(bcn: str, user: Annotated[User, Depends(current_user)]) -> Cust
 @app.get("/customers/{bcn}/history")
 def customer_history(bcn: str, user: Annotated[User, Depends(current_user)], page: int = Query(1, ge=1), page_size: int = Query(25, ge=1, le=100)) -> dict:
     if activity_db is not None:
+        if customer_db is not None and customer_db.get(bcn) is None: raise HTTPException(status.HTTP_404_NOT_FOUND, "Customer not found.")
         rows, total = activity_db.history(bcn, page, page_size)
         return {"items": [{"id": item.id, "bcn": item.bcn, "kind": item.kind, "outcome": item.outcome, "text": None if item.deleted_at else item.text, "actorId": item.actor_id, "timestamp": item.created_at.isoformat(), "deleted": item.deleted_at is not None, "deletedBy": item.deleted_by, "deletedAt": item.deleted_at.isoformat() if item.deleted_at else None} for item in rows], "page": page, "page_size": page_size, "total": total}
     row = repo.customers.get(bcn)
@@ -529,11 +536,16 @@ def reopen_customer(bcn: str, body: LifecycleRequest, user: Annotated[User, Depe
         try: persisted = activity_db.get_idempotent(actor_id=user.id, operation="reopen", submission_id=body.submissionId, payload=payload)
         except ValueError as exc: raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
         if persisted: return Customer.model_validate(row)
-    timestamp = datetime.now(timezone.utc).isoformat(); row["status"] = "Open"; row["version"] += 1; event = {"id": f"reopen-{bcn}-{row['version']}", "bcn": bcn, "kind": "Reopen", "actor": user.name, "actorId": user.id, "timestamp": timestamp}; row["histories"].append(event); persist_activity({**event, "text": None}); append_audit(user.id, "Customer reopened", bcn, {})
-    if customer_db is not None: customer_db.save_operational(bcn=bcn, owner_id=row["ownerId"], status=row["status"], version=row["version"])
+    timestamp = datetime.now(timezone.utc).isoformat(); row["status"] = "Open"; row["version"] += 1; event = {"id": f"reopen-{bcn}-{row['version']}", "bcn": bcn, "kind": "Reopen", "actor": user.name, "actorId": user.id, "timestamp": timestamp}; row["histories"].append(event)
     result = Customer.model_validate(row)
+    if activity_db is not None:
+        try: activity_db.reopen_customer(bcn, event, owner_id=row["ownerId"], status=row["status"], version=row["version"], actor_id=user.id, submission_id=body.submissionId, payload=payload, result=result.model_dump())
+        except IntegrityError as exc: raise HTTPException(status.HTTP_409_CONFLICT, "Customer reopen is already being processed.") from exc
+    else:
+        persist_activity({**event, "text": None})
+        if customer_db is not None: customer_db.save_operational(bcn=bcn, owner_id=row["ownerId"], status=row["status"], version=row["version"])
+    append_audit(user.id, "Customer reopened", bcn, {})
     repo.submissions[local_key] = {"payload": payload, "result": result.model_dump()}
-    if activity_db is not None: activity_db.save_idempotent(actor_id=user.id, operation="reopen", submission_id=body.submissionId, payload=payload, result=result.model_dump())
     return result
 
 def find_followup(bcn: str, followup_id: str, user: User) -> dict:
@@ -593,7 +605,9 @@ def complete_followup(bcn: str, followup_id: str, body: InteractionCreate, user:
     if item["status"] == "Completed": return item
     if item["status"] != "Open": raise HTTPException(status.HTTP_409_CONFLICT, "Follow-up is not open.")
     interaction = create_interaction(bcn, body, user, persist=activity_db is None); item["status"] = "Completed"; item["interactionId"] = interaction["id"]; item["updatedAt"] = datetime.now(timezone.utc).isoformat()
-    if activity_db is not None: activity_db.complete_followup(item, interaction, idempotency={"actor_id": user.id, "operation": "followup-complete", "submission_id": body.submissionId, "payload": payload, "result": item})
+    if activity_db is not None:
+        try: activity_db.complete_followup(item, interaction, idempotency={"actor_id": user.id, "operation": "followup-complete", "submission_id": body.submissionId, "payload": payload, "result": item})
+        except ValueError as exc: raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
     else: persist_followup(item)
     repo.submissions[key] = {"payload": payload, "result": item}
     return item
@@ -934,10 +948,13 @@ def update_assignment_rule(rule_id: str, patch: dict, _: Annotated[User, Depends
     if not rule: raise HTTPException(status.HTTP_404_NOT_FOUND, "Rule not found.")
     if assignment_db is None and "version" in patch and patch["version"] != repo.assignment_version: raise HTTPException(status.HTTP_409_CONFLICT, "Assignment configuration is stale.")
     if "name" in patch and any(item["id"] != rule_id and item["name"].casefold() == str(patch["name"]).strip().casefold() for item in repo.rules): raise HTTPException(status.HTTP_409_CONFLICT, "Rule already exists.")
+    if "ownerId" in patch:
+        owner = repo.users.get(patch["ownerId"])
+        if not owner or owner["role"] != "Sales" or not owner["active"]: raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Owner must be active Sales.")
     if assignment_db is not None:
         expected_version = patch.get("version", repo.assignment_version)
         if type(expected_version) is not int or expected_version < 1: raise HTTPException(status.HTTP_409_CONFLICT, "Assignment configuration is stale.")
-        updates = {("position" if key == "order" else key): patch[key] for key in ("name", "active", "order") if key in patch}
+        updates = {("position" if key == "order" else "owner_id" if key == "ownerId" else key): patch[key] for key in ("name", "active", "order", "ownerId") if key in patch}
         try: stored = assignment_db.update_rule(rule_id, updates, _.id, expected_version)
         except ValueError as exc: raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
         if stored is None: raise HTTPException(status.HTTP_404_NOT_FOUND, "Rule not found.")
@@ -945,7 +962,7 @@ def update_assignment_rule(rule_id: str, patch: dict, _: Annotated[User, Depends
         repo.rules.sort(key=lambda item: item["order"])
         repo.assignment_version = expected_version + 1
         return rule
-    for key in ("name", "active", "order"):
+    for key in ("name", "active", "order", "ownerId"):
         if key in patch: rule[key] = patch[key]
     repo.rules.sort(key=lambda item: item["order"]); repo.assignment_version += 1
     return rule
@@ -1039,26 +1056,33 @@ def workload_contract(user: Annotated[User, Depends(current_user)]) -> dict:
         for row, phones in owned:
             summary = followups[row.bcn]; bucket = "overdue" if summary["overdue"] else "today" if summary["today"] else "undated" if summary["undated"] else "never-contacted" if not interactions.get(row.bcn) else "other"; counts[bucket] += 1; customers.append(Customer.model_validate({"bcn": row.bcn, "name": row.name, "ownerId": row.owner_id, "ownerName": repo.users.get(row.owner_id or "", {}).get("name"), "status": row.status, "phones": phones, "source": row.source, "version": row.version, "histories": []}).model_dump() | {"workloadBucket": bucket, "relevantDue": None})
         return {"asOf": datetime.now(timezone.utc).isoformat(), "today": today, "counts": counts, "customers": customers}
-    owned = [row for row in readable_rows() if row["ownerId"] == user.id and row["status"] == "Open"]
-    return {"asOf": datetime.now(timezone.utc).isoformat(), "today": datetime.now(timezone.utc).date().isoformat(), "counts": {"overdue": 0, "today": 0, "undated": 0, "never-contacted": sum(1 for row in owned if not any(event.get("kind") == "Interaction" and not event.get("deleted") for event in row["histories"])), "other": 0}, "customers": [Customer.model_validate(row).model_dump() | {"workloadBucket": None, "relevantDue": None} for row in owned]}
+    today = datetime.now(timezone.utc).date().isoformat(); owned = [row for row in readable_rows() if row["ownerId"] == user.id and row["status"] == "Open"]
+    open_followups_by_bcn: dict[str, list[dict]] = {}
+    for item in readable_followups():
+        if item["status"] == "Open": open_followups_by_bcn.setdefault(item["bcn"], []).append(item)
+    counts = {bucket: 0 for bucket in ("overdue", "today", "undated", "never-contacted", "other")}; customers = []
+    for row in owned:
+        opens = open_followups_by_bcn.get(row["bcn"], [])
+        overdue = sum(1 for item in opens if item.get("due") and item["due"][:10] < today)
+        due_today = sum(1 for item in opens if item.get("due") and item["due"][:10] == today)
+        undated = sum(1 for item in opens if not item.get("due"))
+        contacted = any(event.get("kind") == "Interaction" and not event.get("deleted") for event in row["histories"])
+        bucket = "overdue" if overdue else "today" if due_today else "undated" if undated else "never-contacted" if not contacted else "other"
+        counts[bucket] += 1
+        customers.append(Customer.model_validate(row).model_dump() | {"workloadBucket": bucket, "relevantDue": None})
+    return {"asOf": datetime.now(timezone.utc).isoformat(), "today": today, "counts": counts, "customers": customers}
 
 @app.get("/admin/reports")
 def admin_reports(start: str | None = None, end: str | None = None, _: Annotated[User, Depends(admin_user)] = None) -> dict:
     if start and end and start > end: raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Start date must not be after end date.")
     if customer_db is not None and activity_db is not None:
-        metrics, daily = activity_db.report_interactions(start, end); owners: dict[str, dict] = {}; customer_rows = customer_db.all()
+        _, daily = activity_db.report_interactions(start, end); owners: dict[str, dict] = {}
         for owner_id, status_value, count in customer_db.owner_counts():
             key = owner_id or "unassigned"; row = owners.setdefault(key, {"ownerId": owner_id, "owner": repo.users.get(key, {}).get("name", "Unassigned"), "open": 0, "closed": 0, "neverContacted": 0, "attempts": 0, "contacts": 0, "pendingFollowUps": 0}); row["open" if status_value == "Open" else "closed"] += count
-        all_counts, _ = activity_db.report_interactions(); pending = {item.bcn: item for item in activity_db.all_followups() if item.status == "Open"}
-        for owner_id, row in ((key, value) for key, value in owners.items()):
-            bcns = [item.bcn for item in customer_rows if (item.owner_id or "unassigned") == owner_id]
-            row["neverContacted"] = sum(1 for bcn in bcns if bcn not in all_counts); row["attempts"] = sum(all_counts.get(bcn, {}).get("attempts", 0) for bcn in bcns); row["contacts"] = sum(all_counts.get(bcn, {}).get("contacts", 0) for bcn in bcns); row["pendingFollowUps"] = sum(1 for item in pending.values() if item.bcn in bcns); row["contactRate"] = row["contacts"] / row["attempts"] * 100 if row["attempts"] else None
-        all_followups = activity_db.all_followups(); followups = {"overdue": 0, "today": 0, "undated": 0, "completed": sum(1 for item in all_followups if item.status == "Completed")}; today = datetime.now(timezone.utc).date()
-        for item in all_followups:
-            if item.status != "Open": continue
-            if item.due is None: followups["undated"] += 1
-            elif item.due.date() < today: followups["overdue"] += 1
-            elif item.due.date() == today: followups["today"] += 1
+        never_contacted = activity_db.owner_never_contacted_counts(); totals = activity_db.owner_interaction_totals(); pending = activity_db.owner_pending_followup_counts()
+        for key, row in owners.items():
+            row["neverContacted"] = never_contacted.get(key, 0); row["attempts"] = totals.get(key, {}).get("attempts", 0); row["contacts"] = totals.get(key, {}).get("contacts", 0); row["pendingFollowUps"] = pending.get(key, 0); row["contactRate"] = row["contacts"] / row["attempts"] * 100 if row["attempts"] else None
+        followups = activity_db.followup_report_summary(datetime.now(timezone.utc).date())
         return {"owners": list(owners.values()), "daily": sorted(daily.values(), key=lambda item: item["date"]), "closureReasons": list(repo.reasons.values()), "followUps": followups}
     owners: dict[str, dict] = {}; daily: dict[str, dict] = {}; all_followups = readable_followups()
     for row in readable_rows():
@@ -1083,7 +1107,7 @@ def admin_reports(start: str | None = None, end: str | None = None, _: Annotated
 def admin_audit(actor: str | None = None, action: str | None = None, bcn: str | None = None, start: str | None = None, end: str | None = None, page: int = Query(1, ge=1), page_size: int = Query(25, ge=1, le=100), _: Annotated[User, Depends(admin_user)] = None) -> dict:
     if assignment_db is not None:
         rows, total = assignment_db.audit(page, page_size, actor=actor, action=action, target=bcn, start=start, end=end)
-        return {"items": [{"id": str(item.id), "actor": item.actor_id or "", "actorId": item.actor_id or "", "action": item.action, "target": item.target, "timestamp": item.created_at.isoformat(), "details": item.details} for item in rows], "page": page, "page_size": page_size, "total": total}
+        return {"items": [{"id": str(item.id), "actor": item.actor_id or "", "actorId": item.actor_id or "", "action": item.action, "target": item.target, "timestamp": item.created_at.isoformat(), "details": {key: value for key, value in item.details.items() if key in AUDIT_DETAIL_KEYS}} for item in rows], "page": page, "page_size": page_size, "total": total}
     events = []
     for row in repo.customers.values():
         for index, event in enumerate(row["histories"]):

@@ -387,8 +387,8 @@ export function createMockServices(): Services {
     },
 
     listClosureReasons: () => {
-      const admin = requireAdmin();
-      if (!admin.ok) return Promise.resolve(admin);
+      const auth = requireAuth();
+      if (!auth.ok) return Promise.resolve(auth);
       return Promise.resolve(ok(reasons.map((item) => ({ ...item }))));
     },
     createClosureReason: (label) => {

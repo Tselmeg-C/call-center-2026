@@ -69,6 +69,13 @@ describe("mock services: customer workflows", () => {
     const reopened = await services.reopenCustomer("000123", { submissionId: "reopen-1" });
     expect(reopened.ok && reopened.data.status).toBe("Open");
   });
+
+  it("lets a Sales user list closure reasons to close their own customer", async () => {
+    const services = createMockServices();
+    await signIn(services, "river@example.test");
+    const reasons = await services.listClosureReasons();
+    expect(reasons.ok && reasons.data.length > 0).toBe(true);
+  });
 });
 
 describe("mock services: admin", () => {

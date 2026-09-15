@@ -1,0 +1,77 @@
+name: Promote to production
+
+# Human-triggered only. Takes an already-published GHCR image tag (a commit SHA
+# or "latest") and points Railway production at it -- never builds anything.
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: 'Image tag to promote (commit SHA or "latest")'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  promote:
+    name: Verify and promote
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+      packages: read
+    env:
+      DOCKER_CLI_EXPERIMENTAL: enabled
+    steps:
+      - name: Compute lowercased image names
+        env:
+          OWNER_REPO: ${{ github.repository }}
+        run: |
+          OWNER_REPO_LOWER="${OWNER_REPO,,}"
+          OWNER="${OWNER_REPO_LOWER%%/*}"
+          REPO="${OWNER_REPO_LOWER##*/}"
+          echo "IMAGE_API=ghcr.io/${OWNER}/${REPO}-api" >> "$GITHUB_ENV"
+          echo "IMAGE_FRONTEND=ghcr.io/${OWNER}/${REPO}-frontend" >> "$GITHUB_ENV"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify tag exists for both images
+        env:
+          TAG: ${{ inputs.image_tag }}
+        run: |
+          set -e
+          echo "Verifying $IMAGE_API:$TAG exists in GHCR..."
+          docker manifest inspect "$IMAGE_API:$TAG" > /dev/null
+          echo "Verifying $IMAGE_FRONTEND:$TAG exists in GHCR..."
+          docker manifest inspect "$IMAGE_FRONTEND:$TAG" > /dev/null
+          echo "Both images verified for tag $TAG."
+
+      - name: Point Railway production service at verified tag
+        env:
+          TAG: ${{ inputs.image_tag }}
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+        run: |
+          # ponytail: documented placeholder, not a real Railway call. This repo does not yet
+          # have a RAILWAY_TOKEN secret or the production project/service IDs (pending #27/#28).
+          # The tag-existence verification above is fully real; this step only proves the gate
+          # is wired up. Once RAILWAY_TOKEN and the service IDs exist, replace the body below
+          # with the Railway CLI/API call that sets each service's deployed image to
+          # "$IMAGE_API:$TAG" / "$IMAGE_FRONTEND:$TAG", e.g.:
+          #   railway up --service <api-service-id> --image "$IMAGE_API:$TAG"
+          #   railway up --service <frontend-service-id> --image "$IMAGE_FRONTEND:$TAG"
+          # or the equivalent call against Railway's public GraphQL API
+          # (https://docs.railway.com/reference/public-api). Never echo RAILWAY_TOKEN.
+          if [ -z "$RAILWAY_TOKEN" ]; then
+            echo "RAILWAY_TOKEN is not configured yet -- Railway update is a documented placeholder."
+            echo "Verified tag $TAG is safe to promote for both $IMAGE_API and $IMAGE_FRONTEND."
+            echo "Wire this step up once #27/#28 supply RAILWAY_TOKEN and the Railway service IDs."
+            exit 0
+          fi
+          echo "RAILWAY_TOKEN is set but the Railway CLI/API call is not implemented yet -- see #27/#28."
+          exit 1

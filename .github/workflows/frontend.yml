@@ -60,3 +60,56 @@ jobs:
           DATABASE_URL: postgresql+psycopg://postgres@localhost:5432/call_center_ci
           BENCHMARK_SCALE: ci
         run: python -m apps.api.benchmark
+
+  publish:
+    name: Build and publish images
+    needs: check
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    # Serialize only main-push runs (so `latest` can't land out of order); PR/other-branch
+    # runs each get their own group and never queue behind main or each other.
+    concurrency:
+      group: publish-${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'main' || github.run_id }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compute lowercased image names
+        env:
+          OWNER_REPO: ${{ github.repository }}
+        run: |
+          OWNER_REPO_LOWER="${OWNER_REPO,,}"
+          OWNER="${OWNER_REPO_LOWER%%/*}"
+          REPO="${OWNER_REPO_LOWER##*/}"
+          echo "IMAGE_API=ghcr.io/${OWNER}/${REPO}-api" >> "$GITHUB_ENV"
+          echo "IMAGE_FRONTEND=ghcr.io/${OWNER}/${REPO}-frontend" >> "$GITHUB_ENV"
+
+      - name: Build API image
+        run: docker build -f apps/api/Dockerfile -t "$IMAGE_API:$GITHUB_SHA" -t "$IMAGE_API:latest" .
+
+      - name: Build frontend image
+        run: docker build -f apps/frontend/Dockerfile -t "$IMAGE_FRONTEND:$GITHUB_SHA" -t "$IMAGE_FRONTEND:latest" .
+
+      # Everything below only runs for a push to main -- PRs (including from forks) and
+      # other branches stop at the build steps above, never push an image.
+      - name: Log in to GHCR
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push API image
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          docker push "$IMAGE_API:$GITHUB_SHA"
+          docker push "$IMAGE_API:latest"
+
+      - name: Push frontend image
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          docker push "$IMAGE_FRONTEND:$GITHUB_SHA"
+          docker push "$IMAGE_FRONTEND:latest"

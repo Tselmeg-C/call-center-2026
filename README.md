@@ -19,20 +19,28 @@ Open http://localhost:4174. Start the optional in-memory API separately with `ap
 
 ## Frontend
 
-The TanStack frontend in `apps/frontend` is the active application. Its routes cover the dashboard, customer browsing, administration, imports, assignments, reports and audit views.
+The TanStack frontend in `apps/frontend` is the active application. Its routes cover the dashboard, customer browsing, customer detail, administration (users, import, assignment, reports, audit), and sign-in.
 
-Mock controls are available on sign-in and application pages:
+### Service layer: mock vs. real HTTP
 
-- Normal: sign-in and sample reads succeed.
-- Loading: the next operation stays pending until you select Normal or reset. Controls remain usable while pending.
-- Empty: sample reads return a no-data message.
-- Error: the next sign-in or sample read fails once; Retry succeeds. Selecting Error again arms another failure.
-- Expired session: clears the session and returns to sign-in with an expiry message. Sign in again to continue, or select Normal first.
-- Reset mock state: restores original fixtures, clears scenarios/errors, signs out, and returns to sign-in.
+Every route reads and writes through `apps/frontend/src/services` (`types.ts`, `mock.ts`, `http.ts`, `provider.tsx`) instead of static data — one `Services` interface, two implementations, one composition setting:
 
-Session and fixture state live only in memory, survive navigation, and reset on a full browser reload. Separate tabs have independent mock state. Logout, expiry, and reset invalidate pending requests; no durable browser storage is used. Mock role guards demonstrate behavior and are not a production security boundary.
+- `VITE_SERVICE_MODE` unset (the local dev default) uses `mock.ts`, an in-memory adapter seeded with synthetic users and customers. It mirrors the real backend's rules (idempotent mutations by `submissionId`, ownership gates, role checks, single-owner-per-rule bulk assignment) without a running API.
+- `VITE_SERVICE_MODE=http` uses `http.ts`, a real `fetch` adapter against the FastAPI backend (`apps/api`), covering every operation in [`packages/shared/openapi.yaml`](packages/shared/openapi.yaml). It defaults to same-origin `/api` (ridden by the Vite dev proxy in `vite.config.ts`); override with `VITE_API_URL` for a split-origin deployment.
 
-Backlog work should extend the routes and services under `apps/frontend`; the former Next prototype is retired.
+Sign-in is real in both modes (`/login`, email + password) and session state comes from `services.subscribeSession`; there are no persona pickers or scenario/reset controls. The mock's seeded accounts all share the password `synthetic-only` (also used by `packages/shared/contract-fixtures.json`): `alex@example.test` (Admin), `river@example.test` and `sky@example.test` (Sales). Signed-out visitors are redirected to `/login`; a Sales session reaching an Admin URL directly is bounced back to the dashboard, and the backend independently rejects the underlying requests regardless.
+
+To run against the real backend:
+
+```sh
+CALL_CENTER_STORAGE=memory FRONTEND_ORIGIN=http://localhost:4174 \
+  uvicorn apps.api.main:app --port 8000   # apps/api/README.md has the pip install step
+VITE_SERVICE_MODE=http npm run dev -- --port 4174
+```
+
+`FRONTEND_ORIGIN` must match the origin the frontend actually runs at — the backend rejects unsafe requests (POST/PATCH/PUT/DELETE) from any other Origin (see `packages/shared/service-map.md`).
+
+Known, deliberate gaps given the current backend contract (not introduced by this frontend work): `GET /admin/closure-reasons` is Admin-only, so a Sales session in HTTP mode can't list reasons to close its own customers (the mock relaxes this one read for Sales, since it's non-sensitive reference data); `PATCH /admin/assignment-rules` supports one owner per rule with no per-field conditions, so the Assignment screen's per-rule "conditions" text is a generated description of that behavior, not a stored condition language.
 
 Customer browsing decisions and display rules are documented in [`_docs/customer-browsing.md`](_docs/customer-browsing.md).
 Sales workload bucket definitions, UTC behavior, and the boundary fixture table are documented in [`_docs/workload.md`](_docs/workload.md).
@@ -49,13 +57,22 @@ PostgreSQL setup, adapter selection, migrations, and the synthetic benchmark are
 ```sh
 npm run lint
 npm run typecheck
-npm test
+npm test              # unit tests: mock/http adapters, UI-shape mapping (vitest)
 npm run build
+npm run contract:check
 ```
 
-The frontend workspace type-checks the route tree during CI; add focused tests alongside future backlog behavior.
+`npm test` runs `apps/frontend`'s Vitest suite (mock adapter business rules, the HTTP adapter's request shaping and error mapping, and the service-to-UI type adapters) plus the route tree type-check; it needs no running backend.
 
-GitHub Actions runs installation, linting, type checking, and a production build on pushes and pull requests.
+Two automated real-HTTP journeys (Sales and Admin) exercise `apps/frontend/src/services/http.ts` against the actual FastAPI backend over real network calls, with `CALL_CENTER_STORAGE=memory` — no mocked `fetch`, no ASGI test client. They spawn and tear down their own backend process (`apps/api`'s Python dependencies must already be installed: `pip install -r apps/api/requirements.txt`) and cover import/reimport, manual and bulk assignment, interactions/notes, follow-ups (create/edit/cancel/complete), closure/reopen, reports, audit, and unauthorized direct requests:
+
+```sh
+npm run test:journey
+```
+
+They're kept separate from `npm test` (a different Vitest config, `apps/frontend/vitest.journey.config.ts`) so the default fast lane never needs Python.
+
+GitHub Actions runs installation, linting, type checking, unit tests, and a production build on pushes and pull requests.
 
 ## Production build locally
 

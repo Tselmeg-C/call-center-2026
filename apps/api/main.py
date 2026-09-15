@@ -22,6 +22,7 @@ from .storage import mode
 from .db_auth import AuthDatabase, StorageError, utcnow
 from .db_customers import CustomerDatabase
 from .db_assignment import AssignmentDatabase
+from . import assignment_rules
 from .db_activity import ActivityDatabase
 from sqlalchemy import inspect
 from sqlalchemy.exc import IntegrityError
@@ -32,10 +33,10 @@ ALLOWED_ORIGINS = [os.environ["FRONTEND_ORIGIN"]] if os.environ.get("FRONTEND_OR
 app.add_middleware(CORSMiddleware, allow_origins=ALLOWED_ORIGINS, allow_credentials=True, allow_methods=["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"], allow_headers=["*"])
 password_hash = PasswordHash.recommended()
 SESSION_SECONDS = 8 * 60 * 60
-ALEMBIC_HEAD = "028_import_fingerprint"
+ALEMBIC_HEAD = "029_assignment_conditions"
 # Every key any append_audit/append_assignment caller writes today; the audit endpoint
 # strips anything else so a future detail field never leaks unreviewed (never a credential).
-AUDIT_DETAIL_KEYS = {"name", "ownerId", "position", "active", "oldOwner", "newOwner", "source", "reason", "role", "outcome", "recordId", "reasonId", "created", "updated", "errors", "label"}
+AUDIT_DETAIL_KEYS = {"name", "position", "active", "oldOwner", "newOwner", "source", "reason", "role", "outcome", "recordId", "reasonId", "created", "updated", "errors", "label"}
 # The customer detail endpoint embeds only the most recent page of history (query-layer bounded,
 # never an unbounded dump); the full history is available paginated via /customers/{bcn}/history.
 DETAIL_HISTORY_PAGE_SIZE = 25
@@ -275,7 +276,8 @@ def current_user(session: Annotated[str | None, Cookie(alias="call_center_sessio
         if activity_db is not None:
             for item in activity_db.reasons(): repo.reasons[item.id] = {"id": item.id, "label": item.label, "active": item.active}
         if assignment_db is not None:
-            repo.rules[:] = [{"id": item.id, "name": item.name, "ownerId": item.owner_id, "active": item.active, "order": item.position} for item in assignment_db.ordered_rules()]
+            members_by_rule = assignment_db.members_by_rule()
+            repo.rules[:] = [{"id": item.id, "name": item.name, "conditions": item.conditions or [], "memberIds": members_by_rule.get(item.id, []), "active": item.active, "order": item.position} for item in assignment_db.ordered_rules()]
             fallback = assignment_db.get_setting("fallback_sales")
             if fallback is not None: repo.fallback_sales = list(fallback.get("ids", []))
             version = assignment_db.get_setting("assignment_version")
@@ -707,9 +709,15 @@ class ClosureReasonPatch(BaseModel):
     label: str | None = Field(default=None, min_length=1, max_length=120)
     active: bool | None = None
 
+class RuleCondition(BaseModel):
+    field: str
+    operator: str
+    value: object = None
+
 class AssignmentRuleDraft(BaseModel):
     name: str = Field(min_length=1, max_length=120)
-    ownerId: str
+    conditions: list[RuleCondition] = Field(default_factory=list)
+    memberIds: list[str] = Field(default_factory=list)
     active: bool = True
 
 class AssignmentRunRequest(BaseModel):
@@ -939,14 +947,21 @@ def list_import_results(page: int = Query(1, ge=1), page_size: int = Query(25, g
 def list_assignment_rules(_: Annotated[User, Depends(admin_user)]) -> list[dict]:
     return repo.rules
 
+def _validate_rule_members(member_ids: list[str]) -> list[str]:
+    valid = {item["id"] for item in repo.users.values() if item["role"] == "Sales" and item["active"]}
+    if any(member not in valid for member in member_ids): raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Eligible members must be active Sales users.")
+    if not member_ids: raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Rule must have at least one eligible member.")
+    return list(dict.fromkeys(member_ids))
+
 @app.post("/admin/assignment-rules", status_code=201)
 def create_assignment_rule(body: AssignmentRuleDraft, _: Annotated[User, Depends(admin_user)]) -> dict:
     if any(item["name"].casefold() == body.name.strip().casefold() for item in repo.rules): raise HTTPException(status.HTTP_409_CONFLICT, "Rule already exists.")
-    owner = repo.users.get(body.ownerId)
-    if not owner or owner["role"] != "Sales" or not owner["active"]: raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Owner must be active Sales.")
-    rule = {"id": f"rule-{len(repo.rules)+1}", "name": body.name.strip(), "ownerId": body.ownerId, "active": body.active, "order": len(repo.rules)+1}; repo.rules.append(rule); repo.assignment_version += 1
+    try: conditions = assignment_rules.validate_conditions(body.conditions)
+    except assignment_rules.ConditionError as exc: raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
+    member_ids = _validate_rule_members(body.memberIds)
+    rule = {"id": f"rule-{len(repo.rules)+1}", "name": body.name.strip(), "conditions": conditions, "memberIds": member_ids, "active": body.active, "order": len(repo.rules)+1}; repo.rules.append(rule); repo.assignment_version += 1
     if assignment_db is not None:
-        assignment_db.create_rule(rule_id=rule["id"], name=rule["name"], position=rule["order"], actor_id=_.id, owner_id=rule["ownerId"])
+        assignment_db.create_rule(rule_id=rule["id"], name=rule["name"], position=rule["order"], actor_id=_.id, conditions=conditions, member_ids=member_ids)
         assignment_db.set_setting("assignment_version", {"value": repo.assignment_version})
     return rule
 
@@ -956,22 +971,28 @@ def update_assignment_rule(rule_id: str, patch: dict, _: Annotated[User, Depends
     if not rule: raise HTTPException(status.HTTP_404_NOT_FOUND, "Rule not found.")
     if assignment_db is None and "version" in patch and patch["version"] != repo.assignment_version: raise HTTPException(status.HTTP_409_CONFLICT, "Assignment configuration is stale.")
     if "name" in patch and any(item["id"] != rule_id and item["name"].casefold() == str(patch["name"]).strip().casefold() for item in repo.rules): raise HTTPException(status.HTTP_409_CONFLICT, "Rule already exists.")
-    if "ownerId" in patch:
-        owner = repo.users.get(patch["ownerId"])
-        if not owner or owner["role"] != "Sales" or not owner["active"]: raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Owner must be active Sales.")
+    conditions = None
+    if "conditions" in patch:
+        try: conditions = assignment_rules.validate_conditions(patch["conditions"])
+        except assignment_rules.ConditionError as exc: raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
+    member_ids = _validate_rule_members(patch["memberIds"]) if "memberIds" in patch else None
     if assignment_db is not None:
         expected_version = patch.get("version", repo.assignment_version)
         if type(expected_version) is not int or expected_version < 1: raise HTTPException(status.HTTP_409_CONFLICT, "Assignment configuration is stale.")
-        updates = {("position" if key == "order" else "owner_id" if key == "ownerId" else key): patch[key] for key in ("name", "active", "order", "ownerId") if key in patch}
+        updates = {("position" if key == "order" else key): patch[key] for key in ("name", "active", "order") if key in patch}
+        if conditions is not None: updates["conditions"] = conditions
+        if member_ids is not None: updates["member_ids"] = member_ids
         try: stored = assignment_db.update_rule(rule_id, updates, _.id, expected_version)
         except ValueError as exc: raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
         if stored is None: raise HTTPException(status.HTTP_404_NOT_FOUND, "Rule not found.")
-        rule.update(name=stored.name, active=stored.active, order=stored.position, ownerId=stored.owner_id)
+        rule.update(name=stored.name, active=stored.active, order=stored.position, conditions=stored.conditions or [], memberIds=member_ids if member_ids is not None else rule["memberIds"])
         repo.rules.sort(key=lambda item: item["order"])
         repo.assignment_version = expected_version + 1
         return rule
-    for key in ("name", "active", "order", "ownerId"):
+    for key in ("name", "active", "order"):
         if key in patch: rule[key] = patch[key]
+    if conditions is not None: rule["conditions"] = conditions
+    if member_ids is not None: rule["memberIds"] = member_ids
     repo.rules.sort(key=lambda item: item["order"]); repo.assignment_version += 1
     return rule
 
@@ -1009,11 +1030,8 @@ def run_assignment(body: AssignmentRunRequest, _: Annotated[User, Depends(admin_
         if persisted.get("scope") != body.scope: raise HTTPException(status.HTTP_409_CONFLICT, "Submission already used.")
         return persisted
     if body.scope not in {"unassigned", "all-open"}: raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Invalid assignment scope.")
-    eligible_owners = {item["id"] for item in repo.users.values() if item["role"] == "Sales" and item["active"]}
-    owners = [rule["ownerId"] for rule in sorted(repo.rules, key=lambda item: item["order"]) if rule["active"] and rule["ownerId"] in eligible_owners]
-    if not owners: owners = [owner for owner in repo.fallback_sales if owner in eligible_owners]
     if assignment_db is not None and customer_db is not None:
-        try: result, changes = assignment_db.run_bulk(actor_id=_.id, submission_id=body.submissionId, scope=body.scope, owner_id=owners[0] if owners else None)
+        try: result, changes = assignment_db.run_bulk(actor_id=_.id, submission_id=body.submissionId, scope=body.scope, fallback_ids=repo.fallback_sales)
         except ValueError as exc: raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
         for change in changes:
             if change["bcn"] in repo.customers:
@@ -1022,10 +1040,16 @@ def run_assignment(body: AssignmentRunRequest, _: Annotated[User, Depends(admin_
         return result
     source_rows = readable_rows()
     candidates = [row for row in source_rows if row["status"] == "Open" and (body.scope == "all-open" or row["ownerId"] is None)]
+    active_sales = {item["id"] for item in repo.users.values() if item["role"] == "Sales" and item["active"]}
+    counts = dict.fromkeys(active_sales, 0)
+    for row in repo.customers.values():
+        if row.get("status") == "Open" and row.get("ownerId") in counts: counts[row["ownerId"]] += 1
+    rule_specs = [{"id": rule["id"], "name": rule["name"], "conditions": rule.get("conditions", []), "member_ids": rule.get("memberIds", [])} for rule in sorted(repo.rules, key=lambda item: item["order"]) if rule["active"]]
     assigned = 0
     for row in sorted(candidates, key=lambda item: item["bcn"]):
-        if not owners or row["ownerId"] == owners[0]: continue
-        owner = owners[0]
+        owner, _reason = assignment_rules.resolve_owner(lambda field, row=row: row.get(field), rule_specs, repo.fallback_sales, active_sales, counts)
+        if owner is None or row["ownerId"] == owner: continue
+        assignment_rules.record_pick(counts, owner)
         old_owner = row["ownerId"]; row.update(ownerId=owner, ownerName=repo.users[owner]["name"], version=row["version"] + 1); assigned += 1
         if customer_db is not None:
             customer_db.save_operational(bcn=row["bcn"], owner_id=owner, status=row["status"], version=row["version"])

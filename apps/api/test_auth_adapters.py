@@ -147,9 +147,9 @@ def test_rule_updates_compare_persisted_version_and_rollback(tmp_path, monkeypat
     monkeypatch.setattr(main, "assignment_db", database)
     main.repo.reset()
     try:
-        database.create_rule(rule_id="rule", name="Original", position=1, actor_id="admin")
+        database.create_rule(rule_id="rule", name="Original", position=1, actor_id="admin", conditions=[], member_ids=["sales"])
         database.set_setting("assignment_version", {"value": 2})
-        main.repo.rules = [{"id": "rule", "name": "Original", "order": 1, "ownerId": None, "active": True}]
+        main.repo.rules = [{"id": "rule", "name": "Original", "order": 1, "conditions": [], "memberIds": ["sales"], "active": True}]
         main.repo.assignment_version = 2
         actor = main.User(id="admin", name="Admin", email="admin@example.test", role="Admin")
         # Another request wins after this process cached configuration version 2.
@@ -183,30 +183,36 @@ def test_rule_updates_compare_persisted_version_and_rollback(tmp_path, monkeypat
         main.repo.reset()
 
 
-def test_rule_owner_update_enforces_active_sales(tmp_path, monkeypatch):
-    """Deactivating a rule's owner leaves owner_id untouched until the rule is edited (or the user reactivated); editing to a new owner is validated the same way rule creation is."""
+def test_rule_member_update_enforces_active_sales(tmp_path, monkeypatch):
+    """A member deactivated after being added is left in assignment_rule_members untouched (no
+    cascade-remove); the rule is simply skipped at evaluation time (db_assignment.run_bulk /
+    assignment_rules.resolve_owner cover that). Editing a rule's memberIds is validated the same
+    way rule creation is: only active-Sales users, and at least one member."""
     from fastapi import HTTPException
     from .db_assignment import AssignmentDatabase
 
-    database = AssignmentDatabase(f"sqlite+pysqlite:///{tmp_path / 'rule-owner.db'}")
+    database = AssignmentDatabase(f"sqlite+pysqlite:///{tmp_path / 'rule-member.db'}")
     monkeypatch.setattr(main, "assignment_db", database)
     main.repo.reset()
     try:
         main.repo.users["first"] = {"id": "first", "name": "first", "role": "Sales", "active": True}
         main.repo.users["inactive"] = {"id": "inactive", "name": "inactive", "role": "Sales", "active": False}
         actor = main.User(id="admin", name="Admin", email="admin@example.test", role="Admin")
-        rule = main.create_assignment_rule(main.AssignmentRuleDraft(name="Rule", ownerId="first", active=True), actor)
-        # Deactivating the owner leaves the rule's owner_id untouched (no cascade-null); the rule is simply skipped at run time.
+        rule = main.create_assignment_rule(main.AssignmentRuleDraft(name="Rule", conditions=[], memberIds=["first"], active=True), actor)
+        # Deactivating a member leaves assignment_rule_members untouched (no cascade-remove).
         main.repo.users["first"]["active"] = False
-        assert database.ordered_rules()[0].owner_id == "first"
+        assert database.rule_members(rule["id"]) == ["first"]
         with pytest.raises(HTTPException) as rejected:
-            main.update_assignment_rule(rule["id"], {"ownerId": "inactive", "version": main.repo.assignment_version}, actor)
+            main.update_assignment_rule(rule["id"], {"memberIds": ["inactive"], "version": main.repo.assignment_version}, actor)
         assert rejected.value.status_code == 422
-        assert database.ordered_rules()[0].owner_id == "first" and database.ordered_rules()[0].active is True
+        assert database.rule_members(rule["id"]) == ["first"] and database.ordered_rules()[0].active is True
+        with pytest.raises(HTTPException) as empty:
+            main.update_assignment_rule(rule["id"], {"memberIds": [], "version": main.repo.assignment_version}, actor)
+        assert empty.value.status_code == 422
         main.repo.users["second"] = {"id": "second", "name": "second", "role": "Sales", "active": True}
-        result = main.update_assignment_rule(rule["id"], {"ownerId": "second", "version": main.repo.assignment_version}, actor)
-        assert result["ownerId"] == "second"
-        assert database.ordered_rules()[0].owner_id == "second"
+        result = main.update_assignment_rule(rule["id"], {"memberIds": ["second"], "version": main.repo.assignment_version}, actor)
+        assert result["memberIds"] == ["second"]
+        assert database.rule_members(rule["id"]) == ["second"]
     finally:
         database.engine.dispose()
         main.repo.reset()
@@ -1255,7 +1261,7 @@ def test_postgres_assignment_constraints_and_rollback(postgres_url):
     head -- proving the upgrade path survives and is a no-op on repeat -- before covering the
     constraint/rollback behavior.
     """
-    from .db_assignment import AssignmentDatabase, AssignmentHistoryRow, AssignmentRunRow, AuditRow, RuleRow
+    from .db_assignment import AssignmentDatabase, AssignmentHistoryRow, AssignmentRunRow, AuditRow, RuleRow, RuleMemberRow
     from .db_customers import CustomerDatabase
 
     migrate("002_customers")
@@ -1282,14 +1288,14 @@ def test_postgres_assignment_constraints_and_rollback(postgres_url):
 
     assignments = AssignmentDatabase(postgres_url, create_schema=False)
     try:
-        # Rule-name uniqueness and a rule naming a nonexistent owner are rejected.
-        assignments.create_rule(rule_id="r1", name="Rule One", position=1, actor_id="owner", owner_id="owner")
+        # Rule-name uniqueness is rejected; a rule member naming a nonexistent user is rejected.
+        assignments.create_rule(rule_id="r1", name="Rule One", position=1, actor_id="owner", conditions=[], member_ids=["owner"])
         with pytest.raises(IntegrityError):
             with Session(assignments.engine) as session, session.begin():
-                session.add(RuleRow(id="r2", name="Rule One", position=2, active=True, version=0, owner_id=None)); session.flush()
+                session.add(RuleRow(id="r2", name="Rule One", position=2, active=True, version=0, conditions=[])); session.flush()
         with pytest.raises(IntegrityError):
             with Session(assignments.engine) as session, session.begin():
-                session.add(RuleRow(id="r3", name="Rule Three", position=3, active=True, version=0, owner_id="missing-user")); session.flush()
+                session.add(RuleMemberRow(rule_id="r1", user_id="missing-user")); session.flush()
 
         # assignment_history rejects a nonexistent actor, old owner, new owner, or bcn.
         base = dict(bcn="000900", actor_id="owner", old_owner_id=None, new_owner_id="owner", reason="Synthetic", created_at=datetime.now(timezone.utc))
@@ -1348,14 +1354,15 @@ def test_postgres_bulk_assignment_rule_order_fallback_and_scope(postgres_url, mo
         hashed = main.password_hash.hash(secrets.token_urlsafe(24))
         for user_id, role, active in (("admin", "Admin", True), ("first", "Sales", True), ("second", "Sales", True), ("inactive", "Sales", False)):
             auth.create_user(user_id=user_id, name=user_id, email=f"{user_id}@example.test", role=role, password_hash=hashed)
+            if not active: auth.update_user(user_id, {"active": False})
             main.repo.users[user_id] = {"id": user_id, "name": user_id, "role": role, "active": active}
         customers.upsert_source(bcn="000001", name="Synthetic", source={}); customers.save_operational(bcn="000001", owner_id="first", status="Open", version=4)
         customers.upsert_source(bcn="000002", name="Synthetic", source={}); customers.save_operational(bcn="000002", owner_id=None, status="Open", version=0)
         customers.upsert_source(bcn="000003", name="Synthetic", source={}); customers.save_operational(bcn="000003", owner_id=None, status="Closed", version=0)
         main.repo.customers = {}
         actor = main.User(id="admin", name="Admin", email="admin@example.test", role="Admin")
-        rule_first = main.create_assignment_rule(main.AssignmentRuleDraft(name="First", ownerId="first", active=True), actor)
-        rule_second = main.create_assignment_rule(main.AssignmentRuleDraft(name="Second", ownerId="second", active=True), actor)
+        rule_first = main.create_assignment_rule(main.AssignmentRuleDraft(name="First", conditions=[], memberIds=["first"], active=True), actor)
+        rule_second = main.create_assignment_rule(main.AssignmentRuleDraft(name="Second", conditions=[], memberIds=["second"], active=True), actor)
         main.repo.fallback_sales = ["inactive", "second", "first"]
 
         def counts():
@@ -1383,19 +1390,23 @@ def test_postgres_bulk_assignment_rule_order_fallback_and_scope(postgres_url, mo
         history_after_fallback, audit_after_fallback = counts()
         assert (history_after_fallback - history_before_fallback, audit_after_fallback - audit_before_fallback) == (2, 2)
 
-        # The owner is already correct: a no-op, no new rows, unchanged versions.
-        result = main.run_assignment(main.AssignmentRunRequest(scope="all-open", submissionId="already-correct"), actor)
-        assert (result["assigned"], result["skipped"]) == (0, 2)
-        assert customers.get("000001").version == 5 and customers.get("000002").version == 2
-        assert counts() == (history_after_fallback, audit_after_fallback)
+        # Re-running the same all-open scope re-balances again: "second" now owns both (2 open), so
+        # "first" (0 open) is the lower-workload fallback pick this time -- an all-open run always
+        # re-evaluates every open candidate against current live counts, it does not freeze prior picks.
+        result = main.run_assignment(main.AssignmentRunRequest(scope="all-open", submissionId="rebalanced"), actor)
+        assert (result["assigned"], result["skipped"]) == (2, 0)
+        assert customers.get("000001").owner_id == "first" and customers.get("000001").version == 6
+        assert customers.get("000002").owner_id == "first" and customers.get("000002").version == 3
+        history_after_rebalanced, audit_after_rebalanced = counts()
+        assert (history_after_rebalanced - history_after_fallback, audit_after_rebalanced - audit_after_fallback) == (2, 2)
 
         # Every fallback member inactive/non-Sales leaves the owner unchanged: no history/audit row, no version bump.
         main.repo.fallback_sales = ["inactive"]
         result = main.run_assignment(main.AssignmentRunRequest(scope="all-open", submissionId="no-eligible-owner"), actor)
         assert (result["assigned"], result["skipped"]) == (0, 2)
-        assert customers.get("000001").owner_id == "second" and customers.get("000001").version == 5
-        assert customers.get("000002").owner_id == "second" and customers.get("000002").version == 2
-        assert counts() == (history_after_fallback, audit_after_fallback)
+        assert customers.get("000001").owner_id == "first" and customers.get("000001").version == 6
+        assert customers.get("000002").owner_id == "first" and customers.get("000002").version == 3
+        assert counts() == (history_after_rebalanced, audit_after_rebalanced)
     finally:
         auth.engine.dispose(); customers.engine.dispose(); assignments.engine.dispose()
 
@@ -1451,7 +1462,7 @@ def test_postgres_bulk_run_concurrent_submission_serializes(postgres_url):
         barrier = Barrier(2)
         def race(_index):
             barrier.wait()
-            return assignments.run_bulk(actor_id="admin", submission_id="race", scope="unassigned", owner_id="sales")
+            return assignments.run_bulk(actor_id="admin", submission_id="race", scope="unassigned", fallback_ids=["sales"])
         with ThreadPoolExecutor(max_workers=2) as pool:
             results = list(pool.map(race, (1, 2)))
         assert results[0][0] == results[1][0]

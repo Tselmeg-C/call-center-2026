@@ -1,11 +1,12 @@
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
-from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, UniqueConstraint, create_engine, func, select, update
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, UniqueConstraint, create_engine, delete, func, select, update
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
 from sqlalchemy.pool import StaticPool
 from .db_customers import CustomerRow
 from .db_auth import StorageError, UserRow, SessionRow
+from . import assignment_rules
 
 class AssignmentBase(DeclarativeBase): pass
 
@@ -16,7 +17,12 @@ class RuleRow(AssignmentBase):
     position: Mapped[int] = mapped_column(Integer)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     version: Mapped[int] = mapped_column(Integer, default=0)
-    owner_id: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    conditions: Mapped[list] = mapped_column(JSON, default=list)
+
+class RuleMemberRow(AssignmentBase):
+    __tablename__ = "assignment_rule_members"
+    rule_id: Mapped[str] = mapped_column(String(120), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(120), primary_key=True)
 
 class AuditRow(AssignmentBase):
     __tablename__ = "audit_events"
@@ -50,9 +56,12 @@ class AssignmentDatabase:
         self.engine = create_engine(url, **options)
         if create_schema: AssignmentBase.metadata.create_all(self.engine)
 
-    def create_rule(self, *, rule_id: str, name: str, position: int, actor_id: str, owner_id: str | None = None) -> RuleRow:
+    def create_rule(self, *, rule_id: str, name: str, position: int, actor_id: str, conditions: list[dict] | None = None, member_ids: list[str] | None = None) -> RuleRow:
         with Session(self.engine) as session:
-            row = RuleRow(id=rule_id, name=name, position=position, active=True, version=0, owner_id=owner_id); session.add(row); session.add(AuditRow(actor_id=actor_id, action="Assignment rule created", target=rule_id, details={"name": name, "ownerId": owner_id}, created_at=datetime.now(timezone.utc))); session.commit(); session.refresh(row); return row
+            row = RuleRow(id=rule_id, name=name, position=position, active=True, version=0, conditions=conditions or []); session.add(row)
+            session.flush()  # RuleMemberRow's FK to assignment_rules needs the rule row to exist first.
+            session.add_all(RuleMemberRow(rule_id=rule_id, user_id=user_id) for user_id in dict.fromkeys(member_ids or []))
+            session.add(AuditRow(actor_id=actor_id, action="Assignment rule created", target=rule_id, details={"name": name}, created_at=datetime.now(timezone.utc))); session.commit(); session.refresh(row); return row
 
     def update_rule(self, rule_id: str, patch: dict, actor_id: str, expected_version: int) -> RuleRow | None:
         try:
@@ -61,8 +70,11 @@ class AssignmentDatabase:
                 if not row: return None
                 changed = session.execute(update(AssignmentSettingRow).where(AssignmentSettingRow.key == "assignment_version", AssignmentSettingRow.value["value"].as_integer() == expected_version).values(value={"value": expected_version + 1}))
                 if changed.rowcount != 1: raise ValueError("Assignment configuration is stale.")
-                for key in ("name", "position", "active", "owner_id"):
+                for key in ("name", "position", "active", "conditions"):
                     if key in patch: setattr(row, key, patch[key])
+                if "member_ids" in patch:
+                    session.execute(delete(RuleMemberRow).where(RuleMemberRow.rule_id == rule_id))
+                    session.add_all(RuleMemberRow(rule_id=rule_id, user_id=user_id) for user_id in dict.fromkeys(patch["member_ids"]))
                 row.version += 1
                 session.add(AuditRow(actor_id=actor_id, action="Assignment rule changed", target=rule_id, details={key: patch[key] for key in patch if key in {"name", "position", "active"}}, created_at=datetime.now(timezone.utc)))
             return row
@@ -73,6 +85,15 @@ class AssignmentDatabase:
 
     def ordered_rules(self) -> list[RuleRow]:
         with Session(self.engine) as session: return list(session.scalars(select(RuleRow).order_by(RuleRow.position, RuleRow.id)))
+
+    def rule_members(self, rule_id: str) -> list[str]:
+        with Session(self.engine) as session: return list(session.scalars(select(RuleMemberRow.user_id).where(RuleMemberRow.rule_id == rule_id).order_by(RuleMemberRow.user_id)))
+
+    def members_by_rule(self) -> dict[str, list[str]]:
+        with Session(self.engine) as session:
+            mapping: dict[str, list[str]] = {}
+            for rule_id, user_id in session.execute(select(RuleMemberRow.rule_id, RuleMemberRow.user_id)): mapping.setdefault(rule_id, []).append(user_id)
+            return mapping
 
     def audit(self, page: int = 1, page_size: int = 25, *, actor: str | None = None, action: str | None = None, target: str | None = None, start: str | None = None, end: str | None = None) -> tuple[list[AuditRow], int]:
         with Session(self.engine) as session:
@@ -113,19 +134,30 @@ class AssignmentDatabase:
                 raise
             return result
 
-    def run_bulk(self, *, actor_id: str, submission_id: str, scope: str, owner_id: str | None) -> tuple[dict, list[dict]]:
+    def run_bulk(self, *, actor_id: str, submission_id: str, scope: str, fallback_ids: list[str]) -> tuple[dict, list[dict]]:
         try:
             with Session(self.engine) as session, session.begin():
                 run = AssignmentRunRow(actor_id=actor_id, submission_id=submission_id, scope=scope, fingerprint=sha256(scope.encode()).hexdigest(), result={}, created_at=datetime.now(timezone.utc))
                 session.add(run)
                 # The unique run key serializes retries before any customer mutation.
                 session.flush()
+                rules = list(session.scalars(select(RuleRow).where(RuleRow.active.is_(True)).order_by(RuleRow.position, RuleRow.id)))
+                members_map: dict[str, list[str]] = {}
+                for rule_id, user_id in session.execute(select(RuleMemberRow.rule_id, RuleMemberRow.user_id)): members_map.setdefault(rule_id, []).append(user_id)
+                rule_specs = [{"id": rule.id, "name": rule.name, "conditions": rule.conditions or [], "member_ids": members_map.get(rule.id, [])} for rule in rules]
+                active_sales = set(session.scalars(select(UserRow.id).where(UserRow.role == "Sales", UserRow.active.is_(True))))
+                counts = dict.fromkeys(active_sales, 0)
+                if active_sales:
+                    for user_id, count in session.execute(select(CustomerRow.owner_id, func.count()).where(CustomerRow.owner_id.in_(active_sales), CustomerRow.status == "Open").group_by(CustomerRow.owner_id)):
+                        counts[user_id] = count
                 query = select(CustomerRow).where(CustomerRow.status == "Open")
                 if scope == "unassigned": query = query.where(CustomerRow.owner_id.is_(None))
                 rows = list(session.scalars(query.order_by(CustomerRow.bcn).with_for_update()))
                 changes = []
                 for row in rows:
+                    owner_id, _reason = assignment_rules.resolve_owner(lambda field, row=row: getattr(row, field), rule_specs, fallback_ids, active_sales, counts)
                     if owner_id is None or row.owner_id == owner_id: continue
+                    assignment_rules.record_pick(counts, owner_id)
                     old_owner = row.owner_id
                     row.owner_id = owner_id; row.version += 1
                     changes.append({"bcn": row.bcn, "ownerId": owner_id, "version": row.version})

@@ -69,7 +69,7 @@ def test_health_endpoints_are_minimal_and_safe() -> None:
     assert live.status_code == 200 and live.json() == {"status": "ok"}
     assert ready.status_code == 200 and ready.json()["storage"] == "memory"
     from .main import ALEMBIC_HEAD
-    assert ALEMBIC_HEAD == "028_import_fingerprint"
+    assert ALEMBIC_HEAD == "029_assignment_conditions"
 
 def test_postgres_readiness_rejects_stale_migration(monkeypatch) -> None:
     from .main import health_ready
@@ -138,7 +138,7 @@ def test_database_customer_ingest_stores_extensible_collections() -> None:
 def test_assignment_configuration_and_run_are_admin_only() -> None:
     repo.reset(); admin = provision_user(type("P", (), {"name": "Admin", "email": "admin@example.test", "role": "Admin", "password": "correct horse battery staple"})()); repo.users["sales-river"] = {"id": "sales-river", "name": "River Sales", "email": "river@example.test", "role": "Sales", "active": True, "password": "unused"}
     client = TestClient(app, base_url="http://localhost"); client.post("/session/login", json={"email": admin.email, "password": "correct horse battery staple"})
-    created = client.post("/admin/assignment-rules", json={"name": "River", "ownerId": "sales-river"}, headers={"origin": "http://localhost:3000"})
+    created = client.post("/admin/assignment-rules", json={"name": "River", "conditions": [], "memberIds": ["sales-river"]}, headers={"origin": "http://localhost:3000"})
     assert created.status_code == 201
     assert client.put("/admin/assignment-fallback", json=["sales-river"], headers={"origin": "http://localhost:3000"}).json() == ["sales-river"]
     result = client.post("/admin/assignment-runs", json={"scope": "unassigned", "submissionId": "run-1"}, headers={"origin": "http://localhost:3000"})
@@ -206,31 +206,109 @@ def test_assignment_run_concurrent_winner_replays_or_conflicts(tmp_path, monkeyp
         database.engine.dispose()
         repo.reset()
 
-def test_assignment_order_fallback_and_unchanged_owner(monkeypatch) -> None:
+def test_assignment_order_fallback_and_unchanged_owner(monkeypatch, caplog) -> None:
+    """First-position-match precedence over a later also-matching rule; a matched rule with an empty
+    eligible set (a member who is no longer active Sales) falls through to the next rule and logs a
+    warning; a workload tie is broken by ascending user id, and the pick shifts mid-run once the first
+    candidate's in-run count is bumped."""
     from . import main
     monkeypatch.setattr(main, "assignment_db", None)
     monkeypatch.setattr(main, "customer_db", None)
     repo.reset()
     try:
-        for user_id in ("first", "second", "inactive"):
+        for user_id in ("first", "second", "third", "inactive"):
             repo.users[user_id] = {"id": user_id, "name": user_id, "role": "Sales", "active": user_id != "inactive"}
         repo.customers = {"000001": {"bcn": "000001", "ownerId": "first", "ownerName": "first", "status": "Open", "version": 4}, "000002": {"bcn": "000002", "ownerId": None, "status": "Open", "version": 0}}
-        repo.rules = [{"ownerId": "second", "active": True, "order": 2}, {"ownerId": "first", "active": True, "order": 1}]
-        repo.fallback_sales = ["inactive", "second", "first"]
+        repo.rules = [
+            {"id": "r0", "name": "Empty-eligible", "conditions": [], "memberIds": ["inactive"], "active": True, "order": 1},
+            {"id": "r1", "name": "Primary", "conditions": [], "memberIds": ["first", "second"], "active": True, "order": 2},
+            {"id": "r2", "name": "Never reached", "conditions": [], "memberIds": ["third"], "active": True, "order": 3},
+        ]
+        repo.fallback_sales = []
         actor = main.User(id="admin", name="Admin", email="admin@example.test", role="Admin")
-        result = main.run_assignment(main.AssignmentRunRequest(scope="all-open", submissionId="ordered"), actor)
-        assert result["assigned"] == 1 and result["skipped"] == 1
-        assert repo.customers["000001"]["version"] == 4
-        assert repo.customers["000002"]["ownerId"] == "first"
-        repo.rules[0]["active"] = repo.rules[1]["active"] = False
-        result = main.run_assignment(main.AssignmentRunRequest(scope="all-open", submissionId="fallback"), actor)
-        assert result["assigned"] == 2
-        assert all(row["ownerId"] == "second" for row in repo.customers.values())
-        result = main.run_assignment(main.AssignmentRunRequest(scope="all-open", submissionId="unchanged"), actor)
-        assert result["assigned"] == 0 and result["skipped"] == 2
-        assert repo.customers["000001"]["version"] == 5
+        with caplog.at_level("WARNING", logger="call-center.assignment"):
+            result = main.run_assignment(main.AssignmentRunRequest(scope="all-open", submissionId="ordered"), actor)
+        assert (result["candidates"], result["assigned"], result["skipped"]) == (2, 2, 0)
+        # r0 matched (empty conditions) but its only member is no longer active Sales: skipped with a warning, falling through to r1.
+        assert any("Empty-eligible" in message and "no eligible active-Sales members" in message for message in caplog.messages)
+        # r1 (fewer open-owned wins) reassigns 000001 to "second" (0 open < first's 1); the in-run
+        # count bump then shifts 000002's pick to "first" via the ascending-id tie-break. r2's member
+        # "third" is never picked -- r1 (earlier position) always had eligible members.
+        assert repo.customers["000001"]["ownerId"] == "second" and repo.customers["000001"]["version"] == 5
+        assert repo.customers["000002"]["ownerId"] == "first" and repo.customers["000002"]["version"] == 1
     finally:
         repo.reset()
+
+def test_assignment_fallback_used_and_no_eligible_anywhere_leaves_unchanged(monkeypatch, caplog) -> None:
+    """No rule matches (none configured): falls back to the global fallback list. An already-correct
+    owner is a no-op. An empty fallback (no rule and no fallback member) leaves ownership unchanged
+    and reports a 'No eligible salesperson' skip reason."""
+    from . import main
+    monkeypatch.setattr(main, "assignment_db", None)
+    monkeypatch.setattr(main, "customer_db", None)
+    repo.reset()
+    try:
+        repo.users["second"] = {"id": "second", "name": "second", "role": "Sales", "active": True}
+        repo.customers = {"000010": {"bcn": "000010", "ownerId": None, "status": "Open", "version": 0}}
+        repo.rules = []
+        repo.fallback_sales = ["second"]
+        actor = main.User(id="admin", name="Admin", email="admin@example.test", role="Admin")
+        result = main.run_assignment(main.AssignmentRunRequest(scope="unassigned", submissionId="fb1"), actor)
+        assert (result["assigned"], result["skipped"]) == (1, 0)
+        assert repo.customers["000010"]["ownerId"] == "second" and repo.customers["000010"]["version"] == 1
+        result = main.run_assignment(main.AssignmentRunRequest(scope="all-open", submissionId="fb2"), actor)
+        assert (result["assigned"], result["skipped"]) == (0, 1)
+        assert repo.customers["000010"]["version"] == 1
+        repo.fallback_sales = []
+        with caplog.at_level("WARNING", logger="call-center.assignment"):
+            result = main.run_assignment(main.AssignmentRunRequest(scope="all-open", submissionId="fb3"), actor)
+        assert (result["assigned"], result["skipped"]) == (0, 1)
+        assert repo.customers["000010"]["ownerId"] == "second" and repo.customers["000010"]["version"] == 1
+        assert any("No eligible salesperson" in message for message in caplog.messages)
+    finally:
+        repo.reset()
+
+def test_condition_null_semantics_reject_wrong_operators_and_unknown_fields() -> None:
+    from . import assignment_rules
+    assert assignment_rules.evaluate_condition(None, {"field": "propensity_tier", "operator": "=", "value": "Gold"}) is False
+    assert assignment_rules.evaluate_condition(None, {"field": "propensity_tier", "operator": "!=", "value": "Gold"}) is False  # != never matches null
+    assert assignment_rules.evaluate_condition(None, {"field": "propensity_tier", "operator": "is-null", "value": None}) is True
+    assert assignment_rules.evaluate_condition("Gold", {"field": "propensity_tier", "operator": "is-not-null", "value": None}) is True
+    assert assignment_rules.evaluate_condition(None, {"field": "propensity_tier", "operator": "is-not-null", "value": None}) is False
+    try:
+        assignment_rules.validate_condition("propensity_score", "contains", "5")
+        assert False
+    except assignment_rules.ConditionError:
+        pass
+    for forbidden in ("status", "owner_id", "bogus_field"):
+        try:
+            assignment_rules.validate_condition(forbidden, "=", "x")
+            assert False
+        except assignment_rules.ConditionError:
+            pass
+
+def test_condition_between_is_inclusive_and_rejects_invalid_range_at_save_time() -> None:
+    from . import assignment_rules
+    condition = assignment_rules.validate_condition("propensity_score", "between", [10, 20])
+    assert condition == {"field": "propensity_score", "operator": "between", "value": ["10", "20"]}
+    assert assignment_rules.evaluate_condition(10, condition) is True
+    assert assignment_rules.evaluate_condition(20, condition) is True
+    assert assignment_rules.evaluate_condition(9, condition) is False
+    assert assignment_rules.evaluate_condition(21, condition) is False
+    for bad_range in ([20, 10], [None, 20], [10, None]):
+        try:
+            assignment_rules.validate_condition("propensity_score", "between", bad_range)
+            assert False
+        except assignment_rules.ConditionError:
+            pass
+
+def test_pick_candidate_tie_break_ascending_id_and_mid_run_shift() -> None:
+    from . import assignment_rules
+    counts = {"a": 0, "b": 0}
+    assert assignment_rules.pick_candidate(["b", "a"], counts) == "a"
+    assignment_rules.record_pick(counts, "a")
+    assert counts == {"a": 1, "b": 0}
+    assert assignment_rules.pick_candidate(["a", "b"], counts) == "b"
 
 def test_assignment_fallback_rejects_invalid_members_without_partial_write() -> None:
     repo.reset(); admin = provision_user(type("P", (), {"name": "Admin", "email": "admin@example.test", "role": "Admin", "password": "correct horse battery staple"})())

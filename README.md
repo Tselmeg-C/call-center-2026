@@ -82,3 +82,7 @@ npm start
 ```
 
 Open http://localhost:3000. The root npm workspace scripts delegate to `apps/frontend`; dependencies are locked in the root `package-lock.json`.
+
+## Containers
+
+`apps/api/Dockerfile` and `apps/frontend/Dockerfile` build reproducible images for both apps; `infra/docker-compose.yml` runs the full stack (`postgres`, `api`, `frontend`) in containers with `docker compose -f infra/docker-compose.yml up --build`. This is additive -- the non-container `npm run dev` / `apps/api/start.sh` workflow above keeps working unchanged. `npm run smoke:containers` builds both images and smoke-checks them against `infra/docker-compose.test.yml`'s Postgres. See [`_docs/deployment.md`](_docs/deployment.md) for exact commands and details.

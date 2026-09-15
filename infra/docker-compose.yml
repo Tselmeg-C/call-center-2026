@@ -12,3 +12,32 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+
+  # Optional: runs the API against the postgres service above, in a
+  # container, for local dev/verification. `npm run dev` / `apps/api/start.sh`
+  # outside containers keep working unchanged; these services are additive.
+  api:
+    build:
+      context: ..
+      dockerfile: apps/api/Dockerfile
+    environment:
+      CALL_CENTER_STORAGE: postgres
+      DATABASE_URL: postgresql+psycopg://call_center:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/call_center
+      FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:-http://localhost:4174}
+      PORT: 8000
+      WEB_CONCURRENCY: 1
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # Optional: builds and serves the frontend static bundle in a container.
+  frontend:
+    build:
+      context: ..
+      dockerfile: apps/frontend/Dockerfile
+    environment:
+      PORT: 8080
+    ports:
+      - "4174:8080"

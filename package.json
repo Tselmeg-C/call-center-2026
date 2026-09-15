@@ -16,7 +16,8 @@
     "test": "npm run test --workspace @call-center/frontend",
     "test:journey": "npm run test:journey --workspace @call-center/frontend",
     "contract:check": "node packages/shared/validate-openapi.mjs",
-    "benchmark:api": "python -m apps.api.benchmark"
+    "benchmark:api": "python -m apps.api.benchmark",
+    "smoke:containers": "sh infra/smoke-test.sh"
   },
   "devDependencies": {
     "typescript": "5.8.3"

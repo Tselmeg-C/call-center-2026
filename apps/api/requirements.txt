@@ -8,3 +8,7 @@ python-multipart>=0.0.9,<1
 sqlalchemy>=2.0,<3
 alembic>=1.14,<2
 psycopg[binary]>=3.2,<4
+opentelemetry-sdk>=1.27,<2
+opentelemetry-instrumentation-fastapi>=0.48b0,<1
+opentelemetry-instrumentation-sqlalchemy>=0.48b0,<1
+opentelemetry-exporter-otlp>=1.27,<2

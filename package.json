@@ -17,7 +17,8 @@
     "test:journey": "npm run test:journey --workspace @call-center/frontend",
     "contract:check": "node packages/shared/validate-openapi.mjs",
     "benchmark:api": "python -m apps.api.benchmark",
-    "smoke:containers": "sh infra/smoke-test.sh"
+    "smoke:containers": "sh infra/smoke-test.sh",
+    "test:pinned-actions": "sh .github/workflows/test-pinned-actions.sh"
   },
   "devDependencies": {
     "railway": "^3.11.0",

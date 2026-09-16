@@ -9,11 +9,12 @@ from uuid import uuid4
 import re
 import logging
 from hashlib import sha256
+import hmac
 import os
 from time import perf_counter
 from typing import Annotated
 
-from fastapi import Body, Cookie, Depends, FastAPI, HTTPException, Query, Request, Response, UploadFile, File, status
+from fastapi import Body, Cookie, Depends, FastAPI, Header, HTTPException, Query, Request, Response, UploadFile, File, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
@@ -1232,7 +1233,15 @@ def admin_audit(actor: str | None = None, action: str | None = None, bcn: str | 
     return {"items": events[start:start + page_size], "page": page, "page_size": page_size, "total": len(events)}
 
 
-def operator_provision(data: Provision) -> User:
+def operator_provision(data: Provision, x_operator_secret: Annotated[str | None, Header()] = None) -> User:
+    # #59: gate the HTTP route behind an operator-only secret, checked before the "any user
+    # exists" lookup below -- otherwise a wrong/missing secret would 409 only once a deployment
+    # is already claimed and something else (422/200 path) otherwise, letting an unauthenticated
+    # caller learn deployment state from the response shape alone. Env var unset fails closed in
+    # every storage mode: compare_digest against "" never succeeds, and a missing header is None.
+    expected_secret = os.environ.get("OPERATOR_PROVISION_SECRET")
+    if not expected_secret or not x_operator_secret or not hmac.compare_digest(x_operator_secret, expected_secret):
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid operator secret.")
     if repo.users or (auth_db is not None and auth_db.all_users()):
         raise HTTPException(status.HTTP_409_CONFLICT, "Initial Admin already provisioned.")
     try:

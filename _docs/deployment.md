@@ -172,6 +172,7 @@ it contradicts that help text.)
 | `api` | `PORT` | literal `8000` |
 | `api` | `WEB_CONCURRENCY` | literal `1` (required -- see login throttle below) |
 | `api` | `FRONTEND_ORIGIN` | Railway reference `${{frontend.RAILWAY_PUBLIC_DOMAIN}}` (as `https://...`) -- **not yet set, see Known gaps** |
+| `api` | `OPERATOR_PROVISION_SECRET` | operator-only bootstrap secret, required by `POST /operator/provision` -- see Bootstrapping below (value not recorded here, see Credentials) |
 | `api` | `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_HEADERS`, `OTEL_SERVICE_NAME`, `OTEL_RESOURCE_ATTRIBUTES` | unset in this environment -- see OpenTelemetry above; #44 points these at a real Grafana Cloud account |
 | `frontend` | `PORT` | literal `8080` (image default) |
 | `frontend` | `API_UPSTREAM` | Railway reference `${{api.RAILWAY_PRIVATE_DOMAIN}}:8000` |
@@ -270,17 +271,26 @@ reset *any* existing user's password given only their id, unauthenticated -- so 
 registered only under `CALL_CENTER_STORAGE=memory` (a local dev/test convenience); enabling it
 against a real deployment would be an unauthenticated account-takeover endpoint.
 
+**#59:** the route also requires the `x-operator-secret` request header to match the
+`OPERATOR_PROVISION_SECRET` env var (compared with `hmac.compare_digest`, not `==`). This check
+runs *before* the "any user already exists" lookup above, so a missing/wrong secret always gets
+the same `401` regardless of whether a deployment has already been claimed -- an unauthenticated
+caller can't use the response to learn deployment state. If `OPERATOR_PROVISION_SECRET` is unset,
+the route rejects every request in every storage mode (fails closed, no fallback to the old
+unauthenticated behavior). The secret is never logged, returned, or included in any error body.
+
 ```sh
 curl -X POST https://<api-domain>/operator/provision \
   -H 'Content-Type: application/json' \
+  -H 'x-operator-secret: <OPERATOR_PROVISION_SECRET value>' \
   -d '{"name":"<name>","email":"<email>","role":"Admin","password":"<new password>"}'
 ```
 
 Verified locally against a real `CALL_CENTER_STORAGE=postgres` container (API built from
 `apps/api/Dockerfile`, pointed at `infra/docker-compose.test.yml`'s Postgres): the first
-`/operator/provision` call returns `200` and the new Admin can immediately `POST
-/session/login`; a second call returns `409`. Before this fix the route was registered only when
-`storage_mode == "memory"`, so it 404'd against any Postgres-backed deployment -- there was no
+`/operator/provision` call with the correct header returns `200` and the new Admin can immediately
+`POST /session/login`; a second call returns `409`. Before this fix the route was registered only
+when `storage_mode == "memory"`, so it 404'd against any Postgres-backed deployment -- there was no
 HTTP-reachable way to create the first account without direct DB/SSH access, which blocked #27's
 synthetic smoke journey and most of its RBAC/session regression checks.
 

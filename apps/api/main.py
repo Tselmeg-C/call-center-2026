@@ -35,6 +35,11 @@ app.add_middleware(CORSMiddleware, allow_origins=ALLOWED_ORIGINS, allow_credenti
 password_hash = PasswordHash.recommended()
 SESSION_SECONDS = 8 * 60 * 60
 ALEMBIC_HEAD = "029_assignment_conditions"
+# The image's commit SHA, baked in at `docker build --build-arg GIT_SHA=...` (see
+# apps/api/Dockerfile and .github/workflows/frontend.yml) -- lets a deployed version be
+# identified (#27) without shell access, via the x-app-version response header on every
+# response and the /health/ready body below.
+APP_VERSION = os.environ.get("GIT_SHA", "unknown")
 # Every key any append_audit/append_assignment caller writes today; the audit endpoint
 # strips anything else so a future detail field never leaks unreviewed (never a credential).
 AUDIT_DETAIL_KEYS = {"name", "position", "active", "oldOwner", "newOwner", "source", "reason", "role", "outcome", "recordId", "reasonId", "created", "updated", "errors", "label"}
@@ -191,13 +196,18 @@ def health_live() -> dict:
 
 @app.get("/health/ready")
 def health_ready() -> dict:
-    if auth_db is None: return {"status": "ok", "storage": "memory"}
+    if auth_db is None: return {"status": "ok", "storage": "memory", "version": APP_VERSION}
     try:
         with auth_db.engine.connect() as connection:
             connection.exec_driver_sql("SELECT 1")
             if not inspect(connection).has_table("users"): raise RuntimeError("migrations incomplete")
-            if not inspect(connection).has_table("alembic_version") or connection.exec_driver_sql("SELECT version_num FROM alembic_version").scalar() != ALEMBIC_HEAD: raise RuntimeError("migrations incomplete")
-        return {"status": "ok", "storage": "postgres"}
+            if not inspect(connection).has_table("alembic_version"): raise RuntimeError("migrations incomplete")
+            migration = connection.exec_driver_sql("SELECT version_num FROM alembic_version").scalar()
+            if migration != ALEMBIC_HEAD: raise RuntimeError("migrations incomplete")
+        # No DATABASE_URL, credentials, or other connection detail is ever included here --
+        # only the already-public commit SHA and the migration revision (itself just a label
+        # from apps/api/migrations/versions, not sensitive).
+        return {"status": "ok", "storage": "postgres", "version": APP_VERSION, "migration": migration}
     except Exception as exc:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Storage is not ready.") from exc
 
@@ -269,6 +279,7 @@ async def origin_guard(request: Request, call_next):
             return Response("Origin not allowed.", status_code=403, headers={"x-request-id": request_id}, media_type="application/json")
     response = await call_next(request)
     response.headers["x-request-id"] = request_id
+    response.headers["x-app-version"] = APP_VERSION
     logger.info("request id=%s method=%s route=%s status=%s duration_ms=%.3f error=%s", request_id, request.method, route, response.status_code, (perf_counter() - started) * 1000, "none" if response.status_code < 400 else "http_error", extra={"request_id": request_id})
     return response
 

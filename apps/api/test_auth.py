@@ -108,6 +108,19 @@ def test_health_endpoints_are_minimal_and_safe() -> None:
     from .main import ALEMBIC_HEAD
     assert ALEMBIC_HEAD == "029_assignment_conditions"
 
+def test_version_is_visible_without_shell_access(monkeypatch) -> None:
+    # #27: the deployed commit must be identifiable from an HTTP response alone. GIT_SHA is
+    # baked into the image at build time (apps/api/Dockerfile) into main.APP_VERSION; nothing
+    # DB/credential-shaped rides along with it.
+    from . import main as main_module
+    monkeypatch.setattr(main_module, "APP_VERSION", "abc1234")
+    client = TestClient(app, base_url="http://localhost")
+    live = client.get("/health/live")
+    assert live.headers["x-app-version"] == "abc1234"
+    ready = client.get("/health/ready")
+    assert ready.json()["version"] == "abc1234"
+    assert "DATABASE_URL" not in str(ready.json()) and "password" not in str(ready.json()).lower()
+
 def test_postgres_readiness_rejects_stale_migration(monkeypatch) -> None:
     from .main import health_ready
     database = AuthDatabase("sqlite+pysqlite:///:memory:")

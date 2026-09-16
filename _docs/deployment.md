@@ -243,15 +243,47 @@ promotion stays the separate, human-approved `workflow_dispatch` in `promote-pro
 
 ### Trusted-proxy assumption for the login throttle
 
-The per-IP login throttle (`apps/api/main.py`'s `login`, 50 failures/IP/15min) needs the real
-client IP. `request.client.host` is always a proxy hop once anything sits in front of the
-process -- Railway's edge terminating TLS, and, for browser traffic, this app's own frontend nginx
-`/api/` reverse proxy above. `apps/api/main.py`'s `client_ip()` instead takes the left-most
-`X-Forwarded-For` entry (both hops append their own address further right), falling back to
-`request.client.host` only if no such header is present. This is safe to trust *because* nothing
-but Railway's edge can reach this service -- there is no public port that bypasses it, so a
-client cannot forge a leading `X-Forwarded-For` entry that survives the trip through Railway and
-(for browser traffic) this app's own nginx.
+The per-IP login throttle (`apps/api/main.py`'s `login`, 50 failures/IP/15min, plus the per-email
+5/15min one) needs the real client IP. `request.client.host` is always a proxy hop once anything
+sits in front of the process, never the browser. `X-Forwarded-For` is a comma-separated list that
+each hop *appends its own address to the right end of*, so the only entry a client can never
+overwrite or displace is the one a fixed number of positions in from the right -- counting from
+the *left* (`.split(",")[0]`, the previous, now-fixed behavior) is exactly backwards: a client can
+prepend as many fake entries as it likes, which only ever pushes new entries further left and
+never touches the right end, so the left-most entry is always attacker-controlled. `client_ip()`
+now reads `TRUSTED_PROXY_HOPS` entries in from the right instead.
+
+**Trusted-hop count: `TRUSTED_PROXY_HOPS = 2`**, justified against both ways this login endpoint
+can currently be reached:
+
+- **Through the frontend's `/api/` nginx proxy** (`apps/frontend/nginx/default.conf.template`) --
+  the only path real production traffic takes today, since the API's own public Railway domain
+  isn't provisioned yet (see Known gaps below, tracked under #27). Two trusted hops sit between
+  the browser and this process: Railway's edge, and this app's own frontend nginx. Each appends
+  the address of whoever connected to it, so for a clean request the header ends up
+  `<client-or-forged-entries>, <browser's real address as nginx saw it>, <nginx's own address as
+  Railway's edge saw it>` -- the second-from-right entry is the real client, which is exactly what
+  `TRUSTED_PROXY_HOPS = 2` reads. A client can prepend anything it wants; it only ever lands to the
+  left of that position, never at or past it.
+- **Directly against the API service's own public `*.up.railway.app` domain** (provisioned under
+  #27's Known gaps, not by this issue) -- only one trusted hop exists on that path, Railway's edge.
+  `TRUSTED_PROXY_HOPS = 2` does not match this path, and #58 deliberately does not special-case it
+  (out of scope: provisioning/restricting that domain is #27's job, not the throttle's). What the
+  throttle does if a login request arrives this way: if the client sends no `X-Forwarded-For` of
+  its own, Railway's edge still appends its own view of the connecting client, giving a 1-entry
+  header -- shorter than `TRUSTED_PROXY_HOPS`, so `client_ip()` falls back to `request.client.host`
+  (Railway edge's address), bucketing every such request behind one shared counter rather than
+  crashing or trusting a client-controlled value. If the client instead sends its own single fake
+  entry, the header reaches the 2-entry length `TRUSTED_PROXY_HOPS` expects, and the attacker's own
+  fake entry -- not the real client -- ends up read: the throttle can be bypassed by IP the same
+  way it could before this fix, but only via a path that isn't part of this deployment's traffic
+  yet. Closing that gap means removing or restricting the API's own public domain, which is #27's
+  responsibility per #58's declared scope, not a case this fix special-cases.
+
+A missing, empty, or too-short (fewer than `TRUSTED_PROXY_HOPS` comma-separated entries)
+`X-Forwarded-For`, or one whose entry at that position is blank, falls back to
+`request.client.host` (`"unknown"` if even that is unavailable) rather than raising or silently
+trusting a client-controlled value.
 
 This is pinned to exactly one API replica in one region (`railway scale ams=1`) because these
 counters are held in Python process memory (`repo.login_failures*`), not a shared store --

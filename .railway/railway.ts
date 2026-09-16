@@ -5,14 +5,14 @@ export default defineRailway(() => {
   Postgres.networking = { privateNetworkEndpoint: "postgres" };
   const postgresVolume = volume("postgres-volume", { alerts: { usage: { "100": {}, "80": {}, "95": {} } }, allowOnlineResize: true, region: "ams", sizeMB: 5000 });
   const frontend = service("frontend", {
-    source: image("ghcr.io/tselmeg-c/call-center-2026-frontend:latest"),
+    source: image("ghcr.io/tselmeg-c/call-center-2026-frontend:6d1f35233a5892760aa344b0f4283fbc14083859"),
     replicas: { "ams": 1 },
     env: { API_UPSTREAM: preserve() },
   });
   const api = service("api", {
-    source: image("ghcr.io/tselmeg-c/call-center-2026-api:latest"),
+    source: image("ghcr.io/tselmeg-c/call-center-2026-api:6d1f35233a5892760aa344b0f4283fbc14083859"),
     replicas: { "ams": 1 },
-    env: { CALL_CENTER_STORAGE: preserve(), DATABASE_URL: preserve(), PORT: preserve(), WEB_CONCURRENCY: preserve() },
+    env: { CALL_CENTER_STORAGE: preserve(), DATABASE_URL: preserve(), FRONTEND_ORIGIN: preserve(), OTEL_EXPORTER_OTLP_ENDPOINT: preserve(), OTEL_EXPORTER_OTLP_HEADERS: preserve(), OTEL_RESOURCE_ATTRIBUTES: preserve(), OTEL_SERVICE_NAME: preserve(), PORT: preserve(), WEB_CONCURRENCY: preserve() },
     deploy: { healthcheckPath: "/health/ready", healthcheckTimeout: 30 },
   });
 

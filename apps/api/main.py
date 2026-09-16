@@ -1248,6 +1248,14 @@ def operator_reset_password(user_id: str, data: ResetPassword) -> User:
     return User.model_validate(record)
 
 
+# /operator/provision is safe in every storage mode: operator_provision above already refuses
+# (409) once any user exists, in-memory or Postgres, so it can only ever bootstrap the very first
+# Admin on a fresh deployment -- exactly the smoke-journey/regression-check bootstrap #27 needs
+# against a real Postgres-backed environment (there was previously no HTTP-reachable way to
+# create that first account without direct DB/SSH access). /operator/reset-password has no such
+# "nothing provisioned yet" guard -- it can reset *any* existing user's password given just their
+# id, unauthenticated -- so it stays memory-only (a local dev convenience), since enabling it
+# against a real deployment would be an unauthenticated account-takeover endpoint.
+app.post("/operator/provision", response_model=User, include_in_schema=False)(operator_provision)
 if storage_mode == "memory":
-    app.post("/operator/provision", response_model=User, include_in_schema=False)(operator_provision)
     app.post("/operator/reset-password/{user_id}", response_model=User, include_in_schema=False)(operator_reset_password)

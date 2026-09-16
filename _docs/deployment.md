@@ -258,6 +258,32 @@ counters are held in Python process memory (`repo.login_failures*`), not a share
 `apps/api/start.sh` already refuses to boot with `WEB_CONCURRENCY != 1` for the same reason, and a
 second replica would silently halve each counter's effectiveness.
 
+### Bootstrapping the first Admin account (Postgres-backed deployments)
+
+`POST /operator/provision` (undocumented/`include_in_schema=False`, see `apps/api/main.py`)
+creates a user and is safe to expose over HTTP in every storage mode: it refuses with `409` the
+moment any user already exists, in-memory or Postgres (`repo.users` / `auth_db.all_users()`), so
+it can only ever bootstrap the very first account on a fresh deployment -- after that, an
+authenticated Admin creates further accounts (Sales included) through `POST /admin/users`.
+`POST /operator/reset-password/{user_id}` has no such "nothing provisioned yet" guard -- it can
+reset *any* existing user's password given only their id, unauthenticated -- so it stays
+registered only under `CALL_CENTER_STORAGE=memory` (a local dev/test convenience); enabling it
+against a real deployment would be an unauthenticated account-takeover endpoint.
+
+```sh
+curl -X POST https://<api-domain>/operator/provision \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"<name>","email":"<email>","role":"Admin","password":"<new password>"}'
+```
+
+Verified locally against a real `CALL_CENTER_STORAGE=postgres` container (API built from
+`apps/api/Dockerfile`, pointed at `infra/docker-compose.test.yml`'s Postgres): the first
+`/operator/provision` call returns `200` and the new Admin can immediately `POST
+/session/login`; a second call returns `409`. Before this fix the route was registered only when
+`storage_mode == "memory"`, so it 404'd against any Postgres-backed deployment -- there was no
+HTTP-reachable way to create the first account without direct DB/SSH access, which blocked #27's
+synthetic smoke journey and most of its RBAC/session regression checks.
+
 ### Failure drill (run locally against real containers + Postgres while implementing #27)
 
 `docker pause` on the test Postgres container (`infra/docker-compose.test.yml`), against an API

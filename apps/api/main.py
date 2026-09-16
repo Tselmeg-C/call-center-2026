@@ -277,6 +277,21 @@ def safe_email(value: str) -> str:
     return value.strip().casefold()
 
 
+def client_ip(request: Request) -> str:
+    """The real client IP for the per-IP login throttle. `request.client.host` is the TCP peer,
+    which behind Railway's edge (and, for browser traffic, this app's own frontend nginx reverse
+    proxy at apps/frontend/nginx/default.conf.template) is always a proxy, never the browser --
+    trusting it directly would bucket every real user behind one shared counter. Both hops set
+    X-Forwarded-For and append their own address, so the left-most entry is the original client.
+    This is only safe to trust because nothing but Railway's edge can reach this service (no
+    public port bypasses it) -- see the trusted-proxy note in _docs/deployment.md."""
+    forwarded = request.headers.get("x-forwarded-for", "")
+    first = forwarded.split(",")[0].strip()
+    if first:
+        return first
+    return request.client.host if request.client else "unknown"
+
+
 def current_user(session: Annotated[str | None, Cookie(alias="call_center_session")] = None) -> User:
     if auth_db is not None:
         row = auth_db.user_for_session(session or "")
@@ -303,7 +318,7 @@ def current_user(session: Annotated[str | None, Cookie(alias="call_center_sessio
 
 @app.post("/session/login", response_model=User)
 def login(body: Login, request: Request, response: Response) -> User:
-    now = utcnow(); ip = request.client.host if request.client else "unknown"; key = (safe_email(body.email), ip)
+    now = utcnow(); ip = client_ip(request); key = (safe_email(body.email), ip)
     recent = [stamp for stamp in repo.login_failures.get(key, []) if now - stamp < timedelta(minutes=15)]
     ip_recent = [stamp for stamp in repo.login_failures_by_ip.get(ip, []) if now - stamp < timedelta(minutes=15)]
     if len(ip_recent) >= 50 or len(recent) >= 5:

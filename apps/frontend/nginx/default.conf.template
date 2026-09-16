@@ -4,6 +4,19 @@ server {
     root /usr/share/nginx/html;
     index index.html;
 
+    # Same-origin reverse proxy to the API service. The app's HTTP adapter defaults
+    # VITE_API_URL to "/api" (apps/frontend/src/services/http.ts), mirroring the Vite dev
+    # proxy in vite.config.ts -- so in production this location, not a build-time API domain,
+    # is what wires the frontend to the API. A same-origin request also means the browser's
+    # Origin header on unsafe methods is this frontend's own domain, satisfying the API's
+    # Origin/Referer guard without any CORS-specific configuration.
+    location /api/ {
+        proxy_pass http://${API_UPSTREAM}/;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
     location / {
         try_files $uri /index.html;
     }

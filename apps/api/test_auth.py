@@ -53,6 +53,43 @@ def test_request_id_rejects_malformed_client_value() -> None:
     response = TestClient(app, base_url="http://localhost").get("/health/live", headers={"x-request-id": "bad\nvalue"})
     assert response.status_code == 200 and "\n" not in response.headers["x-request-id"] and len(response.headers["x-request-id"]) > 10
 
+def test_request_id_injection_cannot_add_log_lines(caplog) -> None:
+    # A client-supplied id containing newlines/format-string-shaped content must not: (1) reach
+    # the log line verbatim (it fails the id regex, so a server UUID is used instead), or
+    # (2) otherwise cause more than the one structured log line the middleware always emits.
+    with caplog.at_level("INFO", logger="call-center.api"):
+        response = TestClient(app, base_url="http://localhost").get(
+            "/health/live", headers={"x-request-id": "id\nrequest id=fake method=GET route=/admin status=200 duration_ms=0.0 error=none"}
+        )
+    assert response.status_code == 200
+    request_records = [record for record in caplog.records if record.message.startswith("request id=")]
+    assert len(request_records) == 1
+    assert "\n" not in request_records[0].message
+    assert "fake" not in request_records[0].message
+
+def test_login_never_logs_credentials_or_cookie(caplog) -> None:
+    repo.reset()
+    provision_user(type("P", (), {"name": "Admin", "email": "creds@example.test", "role": "Admin", "password": "correct horse battery staple"})())
+    with caplog.at_level("INFO"):
+        client = TestClient(app, base_url="http://localhost")
+        login = client.post("/session/login", json={"email": "creds@example.test", "password": "correct horse battery staple"})
+        token = client.cookies.get("call_center_session")
+    assert login.status_code == 200
+    assert "correct horse battery staple" not in caplog.text
+    assert token is not None and token not in caplog.text
+
+def test_client_ip_prefers_leftmost_forwarded_for_over_tcp_peer() -> None:
+    from .main import client_ip
+    from unittest.mock import Mock
+    request = Mock()
+    request.headers = {"x-forwarded-for": "203.0.113.7, 10.0.0.5, 10.0.0.1"}
+    assert client_ip(request) == "203.0.113.7"
+    request.headers = {}
+    request.client = Mock(host="10.0.0.9")
+    assert client_ip(request) == "10.0.0.9"
+    request.client = None
+    assert client_ip(request) == "unknown"
+
 def test_cors_allows_configured_frontend_origin() -> None:
     response = TestClient(app, base_url="http://localhost").options("/health/live", headers={"origin": "http://localhost:3000", "access-control-request-method": "GET"})
     assert response.status_code == 200 and response.headers.get("access-control-allow-origin") == "http://localhost:3000"

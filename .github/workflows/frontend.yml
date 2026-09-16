@@ -24,8 +24,8 @@ jobs:
           --health-timeout 5s
           --health-retries 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version-file: .nvmrc
           cache: npm
@@ -74,7 +74,7 @@ jobs:
       group: publish-${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'main' || github.run_id }}
       cancel-in-progress: false
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Compute lowercased image names
         env:
@@ -103,7 +103,7 @@ jobs:
       # other branches stop at the build steps above, never push an image.
       - name: Log in to GHCR
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -147,6 +147,6 @@ jobs:
           RAILWAY_API_TOKEN: ${{ secrets.RAILWAY_API_TOKEN }}
           RAILWAY_PROJECT_ID: e7501ba0-4b15-42e1-a4a5-e4a4aaba614b
         run: |
-          npm install -g @railway/cli@5
+          npm install -g @railway/cli@5.57.5
           railway service source connect --image "$IMAGE_API:$GITHUB_SHA" --service api --environment development --project "$RAILWAY_PROJECT_ID"
           railway service source connect --image "$IMAGE_FRONTEND:$GITHUB_SHA" --service frontend --environment development --project "$RAILWAY_PROJECT_ID"

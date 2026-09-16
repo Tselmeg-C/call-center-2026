@@ -107,7 +107,7 @@ describe("mock services: admin", () => {
   it("runs bulk assignment onto the single active rule's owner", async () => {
     const services = createMockServices();
     await signIn(services, "alex@example.test");
-    await services.createAssignmentRule({ name: "Primary", ownerId: "sales-sky", active: true });
+    await services.createAssignmentRule({ name: "Primary", conditions: [], memberIds: ["sales-sky"], active: true });
     const run = await services.runAssignments("unassigned", "run-1");
     expect(run.ok && run.data.assigned).toBeGreaterThan(0);
     const customer = await services.getCustomer("000125"); // was unassigned
@@ -132,5 +132,73 @@ describe("mock services: admin", () => {
     const result = await services.closeCustomer("000123", { reasonId: "no-such-reason", submissionId: "close-x" });
     expect(result.ok).toBe(false);
     expect(!result.ok && result.error.code).toBe("validation");
+  });
+});
+
+describe("mock services: assignment rules", () => {
+  it("round-trips conditions and memberIds", async () => {
+    const services = createMockServices();
+    await signIn(services, "alex@example.test");
+    const conditions = [{ field: "propensity_tier", operator: "=" as const, value: "A" }];
+    const created = await services.createAssignmentRule({ name: "Tier A", conditions, memberIds: ["sales-river"], active: true });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+    expect(created.data.conditions).toEqual(conditions);
+    expect(created.data.memberIds).toEqual(["sales-river"]);
+    const listed = await services.listAssignmentRules();
+    expect(listed.ok && listed.data).toHaveLength(1);
+  });
+
+  it("rejects a case-insensitive duplicate rule name with a 409", async () => {
+    const services = createMockServices();
+    await signIn(services, "alex@example.test");
+    await services.createAssignmentRule({ name: "Primary", conditions: [], memberIds: ["sales-river"], active: true });
+    const result = await services.createAssignmentRule({ name: "primary", conditions: [], memberIds: ["sales-sky"], active: true });
+    expect(result.ok).toBe(false);
+    expect(!result.ok && result.error.code).toBe("conflict");
+    expect(!result.ok && result.error.message.toLowerCase()).toContain("already exist");
+  });
+
+  it("rejects zero eligible members and members that are not active Sales users with a 422", async () => {
+    const services = createMockServices();
+    await signIn(services, "alex@example.test");
+    const empty = await services.createAssignmentRule({ name: "No members", conditions: [], memberIds: [], active: true });
+    expect(empty.ok).toBe(false);
+    expect(!empty.ok && empty.error.code).toBe("validation");
+
+    const invalid = await services.createAssignmentRule({ name: "Bad member", conditions: [], memberIds: ["admin-demo"], active: true });
+    expect(invalid.ok).toBe(false);
+    expect(!invalid.ok && invalid.error.code).toBe("validation");
+  });
+
+  it("rejects a stale version on update with a 409, and does not apply the change", async () => {
+    const services = createMockServices();
+    await signIn(services, "alex@example.test");
+    const created = await services.createAssignmentRule({ name: "Primary", conditions: [], memberIds: ["sales-river"], active: true });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+    const versionResult = await services.getAssignmentVersion();
+    const staleVersion = versionResult.ok ? versionResult.data : 0;
+    const conflicting = await services.updateAssignmentRule(created.data.id, { name: "Renamed", version: staleVersion - 1 });
+    expect(conflicting.ok).toBe(false);
+    expect(!conflicting.ok && conflicting.error.code).toBe("conflict");
+    expect(!conflicting.ok && conflicting.error.message.toLowerCase()).toContain("stale");
+    const unchanged = await services.listAssignmentRules();
+    expect(unchanged.ok && unchanged.data[0]?.name).toBe("Primary");
+  });
+
+  it("bumps the assignment version on every successful create/update", async () => {
+    const services = createMockServices();
+    await signIn(services, "alex@example.test");
+    const before = await services.getAssignmentVersion();
+    expect(before.ok && before.data).toBe(1);
+    const created = await services.createAssignmentRule({ name: "Primary", conditions: [], memberIds: ["sales-river"], active: true });
+    expect(created.ok).toBe(true);
+    const afterCreate = await services.getAssignmentVersion();
+    expect(afterCreate.ok && afterCreate.data).toBe(2);
+    if (!created.ok) return;
+    await services.updateAssignmentRule(created.data.id, { active: false });
+    const afterUpdate = await services.getAssignmentVersion();
+    expect(afterUpdate.ok && afterUpdate.data).toBe(3);
   });
 });

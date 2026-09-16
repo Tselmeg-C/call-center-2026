@@ -41,6 +41,23 @@ describe("http services", () => {
     }
   });
 
+  it("surfaces the backend's detail text as the error message so callers can distinguish same-status conflicts", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse({ detail: "Assignment configuration is stale." }, 409)));
+    const services = createHttpServices();
+    const result = await services.updateAssignmentRule("rule-1", { active: false, version: 1 });
+    expect(result.ok).toBe(false);
+    expect(!result.ok && result.error.code).toBe("conflict");
+    expect(!result.ok && result.error.message).toBe("Assignment configuration is stale.");
+  });
+
+  it("falls back to the generic status message when the body has no usable detail", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("not json", { status: 409 })));
+    const services = createHttpServices();
+    const result = await services.updateAssignmentRule("rule-1", { active: false });
+    expect(result.ok).toBe(false);
+    expect(!result.ok && result.error.message).toBe("This changed elsewhere. Refresh and try again.");
+  });
+
   it("reports a request-failure on a network error instead of throwing", async () => {
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("offline")));
     const services = createHttpServices();
@@ -70,6 +87,15 @@ describe("http services", () => {
     expect(url).toBe("/api/admin/imports?submission_id=s1");
     expect(init.body).toBeInstanceOf(FormData);
     expect(init.headers["content-type"]).toBeUndefined();
+  });
+
+  it("fetches the assignment version from its own endpoint", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(3));
+    vi.stubGlobal("fetch", fetchMock);
+    const services = createHttpServices();
+    const result = await services.getAssignmentVersion();
+    expect(result).toEqual({ ok: true, data: 3 });
+    expect(fetchMock.mock.calls[0]![0]).toBe("/api/admin/assignment-version");
   });
 
   it("treats a 204 response as a null-data success", async () => {

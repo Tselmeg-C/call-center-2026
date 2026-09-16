@@ -89,7 +89,7 @@ describe("real-HTTP Admin journey", () => {
     const manual = await admin.assignCustomer("700001", river.id, "assign-journey-1");
     expect(manual.ok && manual.data.ownerId).toBe(river.id);
 
-    const rule = await admin.createAssignmentRule({ name: "Everything to Sky", ownerId: sky.id, active: true });
+    const rule = await admin.createAssignmentRule({ name: "Everything to Sky", conditions: [], memberIds: [sky.id], active: true });
     expect(rule.ok).toBe(true);
     const run = await admin.runAssignments("unassigned", "run-journey-1");
     expect(run.ok).toBe(true);

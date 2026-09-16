@@ -1,6 +1,7 @@
 import type {
   AssignmentRule,
   AssignmentRuleDraft,
+  AssignmentRulePatch,
   AssignmentRunResult,
   AuditPage,
   ClosureReason,
@@ -95,8 +96,21 @@ export function createHttpServices(config: HttpServicesConfig = {}): Services {
       return failure("request-failure", "Network request failed.");
     }
     if (!response.ok) {
-      const [code, message] = mapError(response.status);
-      return failure(code, message);
+      const [code, fallbackMessage] = mapError(response.status);
+      // FastAPI's HTTPException(status, "some message") always serializes as {"detail": "some
+      // message"}; surfacing it (when present) lets callers distinguish e.g. a 409 "name already
+      // in use" from a 409 stale-version conflict, which share a status code but need different
+      // inline UI treatment (see admin.assignment.tsx).
+      let detail: string | undefined;
+      try {
+        const body: unknown = await response.json();
+        if (body && typeof body === "object" && typeof (body as { detail?: unknown }).detail === "string") {
+          detail = (body as { detail: string }).detail;
+        }
+      } catch {
+        // No/invalid JSON body -- fall back to the generic status-code message below.
+      }
+      return failure(code, detail ?? fallbackMessage);
     }
     if (response.status === 204) return { ok: true, data: null as T };
     return { ok: true, data: (await response.json()) as T };
@@ -157,7 +171,8 @@ export function createHttpServices(config: HttpServicesConfig = {}): Services {
       request<Customer>(`/admin/assignments/manual/${seg(bcn)}`, json("POST", { ownerId, submissionId, expectedVersion })),
     listAssignmentRules: () => request<AssignmentRule[]>("/admin/assignment-rules"),
     createAssignmentRule: (input: AssignmentRuleDraft) => request<AssignmentRule>("/admin/assignment-rules", json("POST", input)),
-    updateAssignmentRule: (id, patch) => request<AssignmentRule>(`/admin/assignment-rules/${seg(id)}`, json("PATCH", patch)),
+    updateAssignmentRule: (id, patch: AssignmentRulePatch) => request<AssignmentRule>(`/admin/assignment-rules/${seg(id)}`, json("PATCH", patch)),
+    getAssignmentVersion: () => request<number>("/admin/assignment-version"),
     runAssignments: (scope, submissionId) => request<AssignmentRunResult>("/admin/assignment-runs", json("POST", { scope, submissionId })),
 
     reports: (start, end) => request<ReportData>(`/admin/reports${qs({ start, end })}`),

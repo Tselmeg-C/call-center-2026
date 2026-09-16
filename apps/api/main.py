@@ -3,6 +3,7 @@ from datetime import date
 from decimal import Decimal, InvalidOperation
 from copy import deepcopy
 from contextlib import contextmanager
+from concurrent.futures import ThreadPoolExecutor
 from secrets import token_urlsafe
 from uuid import uuid4
 import re
@@ -30,6 +31,19 @@ from sqlalchemy.exc import IntegrityError
 
 app = FastAPI(title="Call Center API", version="0.1.0")
 logger = logging.getLogger("call-center.api")
+# Always emit this logger's structured request-id/status/duration line (see origin_guard below)
+# to stdout, regardless of whether OTel is enabled: observability/otel_setup.py only attaches its
+# own handler and raises this logger's level to INFO when OTEL_EXPORTER_OTLP_ENDPOINT is actually
+# set, and #27 deploys `development` with OTel deliberately unset (#44 is the live-Grafana issue).
+# Verified locally while implementing #27: without this, `docker logs`/`railway logs` never shows
+# this line at all once deployed -- the logger's effective level stays the root logger's default
+# WARNING and nothing propagates it anywhere, silently defeating the request-id/log-survives-
+# deployment acceptance criterion.
+if not any(isinstance(handler, logging.StreamHandler) for handler in logger.handlers):
+    _stream_handler = logging.StreamHandler()
+    _stream_handler.setFormatter(logging.Formatter("%(message)s"))
+    logger.addHandler(_stream_handler)
+logger.setLevel(logging.INFO)
 ALLOWED_ORIGINS = [os.environ["FRONTEND_ORIGIN"]] if os.environ.get("FRONTEND_ORIGIN") else ["http://localhost:3000", "http://127.0.0.1:3000", "http://localhost:4174", "http://127.0.0.1:4174"]
 app.add_middleware(CORSMiddleware, allow_origins=ALLOWED_ORIGINS, allow_credentials=True, allow_methods=["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"], allow_headers=["*"])
 password_hash = PasswordHash.recommended()
@@ -194,16 +208,32 @@ def readable_followups() -> list[dict]:
 def health_live() -> dict:
     return {"status": "ok"}
 
+def _check_postgres_ready() -> str:
+    with auth_db.engine.connect() as connection:
+        connection.exec_driver_sql("SELECT 1")
+        if not inspect(connection).has_table("users"): raise RuntimeError("migrations incomplete")
+        if not inspect(connection).has_table("alembic_version"): raise RuntimeError("migrations incomplete")
+        migration = connection.exec_driver_sql("SELECT version_num FROM alembic_version").scalar()
+        if migration != ALEMBIC_HEAD: raise RuntimeError("migrations incomplete")
+        return migration
+
+# A DB outage that black-holes an already-open TCP connection (observed locally with
+# `docker pause` on the Postgres container during #27's failure drill) doesn't fail fast --
+# no connect error, no reset -- it just never answers. A bare `engine.connect()` would then hang
+# this endpoint indefinitely instead of returning the 503 Railway's healthcheck and #27's drill
+# both expect. Bound it with a hard deadline instead.
+# ponytail: a timed-out call leaks its thread until the DB call itself returns (or the process
+# restarts) -- fine at this low poll volume (every 5min, tiny pool), not fine under sustained
+# concurrent readiness polling. Upgrade to a query-level statement_timeout (or async DB driver)
+# if that ever changes.
+_health_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="health-ready")
+HEALTH_READY_TIMEOUT_SECONDS = 5
+
 @app.get("/health/ready")
 def health_ready() -> dict:
     if auth_db is None: return {"status": "ok", "storage": "memory", "version": APP_VERSION}
     try:
-        with auth_db.engine.connect() as connection:
-            connection.exec_driver_sql("SELECT 1")
-            if not inspect(connection).has_table("users"): raise RuntimeError("migrations incomplete")
-            if not inspect(connection).has_table("alembic_version"): raise RuntimeError("migrations incomplete")
-            migration = connection.exec_driver_sql("SELECT version_num FROM alembic_version").scalar()
-            if migration != ALEMBIC_HEAD: raise RuntimeError("migrations incomplete")
+        migration = _health_pool.submit(_check_postgres_ready).result(timeout=HEALTH_READY_TIMEOUT_SECONDS)
         # No DATABASE_URL, credentials, or other connection detail is ever included here --
         # only the already-public commit SHA and the migration revision (itself just a label
         # from apps/api/migrations/versions, not sensitive).

@@ -1,5 +1,7 @@
 from datetime import datetime, timedelta, timezone
 from io import BytesIO
+from time import perf_counter
+import logging
 import os
 import subprocess
 from openpyxl import Workbook
@@ -90,6 +92,16 @@ def test_client_ip_prefers_leftmost_forwarded_for_over_tcp_peer() -> None:
     request.client = None
     assert client_ip(request) == "unknown"
 
+def test_request_log_reaches_stdout_without_otel() -> None:
+    # #27: observability/otel_setup.py only wires this logger's handler/level when OTel is
+    # actually enabled, and this deployment runs with it deliberately unset -- the request log
+    # must still reach a real stream handler (what `railway logs` captures) on its own, not just
+    # propagate to pytest's own log capture. Verified for real against a running container while
+    # implementing #27 (`docker logs` showed the line only after this fix).
+    from . import main as main_module
+    assert main_module.logger.getEffectiveLevel() <= logging.INFO
+    assert any(isinstance(handler, logging.StreamHandler) and handler.level <= logging.INFO for handler in main_module.logger.handlers)
+
 def test_cors_allows_configured_frontend_origin() -> None:
     response = TestClient(app, base_url="http://localhost").options("/health/live", headers={"origin": "http://localhost:3000", "access-control-request-method": "GET"})
     assert response.status_code == 200 and response.headers.get("access-control-allow-origin") == "http://localhost:3000"
@@ -130,6 +142,26 @@ def test_postgres_readiness_rejects_stale_migration(monkeypatch) -> None:
     monkeypatch.setitem(health_ready.__globals__, "auth_db", database)
     response = TestClient(app, base_url="http://localhost").get("/health/ready")
     assert response.status_code == 503
+
+def test_postgres_readiness_times_out_instead_of_hanging(monkeypatch) -> None:
+    # #27 failure drill: a DB outage that black-holes an already-open connection (observed
+    # locally via `docker pause` on the Postgres container) must not hang this endpoint forever.
+    from . import main as main_module
+    import time
+
+    monkeypatch.setattr(main_module, "HEALTH_READY_TIMEOUT_SECONDS", 0.2)
+
+    def hangs_forever() -> str:
+        time.sleep(5)
+        return main_module.ALEMBIC_HEAD
+
+    monkeypatch.setitem(main_module.health_ready.__globals__, "auth_db", object())
+    monkeypatch.setattr(main_module, "_check_postgres_ready", hangs_forever)
+    started = perf_counter()
+    response = TestClient(app, base_url="http://localhost").get("/health/ready")
+    elapsed = perf_counter() - started
+    assert response.status_code == 503
+    assert elapsed < 2
 
 def test_database_session_lookup_uses_digest_and_revocation() -> None:
     database = AuthDatabase("sqlite+pysqlite:///:memory:")

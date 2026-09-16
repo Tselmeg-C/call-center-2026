@@ -19,7 +19,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from pwdlib import PasswordHash
-from .storage import mode
+from .storage import mode, database_url
 from .db_auth import AuthDatabase, StorageError, utcnow
 from .db_customers import CustomerDatabase
 from .db_assignment import AssignmentDatabase
@@ -173,10 +173,11 @@ class MemoryRepo:
 
 repo = MemoryRepo()
 storage_mode = mode()
-auth_db = AuthDatabase(__import__("os").environ["DATABASE_URL"], create_schema=False) if storage_mode == "postgres" else None
-customer_db = CustomerDatabase(__import__("os").environ["DATABASE_URL"], create_schema=False) if storage_mode == "postgres" else None
-assignment_db = AssignmentDatabase(__import__("os").environ["DATABASE_URL"], create_schema=False) if storage_mode == "postgres" else None
-activity_db = ActivityDatabase(__import__("os").environ["DATABASE_URL"], create_schema=False) if storage_mode == "postgres" else None
+_db_url = database_url() if storage_mode == "postgres" else None
+auth_db = AuthDatabase(_db_url, create_schema=False) if storage_mode == "postgres" else None
+customer_db = CustomerDatabase(_db_url, create_schema=False) if storage_mode == "postgres" else None
+assignment_db = AssignmentDatabase(_db_url, create_schema=False) if storage_mode == "postgres" else None
+activity_db = ActivityDatabase(_db_url, create_schema=False) if storage_mode == "postgres" else None
 if storage_mode == "postgres":
     # Persistent mode must never let the demonstration fixture shadow database state after restart.
     repo.customers.clear(); repo.followups.clear(); repo.interactions.clear(); repo.notes.clear(); repo.imports.clear(); repo.rules.clear(); repo.assignment_runs.clear()

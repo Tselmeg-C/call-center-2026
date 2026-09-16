@@ -34,6 +34,21 @@ def test_storage_selection_is_explicit(monkeypatch) -> None:
     try: mode(); assert False
     except RuntimeError as exc: assert "DATABASE_URL" in str(exc)
 
+def test_database_url_pins_psycopg_dialect(monkeypatch) -> None:
+    from .storage import database_url
+    # #27: Railway's managed Postgres plugin (and most standard providers) hand back a bare
+    # postgresql:// URL. SQLAlchemy's default dialect for that scheme is psycopg2, which is not
+    # installed (apps/api/requirements.txt only installs psycopg v3) -- every boot's `alembic
+    # upgrade head` failed against a real deployment until this normalization existed.
+    monkeypatch.setenv("DATABASE_URL", "postgresql://user:pass@host:5432/db")
+    assert database_url() == "postgresql+psycopg://user:pass@host:5432/db"
+    monkeypatch.setenv("DATABASE_URL", "postgres://user:pass@host:5432/db")
+    assert database_url() == "postgresql+psycopg://user:pass@host:5432/db"
+    monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg://user:pass@host:5432/db")
+    assert database_url() == "postgresql+psycopg://user:pass@host:5432/db"
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    assert database_url() == "sqlite+pysqlite:///:memory:"
+
 def test_login_failure_throttle_is_generic() -> None:
     repo.reset(); client = TestClient(app, base_url="http://localhost")
     for _ in range(5): assert client.post("/session/login", json={"email": "unknown@example.test", "password": "wrong password"}).status_code == 401

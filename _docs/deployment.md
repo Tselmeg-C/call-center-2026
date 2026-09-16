@@ -8,6 +8,65 @@ The development process starts with `apps/api/start.sh`; in PostgreSQL mode it r
 
 Use `npm run benchmark:api` for the safe synthetic query benchmark. Logs and smoke evidence must contain request IDs, status, timings, and safe counts only; never include cookies, connection strings, workbook contents, notes, or credentials.
 
+## OpenTelemetry
+
+`apps/api` (see `apps/api/otel_setup.py`) instruments every request (FastAPI), every DB query
+(SQLAlchemy), and the existing `origin_guard` request log with the OpenTelemetry SDK, and can
+export traces, metrics, and logs over OTLP -- all configured only through environment variables,
+never a hardcoded endpoint or credential:
+
+| Variable | Purpose | Example |
+| --- | --- | --- |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | OTLP collector endpoint (Grafana Cloud's Tempo/Loki/Mimir OTLP gateway once #27 exists). **Unset means OTel is fully disabled**: no exporter is constructed, no background export thread starts, no network call is ever attempted. | `https://otlp-gateway-<region>.grafana.net/otlp` |
+| `OTEL_EXPORTER_OTLP_HEADERS` | Auth for that endpoint (Grafana Cloud instance ID + API key, as `Authorization=Basic <base64>` or `key=value` pairs). | `Authorization=Basic <redacted>` |
+| `OTEL_SERVICE_NAME` | Service name attached to every span/log/metric. Defaults to `call-center-api` if unset. | `call-center-api` |
+| `OTEL_RESOURCE_ATTRIBUTES` | Extra resource attributes, most importantly `deployment.environment` (`dev` or `prod`) -- this is how environments are told apart in Grafana, not separate Grafana Cloud accounts. | `deployment.environment=prod` |
+
+Real Grafana Cloud values (the actual OTLP endpoint URL, instance ID, and API key) are never
+committed to this repository. They exist only as Railway environment variables, and only once
+#27 (https://github.com/Tselmeg-C/call-center-2026/issues/27) provisions that live account and
+deployment -- until then these variables are simply left unset, and the API runs with OTel
+cleanly disabled, exactly as it does today in local dev and CI.
+
+Dev and prod use the *same* variable names; only the values differ (dev typically leaves
+`OTEL_EXPORTER_OTLP_ENDPOINT` unset entirely and runs with OTel disabled, while prod sets all
+four once #27 supplies the Grafana Cloud instance).
+
+Every span, log record, and metric label -- including each metric data point's exemplars --
+passes through an explicit attribute allowlist (`otel_setup.ALLOWED_ATTRIBUTES`, the per-metric
+`Views`, and `otel_setup._redact_metrics_data` for the exemplar path the `Views` alone don't
+cover) before export: only route, method, status code, DB system/operation, and the existing
+`x-request-id` are ever allowed through -- cookies, auth headers, connection strings, and
+note/workbook free text are structurally impossible to export, not just absent by convention.
+`apps/api/test_otel.py` asserts this against in-memory OTel exporters (never a live endpoint).
+
+`_docs/grafana-dashboard.json` is a validated Grafana dashboard JSON model (not uploaded to any
+live account -- see #27) with request rate/error rate/duration panels for `/customers`,
+`/sales/workload`, and `/admin/reports`, plus log volume, each split by the `deployment.environment`
+resource attribute, using the exact metric (`http.server.request.duration`) and label
+(`http.route`, `http.response.status_code`, `deployment_environment`) names this instrumentation
+actually emits.
+
+### Benchmark overhead
+
+`apps/api/benchmark.py` accepts `BENCHMARK_OTEL=1` to re-run the same synthetic benchmark with the
+OTel SDK enabled, exporting to in-memory exporters (no live collector is available to this task).
+Three `BENCHMARK_SCALE=ci` runs each, OTel disabled vs. enabled, against a throwaway local
+PostgreSQL instance:
+
+| Query | Baseline p50 (ms) | OTel-enabled p50 (ms) | Baseline p95 (ms) | OTel-enabled p95 (ms) |
+| --- | --- | --- | --- | --- |
+| `/customers` search | ~13.5 | ~19.2 | ~20.0 | ~26.3 |
+| `/sales/workload` | ~15.7 | ~21.3 | ~24.2 | ~32.7 |
+| `/admin/reports` | ~30.3 | ~37.3 | ~43.0 | ~48.0 |
+| `/admin/audit` | ~11.7 | ~16.5 | ~19.2 | ~26.4 |
+
+Instrumentation overhead is roughly 4-6ms added to p50 at this CI-sized dataset (a few hundred
+rows -- the same small smoke scale the CI benchmark job already uses; see
+`_docs/persistence.md` for why `full` scale isn't run in CI). That is well under 1% of the
+1000ms p95 target for every query -- the SDK's per-span/per-log overhead is real but negligible
+next to actual query latency; it does not change whether the existing p95 targets hold.
+
 ## Container images
 
 `apps/api/Dockerfile` and `apps/frontend/Dockerfile` are multi-stage builds so later deployment (Railway or otherwise) can run a built, versioned image instead of buildpack/Nixpacks source auto-detection. Build them from the repository root (so the build context includes the workspace lockfile and both apps' source):

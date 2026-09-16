@@ -24,6 +24,7 @@ from .db_customers import CustomerDatabase
 from .db_assignment import AssignmentDatabase
 from . import assignment_rules
 from .db_activity import ActivityDatabase
+from . import otel_setup
 from sqlalchemy import inspect
 from sqlalchemy.exc import IntegrityError
 
@@ -161,6 +162,13 @@ if storage_mode == "postgres":
     # Persistent mode must never let the demonstration fixture shadow database state after restart.
     repo.customers.clear(); repo.followups.clear(); repo.interactions.clear(); repo.notes.clear(); repo.imports.clear(); repo.rules.clear(); repo.assignment_runs.clear()
 
+# Configured entirely from OTEL_* environment variables; a no-op with zero network calls
+# when OTEL_EXPORTER_OTLP_ENDPOINT is unset (local dev, CI). See otel_setup.py and
+# _docs/deployment.md.
+otel_setup.configure_otel(app)
+for _engine in (getattr(auth_db, "engine", None), getattr(customer_db, "engine", None), getattr(assignment_db, "engine", None), getattr(activity_db, "engine", None)):
+    otel_setup.instrument_engine(_engine)
+
 def append_audit(actor_id: str | None, action: str, target: str, details: dict) -> None:
     if assignment_db is not None: assignment_db.append_audit(actor_id=actor_id, action=action, target=target, details=details)
 
@@ -246,21 +254,22 @@ async def origin_guard(request: Request, call_next):
     route = getattr(request.scope.get("route"), "path", request.url.path)
     candidate = request.headers.get("x-request-id", "")
     request_id = candidate if re.fullmatch(r"[A-Za-z0-9._-]{1,128}", candidate) else str(uuid4())
+    otel_setup.annotate_request_id(request_id)
     if request.url.path == "/admin/imports":
         try: content_length = int(request.headers.get("content-length", "0"))
         except ValueError: content_length = 0
         if content_length > 11 * 1024 * 1024:
-            logger.warning("request id=%s method=%s route=%s status=413 duration_ms=%.3f error=upload_limit", request_id, request.method, route, (perf_counter() - started) * 1000)
+            logger.warning("request id=%s method=%s route=%s status=413 duration_ms=%.3f error=upload_limit", request_id, request.method, route, (perf_counter() - started) * 1000, extra={"request_id": request_id})
             return Response("Upload is too large.", status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, headers={"x-request-id": request_id}, media_type="application/json")
     if request.method in {"POST", "PATCH", "PUT", "DELETE"} and request.url.path != "/session/login":
         origin = request.headers.get("origin")
         referer = request.headers.get("referer", "")
         if origin not in set(ALLOWED_ORIGINS) and not any(referer.startswith(value + "/") for value in ALLOWED_ORIGINS):
-            logger.warning("request id=%s method=%s route=%s status=403 duration_ms=%.3f error=origin", request_id, request.method, route, (perf_counter() - started) * 1000)
+            logger.warning("request id=%s method=%s route=%s status=403 duration_ms=%.3f error=origin", request_id, request.method, route, (perf_counter() - started) * 1000, extra={"request_id": request_id})
             return Response("Origin not allowed.", status_code=403, headers={"x-request-id": request_id}, media_type="application/json")
     response = await call_next(request)
     response.headers["x-request-id"] = request_id
-    logger.info("request id=%s method=%s route=%s status=%s duration_ms=%.3f error=%s", request_id, request.method, route, response.status_code, (perf_counter() - started) * 1000, "none" if response.status_code < 400 else "http_error")
+    logger.info("request id=%s method=%s route=%s status=%s duration_ms=%.3f error=%s", request_id, request.method, route, response.status_code, (perf_counter() - started) * 1000, "none" if response.status_code < 400 else "http_error", extra={"request_id": request_id})
     return response
 
 

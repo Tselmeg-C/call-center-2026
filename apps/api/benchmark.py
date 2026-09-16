@@ -156,6 +156,26 @@ def run(scale_name: str | None = None) -> dict:
         main.auth_db, main.customer_db, main.activity_db, main.assignment_db = auth, customers, activities, assignments
         main.repo.reset()
 
+        # BENCHMARK_OTEL=1 re-runs this same benchmark with the OTel SDK instrumenting every
+        # request/DB query, exporting to in-memory (no network, no real Grafana Cloud endpoint)
+        # exporters -- issue #34 wants the resulting p50/p95 compared against a plain run to
+        # show the SDK's overhead, not network export latency to a live collector.
+        otel_enabled = os.getenv("BENCHMARK_OTEL", "").casefold() in {"1", "true", "yes"}
+        if otel_enabled:
+            from . import otel_setup
+            from opentelemetry.sdk._logs.export import InMemoryLogRecordExporter
+            from opentelemetry.sdk.metrics.export import InMemoryMetricReader
+            from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+            otel_setup.configure_otel(
+                main.app,
+                span_exporter=InMemorySpanExporter(),
+                log_exporter=InMemoryLogRecordExporter(),
+                metric_reader=InMemoryMetricReader(),
+            )
+            for engine in (auth.engine, customers.engine, activities.engine, assignments.engine):
+                otel_setup.instrument_engine(engine)
+
         database_resources = _database_resources(auth.engine)
         explains = {
             "search": _explain(customers.engine, select(CustomerRow).where(func.lower(CustomerRow.name).like("%005%")).order_by(CustomerRow.bcn).limit(25)),
@@ -187,6 +207,7 @@ def run(scale_name: str | None = None) -> dict:
         percentile = lambda values, p: round(sorted(values)[max(0, int(len(values) * p) - 1)], 3)
         report = {
             "scale": scale_name,
+            "otel_enabled": otel_enabled,
             "dataset": {"customers": scale["customers"], "interactions": scale["interactions"], "followups": scale["followups"], "audit": scale["audit"]},
             "machine": _machine_resources(),
             "database": database_resources,
@@ -204,6 +225,7 @@ def run(scale_name: str | None = None) -> dict:
 
 if __name__ == "__main__":
     result = run()
+    print(f"OTel enabled: {result['otel_enabled']}")
     print(f"Dataset: {result['dataset']}")
     print(f"Machine: {result['machine']}")
     print(f"Database: {result['database']}")

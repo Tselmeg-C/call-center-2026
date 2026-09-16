@@ -101,7 +101,7 @@ Images are published as:
 
 with `<owner>` and `<repo>` lowercased (GHCR requires lowercase paths). For this repository that's `ghcr.io/tselmeg-c/call-center-2026-api` and `ghcr.io/tselmeg-c/call-center-2026-frontend`. Each successful `main` push tags both images with the full commit SHA and moves the `latest` tag to point at that same build -- `latest` is the newest `main` build, a commit SHA is a pinned, reproducible one.
 
-These images are published at GHCR's default visibility for a `GITHUB_TOKEN`-authored package, which is **private**. This is deliberate, not an oversight: pulling them (including for the `docker pull`/`docker run` below) requires being authenticated to GHCR with access to this repository.
+These images are published at GHCR's default visibility for a `GITHUB_TOKEN`-authored package on a public repository, which is **public** (verified while implementing #27: an anonymous `ghcr.io/token` request and unauthenticated manifest pull both succeed for `call-center-2026-api`). This is what lets Railway's `--image` service source pull them directly -- `railway service source connect --image` has no registry-credential flags, so an image-sourced service needs a publicly pullable image.
 
 ```sh
 docker pull ghcr.io/tselmeg-c/call-center-2026-api:<sha>
@@ -127,3 +127,151 @@ Swap `<sha>` for `latest` to run the newest `main` build instead of a pinned com
 The actual "point Railway at this image" step is currently a documented placeholder: this workflow does not yet have a `RAILWAY_TOKEN` secret or the production project/service IDs (those land with #27/#28). The tag-existence verification is fully real and runs regardless. Once `RAILWAY_TOKEN` and the service IDs exist, the placeholder step in the workflow file documents exactly what to replace it with.
 
 **Manual one-time setup required**: the `production` environment's required-reviewer protection rule cannot be created by CI -- this repo's `GITHUB_TOKEN` gets a 403 on `PUT .../environments/production`. A repo admin must add it manually: GitHub web UI -> Settings -> Environments -> `production` -> Required reviewers -> add `Tselmeg-C`. Until that's done, `workflow_dispatch` runs against the `production` environment proceed without a human approval gate.
+
+## Railway `development` environment (#27)
+
+Project `call-center-2026` (Railway project id `e7501ba0-4b15-42e1-a4a5-e4a4aaba614b`) has two
+environments, `production` and `development`. This section covers `development` only --
+`production` is #28. The two environments are fully isolated: separate Postgres plugin instances
+(separate volumes, separate generated credentials), separate service env vars, no shared secret.
+
+### Topology
+
+| Service | Source | Purpose |
+| --- | --- | --- |
+| `Postgres` | Railway managed Postgres plugin (`railway add -d postgres`) | Database, one region (`ams`), one replica, its own volume |
+| `api` | `ghcr.io/tselmeg-c/call-center-2026-api:latest` (or a commit SHA), via `railway service source connect --image` | Runs `apps/api/start.sh` unmodified (migration-before-traffic gate, `/health/live`, `/health/ready`) |
+| `frontend` | `ghcr.io/tselmeg-c/call-center-2026-frontend:latest` (or a commit SHA), via `railway service source connect --image` | nginx serving the `npm run build` output, reverse-proxies `/api/` to `api` |
+
+The real, `railway config pull`-verified config-as-code is committed at
+[`/.railway/railway.ts`](../.railway/railway.ts); see [`infra/railway.md`](../infra/railway.md)
+for what it names and why it lives there instead of under `infra/`.
+
+Reproducing this from scratch:
+
+```sh
+railway environment link development
+railway add -d postgres -s postgres
+railway add -s api --image ghcr.io/tselmeg-c/call-center-2026-api:latest
+railway add -s frontend --image ghcr.io/tselmeg-c/call-center-2026-frontend:latest
+railway service source connect --image ghcr.io/tselmeg-c/call-center-2026-api:latest --service api
+railway service source connect --image ghcr.io/tselmeg-c/call-center-2026-frontend:latest --service frontend
+railway scale ams=1 --service api   # exactly one replica -- required, see below
+```
+
+(`railway scale` with no region args, as the CLI's own `--help` describes, errored on the
+installed CLI version -- `railway scale ams=1` is the form that actually worked; noted here since
+it contradicts that help text.)
+
+### Environment variables (names only -- see Credentials below for why no values are here)
+
+| Service | Variable | Source |
+| --- | --- | --- |
+| `api` | `CALL_CENTER_STORAGE` | literal `postgres` |
+| `api` | `DATABASE_URL` | Railway reference `${{Postgres.DATABASE_URL}}` |
+| `api` | `PORT` | literal `8000` |
+| `api` | `WEB_CONCURRENCY` | literal `1` (required -- see login throttle below) |
+| `api` | `FRONTEND_ORIGIN` | Railway reference `${{frontend.RAILWAY_PUBLIC_DOMAIN}}` (as `https://...`) -- **not yet set, see Known gaps** |
+| `api` | `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_HEADERS`, `OTEL_SERVICE_NAME`, `OTEL_RESOURCE_ATTRIBUTES` | unset in this environment -- see OpenTelemetry above; #44 points these at a real Grafana Cloud account |
+| `frontend` | `PORT` | literal `8080` (image default) |
+| `frontend` | `API_UPSTREAM` | Railway reference `${{api.RAILWAY_PRIVATE_DOMAIN}}:8000` |
+
+HTTPS origins: both services get a Railway-issued `*.up.railway.app` HTTPS domain
+(`railway domain --service api`, `railway domain --service frontend`) -- **not yet created, see
+Known gaps**.
+
+### How the frontend reaches the API
+
+`apps/frontend/src/services/http.ts` defaults its base URL to the relative `/api` (mirroring the
+Vite dev proxy in `apps/frontend/vite.config.ts`), not a build-time API domain. In production,
+`apps/frontend/nginx/default.conf.template`'s `/api/` location reverse-proxies to `API_UPSTREAM`
+(the API's Railway private-network domain) at container start, via nginx's own envsubst
+templating. So the browser only ever talks to the frontend's own HTTPS domain, and that domain is
+also what it sends as `Origin` on unsafe requests -- which is why `api`'s `FRONTEND_ORIGIN` must
+be the frontend's public domain, not the API's own. `apps/frontend/Dockerfile` bakes
+`VITE_SERVICE_MODE=http` in at build time so a deployed image never falls back to the in-memory
+mock adapter (verified locally: `infra/smoke-test.sh` builds both images and asserts the
+frontend's proxied `/api/health/ready` matches the API's own response).
+
+### Version identification
+
+`GET /health/ready`'s body includes `"version"` (the image's commit SHA, baked in at
+`docker build --build-arg GIT_SHA=$GITHUB_SHA`, see `apps/api/Dockerfile`) and `"migration"` (the
+current Alembic revision). Every response, including `/health/live` and error responses, also
+carries an `x-app-version` header with the same commit SHA -- so the deployed version is visible
+without shell access via either surface.
+
+### Auto-deploy on every `main` build
+
+`.github/workflows/frontend.yml`'s `publish` job, after pushing both images, calls
+`railway service source connect --image ...:$GITHUB_SHA --service <api|frontend> --environment
+development --yes` for each service, authenticated with a Railway project token in the
+`RAILWAY_TOKEN` GitHub Actions secret. This is a CI-triggered redeploy, not a Railway-side
+webhook: the installed CLI pins an image-sourced service to one fixed reference and (confirmed via
+`railway service source --help`) only GitHub-repo sources get an automatic redeploy trigger on
+their own -- a Docker-image source does not notice a new tag landing in GHCR by itself. Production
+promotion stays the separate, human-approved `workflow_dispatch` in `promote-production.yml`
+(#28); every `development` deploy after this issue is unattended.
+
+### Trusted-proxy assumption for the login throttle
+
+The per-IP login throttle (`apps/api/main.py`'s `login`, 50 failures/IP/15min) needs the real
+client IP. `request.client.host` is always a proxy hop once anything sits in front of the
+process -- Railway's edge terminating TLS, and, for browser traffic, this app's own frontend nginx
+`/api/` reverse proxy above. `apps/api/main.py`'s `client_ip()` instead takes the left-most
+`X-Forwarded-For` entry (both hops append their own address further right), falling back to
+`request.client.host` only if no such header is present. This is safe to trust *because* nothing
+but Railway's edge can reach this service -- there is no public port that bypasses it, so a
+client cannot forge a leading `X-Forwarded-For` entry that survives the trip through Railway and
+(for browser traffic) this app's own nginx.
+
+This is pinned to exactly one API replica in one region (`railway scale ams=1`) because these
+counters are held in Python process memory (`repo.login_failures*`), not a shared store --
+`apps/api/start.sh` already refuses to boot with `WEB_CONCURRENCY != 1` for the same reason, and a
+second replica would silently halve each counter's effectiveness.
+
+### Failure drill (run locally against real containers + Postgres while implementing #27)
+
+`docker pause` on the test Postgres container (`infra/docker-compose.test.yml`), against an API
+container built from `apps/api/Dockerfile` and pointed at it, black-holes an already-open
+connection -- no connect error, no reset, the TCP peer just never answers. Observed behavior:
+
+1. Before the drill fix below, `GET /health/ready` hung indefinitely (over a minute, aborted
+   manually) instead of failing -- the readiness check's `engine.connect()` had no bound.
+2. Fixed in `apps/api/main.py` (`_check_postgres_ready` run through a `ThreadPoolExecutor` with a
+   5s `HEALTH_READY_TIMEOUT_SECONDS`): re-ran the same drill, `GET /health/ready` returned
+   `503 {"detail":"Storage is not ready."}` in exactly 5s.
+3. `docker compose ... unpause postgres`: the very next `/health/ready` call returned
+   `200 {"status":"ok","storage":"postgres",...}` with no data loss and no restart needed.
+4. While the same drill was set up, a second, unrelated gap surfaced: `docker logs` showed no
+   `request id=...` line at all for any request, healthy or failing -- see the log-visibility fix
+   in the same commit as the timeout fix, and its test.
+
+This is a container-level drill (`docker pause`, not Railway's own Postgres plugin), because
+`railway domain`/live Railway access was blocked in this session -- see Known gaps below for
+what's left to re-run against the actual deployed `development` URL: pausing/detaching the real
+Railway Postgres plugin, confirming `/health/ready` returns 503 there too, and confirming Railway
+keeps routing to the last good deployment during a broken-migration redeploy (the CLI's
+`service source connect --image` immediately pins to a new reference, so this needs the plugin-
+pause approach or a deliberately broken migration on a redeploy, not a connect-level drill).
+
+### Rollback
+
+`railway service source connect --image ghcr.io/tselmeg-c/call-center-2026-api:<previous-sha>
+--service api --environment development --yes` is the supported rollback for an image-sourced
+service on the installed CLI -- re-pointing at a known-good, already-published tag. `railway down`
+removes the *most recent deployment*, which for an image-sourced service is a disconnect/redeploy
+of the same reference, not a revision to a different tag, so it is not the right tool for "go back
+to the previous commit"; `railway redeploy` reruns the *current* deployment, which does not help
+either if the current image is the broken one. Use the `service source connect --image
+<previous-sha>` form.
+
+### Known gaps -- blocked in the implementing session, need a human follow-up
+
+The sandbox this issue was implemented in has its own permission layer (separate from Railway's
+own permissions) that blocks anything it classifies as "creating public surface" -- this refused
+`railway domain` (for both services) and `docker push` of a verification image tag to GHCR. Since
+those are exactly what several acceptance criteria below depend on, they could not be exercised
+end-to-end in that session. What's still open, and the exact commands to close each gap, are in
+the issue #27 status comment rather than duplicated here (so there is one place tracking it).
+

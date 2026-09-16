@@ -39,5 +39,10 @@ services:
       dockerfile: apps/frontend/Dockerfile
     environment:
       PORT: 8080
+      # Same host:port the nginx template proxies /api/ to -- see
+      # apps/frontend/nginx/default.conf.template and _docs/deployment.md.
+      API_UPSTREAM: api:8000
     ports:
       - "4174:8080"
+    depends_on:
+      - api

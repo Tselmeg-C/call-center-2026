@@ -67,7 +67,15 @@ export type CustomerPage = { items: Customer[]; page: number; page_size: number;
 
 export type ClosureReason = { id: string; label: string; active: boolean };
 
-export type AssignmentRule = { id: string; name: string; ownerId: string; active: boolean; order: number };
+/** Mirrors `apps/api/assignment_rules.py`'s validated condition shape exactly: `field` is one of
+ *  `CONDITION_FIELDS`, `operator` is one of that field's allowed operators, and `value`'s shape
+ *  depends on `operator` (null for the two null-checks, a two-item tuple for `between`, a string
+ *  list for `in`, a bare scalar otherwise). */
+export type ConditionOperator = "=" | "!=" | "contains" | "in" | "is-null" | "is-not-null" | "<" | "<=" | ">" | ">=" | "between";
+export type ConditionValue = string | number | boolean | string[] | [string, string] | null;
+export type RuleCondition = { field: string; operator: ConditionOperator; value: ConditionValue };
+
+export type AssignmentRule = { id: string; name: string; conditions: RuleCondition[]; memberIds: string[]; active: boolean; order: number };
 
 export type ImportError = { row: number; field: string; reason: string };
 export type ImportResult = {
@@ -134,7 +142,12 @@ export type FollowUpInput = { type: FollowUpType; due?: string | null; note: str
 export type LifecycleInput = { reasonId?: string; submissionId: string };
 export type UserDraft = { name: string; email: string; role: Role; password: string };
 export type UserPatch = { name?: string; role?: Role; active?: boolean };
-export type AssignmentRuleDraft = { name: string; ownerId: string; active?: boolean };
+export type AssignmentRuleDraft = { name: string; conditions: RuleCondition[]; memberIds: string[]; active?: boolean };
+/** `version` carries the optimistic-concurrency token from the last load (see GET
+ *  `/admin/assignment-version`); omitting it (as the active-toggle and reorder controls do) keeps
+ *  their existing always-succeeds behavior, while the rule editor sends it to surface a 409 when
+ *  another admin changed the configuration first. */
+export type AssignmentRulePatch = { name?: string; conditions?: RuleCondition[]; memberIds?: string[]; active?: boolean; order?: number; version?: number };
 export type AuditQuery = { actor?: string; action?: string; bcn?: string; page?: number; page_size?: number };
 
 /** Single boundary for every backend call the app makes. One implementation per composition
@@ -174,7 +187,10 @@ export interface Services {
   assignCustomer(bcn: string, ownerId: string | null, submissionId: string, expectedVersion?: number): Promise<Result<Customer>>;
   listAssignmentRules(): Promise<Result<AssignmentRule[]>>;
   createAssignmentRule(input: AssignmentRuleDraft): Promise<Result<AssignmentRule>>;
-  updateAssignmentRule(id: string, patch: { name?: string; ownerId?: string; active?: boolean; order?: number }): Promise<Result<AssignmentRule>>;
+  updateAssignmentRule(id: string, patch: AssignmentRulePatch): Promise<Result<AssignmentRule>>;
+  /** The assignment configuration's global optimistic-concurrency counter (GET
+   *  `/admin/assignment-version`); bumped by every rule create/update. */
+  getAssignmentVersion(): Promise<Result<number>>;
   runAssignments(scope: "unassigned" | "all-open", submissionId: string): Promise<Result<AssignmentRunResult>>;
 
   reports(start?: string, end?: string): Promise<Result<ReportData>>;

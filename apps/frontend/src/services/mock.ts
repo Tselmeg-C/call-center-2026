@@ -83,6 +83,7 @@ export function createMockServices(): Services {
   let reasons = seedReasons();
   let customers = seedCustomers();
   let rules: AssignmentRule[] = [];
+  let assignmentVersion = 1;
   const fallback: string[] = [];
   let auditLog: AuditEvent[] = [];
   let currentUserId: string | null = null;
@@ -128,6 +129,20 @@ export function createMockServices(): Services {
     if (customer.status === "Closed") return failure("conflict", "Customer is closed.");
     if (user.role !== "Admin" && customer.ownerId !== user.id) return failure("forbidden", "Customer access denied.");
     return ok(customer);
+  }
+
+  // Mirrors apps/api/main.py's `_validate_rule_members`: only active Sales users are eligible,
+  // and a rule must keep at least one. Structural condition validation (field/operator/value
+  // shape) is intentionally not replicated here -- the builder UI validates that client-side
+  // before ever calling this, and the mock only needs to store and round-trip the shape (per
+  // issue #40's constraints), not re-implement apps/api/assignment_rules.py.
+  function validateMemberIds(memberIds: string[]): Result<string[]> {
+    const deduped = [...new Set(memberIds)];
+    if (deduped.some((id) => { const u = findUser(id); return !u || u.role !== "Sales" || !u.active; })) {
+      return failure("validation", "Eligible members must be active Sales users.");
+    }
+    if (!deduped.length) return failure("validation", "Rule must have at least one eligible member.");
+    return ok(deduped);
   }
 
   function releaseOwnedCustomers(actor: MockUser, ownerId: string) {
@@ -466,16 +481,22 @@ export function createMockServices(): Services {
       if (!admin.ok) return Promise.resolve(admin);
       return Promise.resolve(ok(rules.map((item) => ({ ...item }))));
     },
+    getAssignmentVersion: () => {
+      const admin = requireAdmin();
+      if (!admin.ok) return Promise.resolve(admin);
+      return Promise.resolve(ok(assignmentVersion));
+    },
     createAssignmentRule: (input: AssignmentRuleDraft) => {
       const admin = requireAdmin();
       if (!admin.ok) return Promise.resolve(admin);
       const name = input.name.trim();
       if (!name || name.length > 120) return Promise.resolve(failure("validation", "Name must be 1-120 characters."));
       if (rules.some((item) => casefold(item.name) === casefold(name))) return Promise.resolve(failure("conflict", "Rule already exists."));
-      const owner = findUser(input.ownerId);
-      if (!owner || owner.role !== "Sales" || !owner.active) return Promise.resolve(failure("validation", "Owner must be active Sales."));
-      const rule: AssignmentRule = { id: uid("rule"), name, ownerId: input.ownerId, active: input.active ?? true, order: rules.length + 1 };
+      const memberIds = validateMemberIds(input.memberIds);
+      if (!memberIds.ok) return Promise.resolve(memberIds);
+      const rule: AssignmentRule = { id: uid("rule"), name, conditions: input.conditions, memberIds: memberIds.data, active: input.active ?? true, order: rules.length + 1 };
       rules = [...rules, rule];
+      assignmentVersion += 1;
       audit(admin.data.id, "Assignment rule created", rule.id, { name: rule.name });
       return Promise.resolve(ok(rule));
     },
@@ -484,13 +505,17 @@ export function createMockServices(): Services {
       if (!admin.ok) return Promise.resolve(admin);
       const target = rules.find((item) => item.id === id);
       if (!target) return Promise.resolve(failure("request-failure", "Rule not found."));
+      if (patch.version !== undefined && patch.version !== assignmentVersion) return Promise.resolve(failure("conflict", "Assignment configuration is stale."));
       if (patch.name && rules.some((item) => item.id !== id && casefold(item.name) === casefold(patch.name!))) return Promise.resolve(failure("conflict", "Rule already exists."));
-      if (patch.ownerId) {
-        const owner = findUser(patch.ownerId);
-        if (!owner || owner.role !== "Sales" || !owner.active) return Promise.resolve(failure("validation", "Owner must be active Sales."));
+      let memberIds = target.memberIds;
+      if (patch.memberIds !== undefined) {
+        const validated = validateMemberIds(patch.memberIds);
+        if (!validated.ok) return Promise.resolve(validated);
+        memberIds = validated.data;
       }
-      const updated: AssignmentRule = { ...target, ...(patch.name !== undefined ? { name: patch.name } : {}), ...(patch.ownerId !== undefined ? { ownerId: patch.ownerId } : {}), ...(patch.active !== undefined ? { active: patch.active } : {}), ...(patch.order !== undefined ? { order: patch.order } : {}) };
+      const updated: AssignmentRule = { ...target, ...(patch.name !== undefined ? { name: patch.name } : {}), conditions: patch.conditions !== undefined ? patch.conditions : target.conditions, memberIds, ...(patch.active !== undefined ? { active: patch.active } : {}), ...(patch.order !== undefined ? { order: patch.order } : {}) };
       rules = rules.map((item) => (item.id === id ? updated : item)).sort((a, b) => a.order - b.order);
+      assignmentVersion += 1;
       return Promise.resolve(ok(updated));
     },
     runAssignments: (scope, submissionId) => {
@@ -500,7 +525,10 @@ export function createMockServices(): Services {
       const result = idempotent<AssignmentRunResult>(key, () => {
         if (scope !== "unassigned" && scope !== "all-open") return failure("validation", "Invalid assignment scope.");
         const eligible = new Set(users.filter((item) => item.role === "Sales" && item.active).map((item) => item.id));
-        const owners = rules.filter((item) => item.active && eligible.has(item.ownerId)).sort((a, b) => a.order - b.order).map((item) => item.ownerId);
+        // ponytail: real matching (apps/api/assignment_rules.py) walks conditions per customer and
+        // picks the least-loaded eligible member; the mock only needs a believable local/demo
+        // stand-in (per issue #40), so it just takes the first active rule's eligible member pool.
+        const owners = rules.filter((item) => item.active).sort((a, b) => a.order - b.order).flatMap((item) => item.memberIds.filter((memberId) => eligible.has(memberId)));
         const pool = owners.length ? owners : fallback.filter((id) => eligible.has(id));
         const candidates = customers.filter((item) => item.status === "Open" && (scope === "all-open" || !item.ownerId));
         let assigned = 0;

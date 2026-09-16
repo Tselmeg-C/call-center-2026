@@ -1,13 +1,9 @@
 export type Role = "admin" | "sales";
 
-export type AssignmentRule = {
-  id: string;
-  name: string;
-  priority: number;
-  conditions: string;
-  eligible: string[];
-  active: boolean;
-};
+// The single-owner-per-rule `AssignmentRule` UI type that used to live here is gone: assignment
+// rules now carry ordered conditions and a set of eligible members (see
+// @/services/types.AssignmentRule), and admin.assignment.tsx consumes that service shape directly
+// -- like @/services/types.ClosureReason, it needs no UI-specific adaptation.
 
 export type User = {
   id: string;

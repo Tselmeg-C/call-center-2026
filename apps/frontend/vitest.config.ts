@@ -5,7 +5,7 @@ export default defineConfig({
   resolve: { alias: { "@": resolve(process.cwd(), "src") } },
   test: {
     environment: "node",
-    include: ["src/**/*.test.ts", "src/**/*.test.tsx"],
-    exclude: ["src/**/*.journey.test.ts"],
+    include: ["test/**/*.test.ts", "test/**/*.test.tsx"],
+    exclude: ["test/**/*.journey.test.ts"],
   },
 });

@@ -24,17 +24,17 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.orm import Session
 
-from . import main, db_auth
-from .db_auth import AuthDatabase, SessionRow, UserRow, digest, StorageError
+from .. import main, db_auth
+from ..db_auth import AuthDatabase, SessionRow, UserRow, digest, StorageError
 
 ORIGIN = {"origin": "http://localhost:3000"}
 
 
 def test_history_delete_is_atomic_authorized_and_idempotent(tmp_path, monkeypatch):
     from fastapi import HTTPException
-    from .db_activity import ActivityDatabase, ActivityRow
-    from .db_assignment import AssignmentDatabase, AuditRow
-    from .db_customers import CustomerDatabase
+    from ..db_activity import ActivityDatabase, ActivityRow
+    from ..db_assignment import AssignmentDatabase, AuditRow
+    from ..db_customers import CustomerDatabase
 
     url = f"sqlite+pysqlite:///{tmp_path / 'delete.db'}"
     activities = ActivityDatabase(url)
@@ -83,9 +83,9 @@ def test_history_delete_is_atomic_authorized_and_idempotent(tmp_path, monkeypatc
 @pytest.mark.parametrize("operation", ["followup", "interaction", "note"])
 def test_activity_creation_is_atomic_and_replays(operation, tmp_path, monkeypatch):
     from fastapi import HTTPException
-    from .db_activity import ActivityDatabase, FollowUpRow, ActivityRow, IdempotencyRow
-    from .db_customers import CustomerDatabase
-    from .db_assignment import AssignmentDatabase, AuditRow
+    from ..db_activity import ActivityDatabase, FollowUpRow, ActivityRow, IdempotencyRow
+    from ..db_customers import CustomerDatabase
+    from ..db_assignment import AssignmentDatabase, AuditRow
 
     url = f"sqlite+pysqlite:///{tmp_path / 'followup.db'}"
     activities = ActivityDatabase(url)
@@ -141,7 +141,7 @@ def test_activity_creation_is_atomic_and_replays(operation, tmp_path, monkeypatc
 def test_rule_updates_compare_persisted_version_and_rollback(tmp_path, monkeypatch):
     from copy import deepcopy
     from fastapi import HTTPException
-    from .db_assignment import AssignmentDatabase
+    from ..db_assignment import AssignmentDatabase
 
     database = AssignmentDatabase(f"sqlite+pysqlite:///{tmp_path / 'rules.db'}")
     monkeypatch.setattr(main, "assignment_db", database)
@@ -189,7 +189,7 @@ def test_rule_member_update_enforces_active_sales(tmp_path, monkeypatch):
     assignment_rules.resolve_owner cover that). Editing a rule's memberIds is validated the same
     way rule creation is: only active-Sales users, and at least one member."""
     from fastapi import HTTPException
-    from .db_assignment import AssignmentDatabase
+    from ..db_assignment import AssignmentDatabase
 
     database = AssignmentDatabase(f"sqlite+pysqlite:///{tmp_path / 'rule-member.db'}")
     monkeypatch.setattr(main, "assignment_db", database)
@@ -219,8 +219,8 @@ def test_rule_member_update_enforces_active_sales(tmp_path, monkeypatch):
 
 
 def test_manual_assignment_commit_and_rollback(tmp_path, monkeypatch):
-    from .db_assignment import AssignmentDatabase, AssignmentHistoryRow, AuditRow
-    from .db_customers import CustomerDatabase
+    from ..db_assignment import AssignmentDatabase, AssignmentHistoryRow, AuditRow
+    from ..db_customers import CustomerDatabase
     from fastapi import HTTPException
 
     url = f"sqlite+pysqlite:///{tmp_path / 'manual.db'}"
@@ -274,8 +274,8 @@ def test_owner_identity_change_rolls_back_and_releases_only_open(changes, backen
     is exercised against real PostgreSQL, not just SQLite."""
     from copy import deepcopy
     from fastapi import HTTPException
-    from .db_assignment import AssignmentDatabase, AssignmentHistoryRow, AuditRow
-    from .db_customers import CustomerDatabase
+    from ..db_assignment import AssignmentDatabase, AssignmentHistoryRow, AuditRow
+    from ..db_customers import CustomerDatabase
 
     url = request.getfixturevalue("postgres_url") if backend == "postgres" else f"sqlite+pysqlite:///{tmp_path / 'owner.db'}"
     if backend == "postgres": migrate()
@@ -343,8 +343,8 @@ def test_owner_identity_change_rolls_back_and_releases_only_open(changes, backen
 
 @pytest.mark.parametrize("backend", ["sqlite", "postgres"])
 def test_bulk_assignment_atomic_rollback_and_retry(backend, request, tmp_path, monkeypatch):
-    from .db_assignment import AssignmentDatabase, AssignmentHistoryRow, AssignmentRunRow, AuditRow
-    from .db_customers import CustomerDatabase
+    from ..db_assignment import AssignmentDatabase, AssignmentHistoryRow, AssignmentRunRow, AuditRow
+    from ..db_customers import CustomerDatabase
     from fastapi import HTTPException
 
     url = request.getfixturevalue("postgres_url") if backend == "postgres" else f"sqlite+pysqlite:///{tmp_path / 'bulk.db'}"
@@ -537,7 +537,7 @@ def test_shared_session_clock_logout_recovery_and_role(adapter, monkeypatch):
 
 
 def test_postgres_migrations_constraints_and_rollback(postgres_url, monkeypatch):
-    from .db_customers import CustomerDatabase
+    from ..db_customers import CustomerDatabase
 
     # Start from #23's actual final revision, seed representative pre-existing user/customer/import
     # data, then upgrade through #24's entire migration chain to head -- proving the upgrade path
@@ -646,8 +646,8 @@ def test_postgres_activity_migrations_survive_bcn_widen_and_followup_link(postgr
     activity/follow-up/closure-reason/idempotency rows across the upgrade to head, and a repeated
     upgrade must be a no-op -- the same pattern the #24 fix used for #23's customers/import tables in
     test_postgres_migrations_constraints_and_rollback."""
-    from .db_activity import ActivityDatabase, fingerprint
-    from .db_customers import CustomerDatabase
+    from ..db_activity import ActivityDatabase, fingerprint
+    from ..db_customers import CustomerDatabase
 
     # Start from the revision right before #25's activity_customer_fks migration, seed representative
     # pre-existing rows using the schema as it existed at that revision (bcn is still VARCHAR(64) and
@@ -693,7 +693,7 @@ def test_postgres_activity_migrations_survive_bcn_widen_and_followup_link(postgr
 
 
 def test_postgres_customer_import_persists_and_rolls_back(postgres_url):
-    from .db_customers import CustomerCollectionRow, CustomerDatabase, CustomerRow, PhoneRow
+    from ..db_customers import CustomerCollectionRow, CustomerDatabase, CustomerRow, PhoneRow
 
     migrate()
     auth = AuthDatabase(postgres_url, create_schema=False)
@@ -732,7 +732,7 @@ def test_postgres_customer_import_persists_and_rolls_back(postgres_url):
 
 def test_postgres_customer_import_constraints_and_rollback(postgres_url):
     """Constraint/rollback coverage for customers/customer_phones/customer_collections/import_row_errors, matching test_postgres_migrations_constraints_and_rollback's pattern for users/sessions."""
-    from .db_customers import CustomerCollectionRow, CustomerDatabase, CustomerRow, ImportErrorRow, ImportJobRow, PhoneRow
+    from ..db_customers import CustomerCollectionRow, CustomerDatabase, CustomerRow, ImportErrorRow, ImportJobRow, PhoneRow
 
     migrate()
     auth = AuthDatabase(postgres_url, create_schema=False)
@@ -788,8 +788,8 @@ def test_postgres_activity_lifecycle_http_journey(postgres_url, monkeypatch):
     (/interactions, /notes, /follow-ups, /close, /reopen, /admin/closure-reasons) against real
     PostgreSQL -- the coverage gap QA found: every prior activity/lifecycle test called repository or
     main.py functions directly, or ran the HTTP routes only against the in-memory repo."""
-    from .db_activity import ActivityDatabase
-    from .db_customers import CustomerDatabase
+    from ..db_activity import ActivityDatabase
+    from ..db_customers import CustomerDatabase
 
     migrate()
     auth = AuthDatabase(postgres_url, create_schema=False)
@@ -886,7 +886,7 @@ def test_postgres_activity_lifecycle_http_journey(postgres_url, monkeypatch):
         # still active Sales, then reopened only after that owner is deactivated -- ownership must
         # release (ownerId/ownerName null) with the Assignment history entry plus the
         # assignment_history/audit_events rows, all written atomically inside reopen_customer.
-        from .db_assignment import AssignmentDatabase, AssignmentHistoryRow, AuditRow
+        from ..db_assignment import AssignmentDatabase, AssignmentHistoryRow, AuditRow
 
         customers.upsert_source(bcn="000861", name="Journey Release Co", source={})
         customers.save_operational(bcn="000861", owner_id="journey-owner", status="Open", version=0)
@@ -933,9 +933,9 @@ def test_postgres_search_workload_reports_audit_http_journey(postgres_url, monke
     /admin/reports, and /admin/audit exercised as real HTTP requests against real PostgreSQL --
     plus unauthorized direct requests (wrong role, wrong owner, forged IDs) rejected the same way
     as in memory mode."""
-    from .db_activity import ActivityDatabase
-    from .db_assignment import AssignmentDatabase
-    from .db_customers import CustomerDatabase
+    from ..db_activity import ActivityDatabase
+    from ..db_assignment import AssignmentDatabase
+    from ..db_customers import CustomerDatabase
 
     migrate()
     auth = AuthDatabase(postgres_url, create_schema=False)
@@ -1058,9 +1058,9 @@ def test_postgres_reimport_after_operational_work_http_journey(postgres_url, mon
     work. This runs a full reimport as an HTTP request AFTER real interaction/follow-up/closure/
     assignment work, and proves it changes only source fields and the source-primary phone while
     preserving every operational and audit record and leaving current ownership untouched."""
-    from .db_activity import ActivityDatabase
-    from .db_assignment import AssignmentDatabase, AssignmentHistoryRow, AuditRow
-    from .db_customers import CustomerDatabase
+    from ..db_activity import ActivityDatabase
+    from ..db_assignment import AssignmentDatabase, AssignmentHistoryRow, AuditRow
+    from ..db_customers import CustomerDatabase
 
     migrate()
     auth = AuthDatabase(postgres_url, create_schema=False)
@@ -1158,7 +1158,7 @@ def test_postgres_reimport_after_operational_work_http_journey(postgres_url, mon
 
 def test_postgres_import_http_pipeline_behavior(postgres_url, monkeypatch):
     """The #18 ingestion behavior suite through the real /admin/imports upload pipeline against Postgres: row errors, duplicate rows in one file, retry, conflict-on-change, unchanged-row updates, and null-clearing."""
-    from .db_customers import CustomerDatabase
+    from ..db_customers import CustomerDatabase
 
     migrate()
     auth = AuthDatabase(postgres_url, create_schema=False)
@@ -1220,7 +1220,7 @@ def test_postgres_import_http_pipeline_behavior(postgres_url, monkeypatch):
 
 def test_postgres_import_rejects_empty_and_corrupt_workbooks(postgres_url, monkeypatch):
     """Empty (header-only) workbooks persist a zero-total job; corrupt/wrong-extension uploads are whole-file rejections with no persisted job."""
-    from .db_customers import CustomerDatabase
+    from ..db_customers import CustomerDatabase
 
     migrate()
     auth = AuthDatabase(postgres_url, create_schema=False)
@@ -1261,8 +1261,8 @@ def test_postgres_assignment_constraints_and_rollback(postgres_url):
     head -- proving the upgrade path survives and is a no-op on repeat -- before covering the
     constraint/rollback behavior.
     """
-    from .db_assignment import AssignmentDatabase, AssignmentHistoryRow, AssignmentRunRow, AuditRow, RuleRow, RuleMemberRow
-    from .db_customers import CustomerDatabase
+    from ..db_assignment import AssignmentDatabase, AssignmentHistoryRow, AssignmentRunRow, AuditRow, RuleRow, RuleMemberRow
+    from ..db_customers import CustomerDatabase
 
     migrate("002_customers")
     auth = AuthDatabase(postgres_url, create_schema=False)
@@ -1339,8 +1339,8 @@ def test_postgres_assignment_constraints_and_rollback(postgres_url):
 
 def test_postgres_bulk_assignment_rule_order_fallback_and_scope(postgres_url, monkeypatch):
     """The #19 rule-order/fallback/unchanged-owner engine (test_assignment_order_fallback_and_unchanged_owner) against real PostgreSQL persistence."""
-    from .db_assignment import AssignmentDatabase, AssignmentHistoryRow, AuditRow
-    from .db_customers import CustomerDatabase
+    from ..db_assignment import AssignmentDatabase, AssignmentHistoryRow, AuditRow
+    from ..db_customers import CustomerDatabase
 
     migrate()
     auth = AuthDatabase(postgres_url, create_schema=False)
@@ -1414,8 +1414,8 @@ def test_postgres_bulk_assignment_rule_order_fallback_and_scope(postgres_url, mo
 def test_postgres_fallback_sales_round_trips_and_rejects_without_partial_write(postgres_url, monkeypatch):
     """fallback_sales write/reject round-tripped through AssignmentDatabase.set_setting against real PostgreSQL, not just in memory."""
     from fastapi import HTTPException
-    from .db_assignment import AssignmentDatabase
-    from .db_customers import CustomerDatabase
+    from ..db_assignment import AssignmentDatabase
+    from ..db_customers import CustomerDatabase
 
     migrate()
     auth = AuthDatabase(postgres_url, create_schema=False)
@@ -1447,8 +1447,8 @@ def test_postgres_fallback_sales_round_trips_and_rejects_without_partial_write(p
 
 def test_postgres_bulk_run_concurrent_submission_serializes(postgres_url):
     """Two real concurrent PostgreSQL transactions racing on the same (actor_id, submission_id) serialize on the unique run key."""
-    from .db_assignment import AssignmentDatabase, AssignmentHistoryRow, AssignmentRunRow, AuditRow
-    from .db_customers import CustomerDatabase
+    from ..db_assignment import AssignmentDatabase, AssignmentHistoryRow, AssignmentRunRow, AuditRow
+    from ..db_customers import CustomerDatabase
 
     migrate()
     auth = AuthDatabase(postgres_url, create_schema=False)
@@ -1478,8 +1478,8 @@ def test_postgres_bulk_run_concurrent_submission_serializes(postgres_url):
 
 def test_postgres_manual_assignment_concurrent_stale_version_conflicts(postgres_url):
     """Two real concurrent PostgreSQL transactions racing on the same bcn serialize on the customer row lock; the stale-version loser gets a conflict, not a silently lost update."""
-    from .db_assignment import AssignmentDatabase, AssignmentHistoryRow, AuditRow
-    from .db_customers import CustomerDatabase
+    from ..db_assignment import AssignmentDatabase, AssignmentHistoryRow, AuditRow
+    from ..db_customers import CustomerDatabase
 
     migrate()
     auth = AuthDatabase(postgres_url, create_schema=False)
@@ -1520,8 +1520,8 @@ def test_postgres_followup_completion_race_loser_gets_conflict_not_500(postgres_
     still "Open" when it read it); main.complete_followup must catch that, like every other mutation
     endpoint catches its own idempotency/version ValueError, instead of letting FastAPI turn it into an
     unhandled 500."""
-    from .db_activity import ActivityDatabase
-    from .db_customers import CustomerDatabase
+    from ..db_activity import ActivityDatabase
+    from ..db_customers import CustomerDatabase
 
     migrate()
     auth = AuthDatabase(postgres_url, create_schema=False)
@@ -1832,7 +1832,7 @@ with TestClient(app, base_url="http://localhost") as client:
 
 def test_postgres_operator_console(postgres_url, monkeypatch, capsys):
     migrate()
-    from . import operator
+    from .. import operator
     database = AuthDatabase(postgres_url, create_schema=False)
     monkeypatch.setattr(main, "auth_db", database)
     monkeypatch.setattr(main, "storage_mode", "postgres")

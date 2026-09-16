@@ -30,7 +30,7 @@ The two Compose files are intentionally standalone: `docker-compose.yml` runs th
 ```sh
 docker compose -p call-center-tests -f infra/docker-compose.test.yml up -d --wait
 export TEST_DATABASE_URL=postgresql+psycopg://postgres@127.0.0.1:55432/call_center_test
-python -m pytest apps/api/test_auth.py apps/api/test_auth_adapters.py --tb=no
+python -m pytest apps/api/test/test_auth.py apps/api/test/test_auth_adapters.py --tb=no
 docker compose -p call-center-tests -f infra/docker-compose.test.yml down -v
 ```
 

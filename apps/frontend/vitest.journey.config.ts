@@ -8,7 +8,7 @@ export default defineConfig({
   resolve: { alias: { "@": resolve(process.cwd(), "src") } },
   test: {
     environment: "node",
-    include: ["src/**/*.journey.test.ts"],
+    include: ["test/**/*.journey.test.ts"],
     testTimeout: 30_000,
     hookTimeout: 30_000,
     fileParallelism: false,

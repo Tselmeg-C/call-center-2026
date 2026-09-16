@@ -118,6 +118,29 @@ if [ "$proxied" != "$(curl -fsS "http://127.0.0.1:${api_port}/health/ready")" ];
 fi
 echo "    frontend /api/health/ready: $proxied"
 
+# #61: confirm the baseline security headers added to default.conf.template's server block
+# actually show up on real responses from both locations (not just in the rendered config),
+# for the / (SPA) and /api/ (reverse-proxied) paths that inherit them.
+echo "==> Checking security headers are present on frontend responses (#61)"
+root_headers=$(curl -fsS -o /dev/null -D - "http://127.0.0.1:${frontend_port}/")
+api_headers=$(curl -fsS -o /dev/null -D - "http://127.0.0.1:${frontend_port}/api/health/ready")
+
+for header in "Strict-Transport-Security" "X-Content-Type-Options" "Referrer-Policy" "X-Frame-Options" "Content-Security-Policy"; do
+  if ! printf '%s' "$root_headers" | grep -qi "^${header}:"; then
+    echo "Frontend / response is missing the $header security header" >&2
+    exit 1
+  fi
+done
+echo "    /: all security headers present"
+
+for header in "Strict-Transport-Security" "X-Content-Type-Options" "Referrer-Policy"; do
+  if ! printf '%s' "$api_headers" | grep -qi "^${header}:"; then
+    echo "Frontend /api/ response is missing the $header security header" >&2
+    exit 1
+  fi
+done
+echo "    /api/health/ready: all security headers present"
+
 # #27 QA live repro: a 1.35 MiB .xlsx (well inside the API's real 10 MiB limit) got a bare nginx
 # 413 through the frontend proxy while passing straight through when sent directly to the API.
 # Send a 2 MiB body (above nginx's old 1 MiB default, below the API's 10 MiB limit) through the

@@ -1,7 +1,14 @@
-import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { toast } from "sonner";
 import { useServices, useSession } from "@/services/provider";
-import type { AssignmentRule as ServiceRule, ClosureReason, Customer as ServiceCustomer } from "@/services/types";
+import type {
+  AssignmentRule,
+  AssignmentRuleDraft,
+  AssignmentRulePatch,
+  ClosureReason,
+  Customer as ServiceCustomer,
+  Result,
+} from "@/services/types";
 import {
   fromFollowUpType,
   newSubmissionId,
@@ -25,8 +32,6 @@ import type {
   User,
 } from "./types";
 
-type UiAssignmentRule = { id: string; name: string; priority: number; conditions: string; eligible: string[]; active: boolean };
-
 type Ctx = {
   currentUser: User;
   users: User[];
@@ -37,7 +42,7 @@ type Ctx = {
   assignmentHistory: AssignmentEvent[];
   auditLog: AuditEntry[];
   importJobs: ImportJob[];
-  assignmentRules: UiAssignmentRule[];
+  assignmentRules: AssignmentRule[];
   closureReasons: ClosureReason[];
   canWork: (c: Customer) => boolean;
   signOut: () => void;
@@ -50,12 +55,21 @@ type Ctx = {
   runAssignment: () => Promise<{ assigned: number }>;
   toggleUserActive: (id: string) => Promise<boolean>;
   toggleRule: (id: string) => Promise<boolean>;
+  /** Up/down reordering; like `toggleRule`, never version-checked -- reordering keeps its
+   *  existing always-succeeds behavior (see the rule editor's `updateAssignmentRule` for the one
+   *  flow that does surface a stale-version conflict). */
+  moveRule: (id: string, direction: "up" | "down") => Promise<boolean>;
+  createAssignmentRule: (input: AssignmentRuleDraft) => Promise<Result<AssignmentRule>>;
+  /** Used by the rule editor to save name/conditions/memberIds/active changes; always attaches
+   *  the last-loaded assignment version so a concurrent edit elsewhere surfaces as a 409 instead
+   *  of silently overwriting it. Returns the raw Result (rather than toasting) so the form can
+   *  show the specific inline error -- duplicate name, stale version, etc. */
+  updateAssignmentRule: (id: string, patch: Omit<AssignmentRulePatch, "version">) => Promise<Result<AssignmentRule>>;
+  refreshAssignmentRules: () => Promise<void>;
   recordImport: (file: File) => Promise<ImportJob | null>;
 };
 
 const StoreContext = createContext<Ctx | null>(null);
-
-const ruleReasonText = (rule: ServiceRule) => `Assigns to ${rule.ownerId} while active (order ${rule.order})`;
 
 export function StoreProvider({ children }: { children: ReactNode }) {
   const services = useServices();
@@ -63,9 +77,13 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const [serviceCustomers, setServiceCustomers] = useState<ServiceCustomer[]>([]);
   const [users, setUsers] = useState<User[]>([]);
   const [closureReasons, setClosureReasons] = useState<ClosureReason[]>([]);
-  const [rules, setRules] = useState<ServiceRule[]>([]);
+  const [rules, setRules] = useState<AssignmentRule[]>([]);
   const [importJobs, setImportJobs] = useState<ImportJob[]>([]);
   const [auditLog, setAuditLog] = useState<AuditEntry[]>([]);
+  // Not reactive state on purpose: it's only ever read/written synchronously inside the mutation
+  // helpers below (including back-to-back within moveRule), and a useState value read from a
+  // closure captured before a prior await resolves would still see the pre-mutation number.
+  const assignmentVersion = useRef(1);
 
   const isAdmin = sessionUser?.role === "Admin";
 
@@ -84,6 +102,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       });
       void services.listAssignmentRules().then((result) => {
         if (active && result.ok) setRules(result.data);
+      });
+      void services.getAssignmentVersion().then((result) => {
+        if (active && result.ok) assignmentVersion.current = result.data;
       });
       void services.audit({ page_size: 100 }).then((result) => {
         if (active && result.ok) {
@@ -119,10 +140,6 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     [serviceCustomers],
   );
   const assignmentHistory = useMemo(() => serviceCustomers.flatMap(toAssignmentEvents), [serviceCustomers]);
-  const assignmentRules = useMemo<UiAssignmentRule[]>(
-    () => rules.map((rule) => ({ id: rule.id, name: rule.name, priority: rule.order, conditions: ruleReasonText(rule), eligible: [rule.ownerId], active: rule.active })),
-    [rules],
-  );
 
   const replaceCustomer = (updated: ServiceCustomer) =>
     setServiceCustomers((prev) => prev.map((item) => (item.bcn === updated.bcn ? updated : item)));
@@ -232,7 +249,56 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       return false;
     }
     setRules((prev) => prev.map((item) => (item.id === id ? result.data : item)));
+    assignmentVersion.current += 1;
     return true;
+  };
+
+  const moveRule: Ctx["moveRule"] = async (id, direction) => {
+    const sorted = [...rules].sort((a, b) => a.order - b.order);
+    const index = sorted.findIndex((item) => item.id === id);
+    const swapIndex = direction === "up" ? index - 1 : index + 1;
+    if (index < 0 || swapIndex < 0 || swapIndex >= sorted.length) return false;
+    const current = sorted[index]!;
+    const neighbor = sorted[swapIndex]!;
+    const [currentResult, neighborResult] = await Promise.all([
+      services.updateAssignmentRule(current.id, { order: neighbor.order }),
+      services.updateAssignmentRule(neighbor.id, { order: current.order }),
+    ]);
+    if (!currentResult.ok || !neighborResult.ok) {
+      reportError((!currentResult.ok && currentResult.error.message) || (!neighborResult.ok && neighborResult.error.message) || "Could not reorder rules.");
+      return false;
+    }
+    setRules((prev) =>
+      prev
+        .map((item) => (item.id === current.id ? currentResult.data : item.id === neighbor.id ? neighborResult.data : item))
+        .sort((a, b) => a.order - b.order),
+    );
+    assignmentVersion.current += 2;
+    return true;
+  };
+
+  const createAssignmentRule: Ctx["createAssignmentRule"] = async (input) => {
+    const result = await services.createAssignmentRule(input);
+    if (result.ok) {
+      setRules((prev) => [...prev, result.data].sort((a, b) => a.order - b.order));
+      assignmentVersion.current += 1;
+    }
+    return result;
+  };
+
+  const updateAssignmentRule: Ctx["updateAssignmentRule"] = async (id, patch) => {
+    const result = await services.updateAssignmentRule(id, { ...patch, version: assignmentVersion.current });
+    if (result.ok) {
+      setRules((prev) => prev.map((item) => (item.id === id ? result.data : item)).sort((a, b) => a.order - b.order));
+      assignmentVersion.current += 1;
+    }
+    return result;
+  };
+
+  const refreshAssignmentRules: Ctx["refreshAssignmentRules"] = async () => {
+    const [rulesResult, versionResult] = await Promise.all([services.listAssignmentRules(), services.getAssignmentVersion()]);
+    if (rulesResult.ok) setRules(rulesResult.data);
+    if (versionResult.ok) assignmentVersion.current = versionResult.data;
   };
 
   const recordImport: Ctx["recordImport"] = async (file) => {
@@ -267,7 +333,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         assignmentHistory,
         auditLog,
         importJobs,
-        assignmentRules,
+        assignmentRules: rules,
         closureReasons,
         canWork,
         signOut: () => void services.logout(),
@@ -280,6 +346,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         runAssignment,
         toggleUserActive,
         toggleRule,
+        moveRule,
+        createAssignmentRule,
+        updateAssignmentRule,
+        refreshAssignmentRules,
         recordImport,
       }
     : null;

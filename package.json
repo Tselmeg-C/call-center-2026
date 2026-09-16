@@ -20,6 +20,7 @@
     "smoke:containers": "sh infra/smoke-test.sh"
   },
   "devDependencies": {
+    "railway": "^3.11.0",
     "typescript": "5.8.3"
   }
 }

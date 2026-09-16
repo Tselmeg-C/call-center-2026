@@ -267,8 +267,12 @@ it can only ever bootstrap the very first account on a fresh deployment -- after
 authenticated Admin creates further accounts (Sales included) through `POST /admin/users`.
 `POST /operator/reset-password/{user_id}` has no such "nothing provisioned yet" guard -- it can
 reset *any* existing user's password given only their id, unauthenticated -- so it stays
-registered only under `CALL_CENTER_STORAGE=memory` (a local dev/test convenience); enabling it
-against a real deployment would be an unauthenticated account-takeover endpoint.
+registered only when **both** `CALL_CENTER_STORAGE=memory` **and** the explicit opt-in
+`CALL_CENTER_ENABLE_OPERATOR_RESET` env flag are set (a local dev/test convenience). The flag
+defaults to disabled -- unset, `0`, or `false` -- and is independent of storage mode: memory mode
+alone (flag unset) does not register the route, and setting the flag under
+`CALL_CENTER_STORAGE=postgres` does not register it either. Enabling it against a real deployment
+would be an unauthenticated account-takeover endpoint.
 
 ```sh
 curl -X POST https://<api-domain>/operator/provision \

@@ -4,6 +4,7 @@ from time import perf_counter
 import logging
 import os
 import subprocess
+import sys
 from openpyxl import Workbook
 
 from fastapi.testclient import TestClient
@@ -803,6 +804,24 @@ def test_operator_provision_and_recovery_revoke_session() -> None:
     assert recovered.status_code == 200 and "password" not in recovered.json()
     assert client.get("/session/me").status_code == 401
     assert client.post("/operator/provision", json={"name": "Second", "email": "second@example.test", "role": "Admin", "password": "correct horse battery staple"}, headers=headers).status_code == 409
+
+
+def test_operator_reset_password_route_requires_explicit_flag() -> None:
+    # #60: memory mode alone must not be enough to expose this route -- pattern-matches the
+    # postgres-mode 404 check in test_auth_adapters.py's test_postgres_process_restart, but proves
+    # the flag (not just storage mode) is the thing gating it. Needs a fresh subprocess: this
+    # process already imported ..main with the flag on (see conftest.py), and route registration
+    # happens once at import time, so it can't be un-registered here by monkeypatching the env.
+    env = os.environ.copy(); env.pop("CALL_CENTER_ENABLE_OPERATOR_RESET", None); env["CALL_CENTER_STORAGE"] = "memory"
+    script = (
+        "from fastapi.testclient import TestClient\n"
+        "from apps.api.main import app\n"
+        "with TestClient(app, base_url='http://localhost') as client:\n"
+        "    response = client.post('/operator/reset-password/anything', headers={'origin': 'http://localhost:3000'}, json={'password': 'correct horse battery staple'})\n"
+        "    assert response.status_code == 404, response.status_code\n"
+    )
+    result = subprocess.run([sys.executable, "-c", script], env=env, capture_output=True)
+    assert result.returncode == 0, result.stderr
 
 
 def test_password_bounds_and_inactive_users_have_safe_failures() -> None:

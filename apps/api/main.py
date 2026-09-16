@@ -1261,8 +1261,10 @@ def operator_reset_password(user_id: str, data: ResetPassword) -> User:
 # against a real Postgres-backed environment (there was previously no HTTP-reachable way to
 # create that first account without direct DB/SSH access). /operator/reset-password has no such
 # "nothing provisioned yet" guard -- it can reset *any* existing user's password given just their
-# id, unauthenticated -- so it stays memory-only (a local dev convenience), since enabling it
-# against a real deployment would be an unauthenticated account-takeover endpoint.
+# id, unauthenticated -- so it stays memory-only (a local dev convenience) AND requires the
+# explicit CALL_CENTER_ENABLE_OPERATOR_RESET opt-in flag, since enabling it against a real
+# deployment would be an unauthenticated account-takeover endpoint.
 app.post("/operator/provision", response_model=User, include_in_schema=False)(operator_provision)
-if storage_mode == "memory":
+_operator_reset_enabled = os.getenv("CALL_CENTER_ENABLE_OPERATOR_RESET", "").casefold() in {"1", "true", "yes"}
+if storage_mode == "memory" and _operator_reset_enabled:
     app.post("/operator/reset-password/{user_id}", response_model=User, include_in_schema=False)(operator_reset_password)

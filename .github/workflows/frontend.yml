@@ -86,11 +86,18 @@ jobs:
           echo "IMAGE_API=ghcr.io/${OWNER}/${REPO}-api" >> "$GITHUB_ENV"
           echo "IMAGE_FRONTEND=ghcr.io/${OWNER}/${REPO}-frontend" >> "$GITHUB_ENV"
 
+      # No formal semver in this repo -- this is a human-readable, sortable, unique-per-build
+      # label (UTC build date + short commit SHA), not a version bump process. The full-SHA tag
+      # below stays the tag #28's promote-production.yml and Railway's config-as-code use;
+      # this is purely an additional, friendlier label alongside it.
+      - name: Compute build version tag
+        run: echo "BUILD_VERSION=$(date -u +%Y.%m.%d)-${GITHUB_SHA::7}" >> "$GITHUB_ENV"
+
       - name: Build API image
-        run: docker build -f apps/api/Dockerfile --build-arg GIT_SHA="$GITHUB_SHA" -t "$IMAGE_API:$GITHUB_SHA" -t "$IMAGE_API:latest" .
+        run: docker build -f apps/api/Dockerfile --build-arg GIT_SHA="$GITHUB_SHA" -t "$IMAGE_API:$GITHUB_SHA" -t "$IMAGE_API:$BUILD_VERSION" -t "$IMAGE_API:latest" .
 
       - name: Build frontend image
-        run: docker build -f apps/frontend/Dockerfile -t "$IMAGE_FRONTEND:$GITHUB_SHA" -t "$IMAGE_FRONTEND:latest" .
+        run: docker build -f apps/frontend/Dockerfile -t "$IMAGE_FRONTEND:$GITHUB_SHA" -t "$IMAGE_FRONTEND:$BUILD_VERSION" -t "$IMAGE_FRONTEND:latest" .
 
       # Everything below only runs for a push to main -- PRs (including from forks) and
       # other branches stop at the build steps above, never push an image.
@@ -106,12 +113,14 @@ jobs:
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         run: |
           docker push "$IMAGE_API:$GITHUB_SHA"
+          docker push "$IMAGE_API:$BUILD_VERSION"
           docker push "$IMAGE_API:latest"
 
       - name: Push frontend image
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         run: |
           docker push "$IMAGE_FRONTEND:$GITHUB_SHA"
+          docker push "$IMAGE_FRONTEND:$BUILD_VERSION"
           docker push "$IMAGE_FRONTEND:latest"
 
       # #27: unattended auto-deploy of Railway's `development` environment on every successful

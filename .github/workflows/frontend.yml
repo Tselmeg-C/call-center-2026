@@ -127,11 +127,17 @@ jobs:
       # Only an account-scoped token (railway.com/account/tokens), set as RAILWAY_API_TOKEN, can
       # actually change a service's deployed image. This does mean the token has access beyond
       # just this one project -- Railway's CLI has no narrower mutation-capable scope today.
+      #
+      # An account token isn't tied to one project the way a Project Token is, so the CLI has no
+      # implicit project context in CI's fresh checkout (no `railway link` state) -- it fails with
+      # "No linked project found" without an explicit --project. Pass it directly rather than add
+      # a separate `railway link` step.
       - name: Deploy development (Railway)
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         env:
           RAILWAY_API_TOKEN: ${{ secrets.RAILWAY_API_TOKEN }}
+          RAILWAY_PROJECT_ID: e7501ba0-4b15-42e1-a4a5-e4a4aaba614b
         run: |
           npm install -g @railway/cli@5
-          railway service source connect --image "$IMAGE_API:$GITHUB_SHA" --service api --environment development
-          railway service source connect --image "$IMAGE_FRONTEND:$GITHUB_SHA" --service frontend --environment development
+          railway service source connect --image "$IMAGE_API:$GITHUB_SHA" --service api --environment development --project "$RAILWAY_PROJECT_ID"
+          railway service source connect --image "$IMAGE_FRONTEND:$GITHUB_SHA" --service frontend --environment development --project "$RAILWAY_PROJECT_ID"

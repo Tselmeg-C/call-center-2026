@@ -162,7 +162,7 @@ def run(scale_name: str | None = None) -> dict:
         # show the SDK's overhead, not network export latency to a live collector.
         otel_enabled = os.getenv("BENCHMARK_OTEL", "").casefold() in {"1", "true", "yes"}
         if otel_enabled:
-            from . import otel_setup
+            from observability import otel_setup
             from opentelemetry.sdk._logs.export import InMemoryLogRecordExporter
             from opentelemetry.sdk.metrics.export import InMemoryMetricReader
             from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter

@@ -120,10 +120,17 @@ jobs:
       # does (confirmed against `railway service source --help` while grooming #27) -- so this
       # step is the trigger, re-pointing each service at the commit's own image tag. Only
       # production promotion (#33's gated workflow_dispatch) requires human approval.
+      #
+      # RAILWAY_API_TOKEN, not RAILWAY_TOKEN: a Project Token (what RAILWAY_TOKEN expects) is
+      # environment-scoped and read-mostly -- it can query but cannot perform mutations like
+      # `service source connect` (fails with "Unauthorized", confirmed against a real CI run).
+      # Only an account-scoped token (railway.com/account/tokens), set as RAILWAY_API_TOKEN, can
+      # actually change a service's deployed image. This does mean the token has access beyond
+      # just this one project -- Railway's CLI has no narrower mutation-capable scope today.
       - name: Deploy development (Railway)
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         env:
-          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          RAILWAY_API_TOKEN: ${{ secrets.RAILWAY_API_TOKEN }}
         run: |
           npm install -g @railway/cli@5
           railway service source connect --image "$IMAGE_API:$GITHUB_SHA" --service api --environment development

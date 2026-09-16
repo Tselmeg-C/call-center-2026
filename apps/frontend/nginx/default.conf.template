@@ -16,6 +16,28 @@ server {
     # of caching the address for the life of the worker process.
     resolver ${NGINX_LOCAL_RESOLVERS} valid=10s;
 
+    # Baseline security headers (#61), set once here so both the / and /api/ locations
+    # inherit them (nginx stops inheriting add_header from this level only once a location
+    # defines its own). `always` makes them appear on non-2xx responses too, notably the
+    # /api/ location's 413 from the client_max_body_size limit above (#27/#56).
+    #
+    # HSTS is unconditional (not gated on $scheme = https): Railway terminates TLS at its
+    # own edge and always forwards plain HTTP to this container, so $scheme is "http" here
+    # even in production -- a $scheme-gated header would never fire. This is safe: HSTS is a
+    # browser-only mechanism, so infra/smoke-test.sh's direct plain-HTTP curl checks simply
+    # ignore it, while a real browser only acts on it after receiving it over the HTTPS
+    # connection it made to Railway's edge.
+    add_header Strict-Transport-Security "max-age=31536000" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+    add_header X-Frame-Options "DENY" always;
+    # style-src 'unsafe-inline' is required by components/ui/chart.tsx's ChartStyle, which
+    # injects a <style> tag via dangerouslySetInnerHTML for per-chart theme colors -- this
+    # static-nginx setup has no nonce/hash infrastructure to avoid it. fonts.googleapis.com /
+    # fonts.gstatic.com back the Google Fonts <link>s in routes/__root.tsx. connect-src 'self'
+    # covers the same-origin /api/ proxy used by services/http.ts.
+    add_header Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; object-src 'none'; form-action 'self'" always;
+
     # Same-origin reverse proxy to the API service. The app's HTTP adapter defaults
     # VITE_API_URL to "/api" (apps/frontend/src/services/http.ts), mirroring the Vite dev
     # proxy in vite.config.ts -- so in production this location, not a build-time API domain,

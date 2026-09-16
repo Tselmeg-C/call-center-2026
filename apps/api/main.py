@@ -334,19 +334,45 @@ def safe_email(value: str) -> str:
     return value.strip().casefold()
 
 
+# Number of trusted hops between the real client and this process: Railway's edge, plus this
+# app's own frontend nginx `/api/` reverse proxy (apps/frontend/nginx/default.conf.template) for
+# the only path production traffic currently takes (the API's own public Railway domain isn't
+# provisioned yet -- see _docs/deployment.md's "Trusted-proxy assumption" section for the full
+# justification, including what happens if a request ever arrives by that other path).
+TRUSTED_PROXY_HOPS = 2
+
+
 def client_ip(request: Request) -> str:
     """The real client IP for the per-IP login throttle. `request.client.host` is the TCP peer,
     which behind Railway's edge (and, for browser traffic, this app's own frontend nginx reverse
-    proxy at apps/frontend/nginx/default.conf.template) is always a proxy, never the browser --
-    trusting it directly would bucket every real user behind one shared counter. Both hops set
-    X-Forwarded-For and append their own address, so the left-most entry is the original client.
-    This is only safe to trust because nothing but Railway's edge can reach this service (no
-    public port bypasses it) -- see the trusted-proxy note in _docs/deployment.md."""
+    proxy) is always a proxy, never the browser -- trusting it directly would bucket every real
+    user behind one shared counter. Each trusted hop appends the address it saw to the *right*
+    end of X-Forwarded-For, so the value we want is a fixed number of entries counted from the
+    right (TRUSTED_PROXY_HOPS), never the left-most entry: a client can freely prepend its own
+    fake entries (they only ever land further left), but it cannot remove or move the entries our
+    own trusted hops append. See the trusted-proxy note in _docs/deployment.md for why this many
+    hops, and the fallback below for a missing/empty/too-short header."""
     forwarded = request.headers.get("x-forwarded-for", "")
-    first = forwarded.split(",")[0].strip()
-    if first:
-        return first
+    parts = forwarded.split(",") if forwarded else []
+    if len(parts) >= TRUSTED_PROXY_HOPS:
+        candidate = parts[-TRUSTED_PROXY_HOPS].strip()
+        if candidate:
+            return candidate
     return request.client.host if request.client else "unknown"
+
+
+LOGIN_FAILURE_WINDOW = timedelta(minutes=15)
+
+
+def _prune_stale_login_failures(now: datetime) -> None:
+    """Evict every key whose failures have all aged out of the window, at write time -- not just
+    filtered when that particular key is next read. Without this, an attacker (or just distinct
+    real users) touching a new key once each -- a different email, a different source IP -- would
+    leave it in repo.login_failures / repo.login_failures_by_ip forever, growing both dicts
+    without bound."""
+    for store in (repo.login_failures, repo.login_failures_by_ip):
+        for stale_key in [key for key, stamps in store.items() if not any(now - stamp < LOGIN_FAILURE_WINDOW for stamp in stamps)]:
+            del store[stale_key]
 
 
 def current_user(session: Annotated[str | None, Cookie(alias="call_center_session")] = None) -> User:
@@ -376,19 +402,20 @@ def current_user(session: Annotated[str | None, Cookie(alias="call_center_sessio
 @app.post("/session/login", response_model=User)
 def login(body: Login, request: Request, response: Response) -> User:
     now = utcnow(); ip = client_ip(request); key = (safe_email(body.email), ip)
-    recent = [stamp for stamp in repo.login_failures.get(key, []) if now - stamp < timedelta(minutes=15)]
-    ip_recent = [stamp for stamp in repo.login_failures_by_ip.get(ip, []) if now - stamp < timedelta(minutes=15)]
+    recent = [stamp for stamp in repo.login_failures.get(key, []) if now - stamp < LOGIN_FAILURE_WINDOW]
+    ip_recent = [stamp for stamp in repo.login_failures_by_ip.get(ip, []) if now - stamp < LOGIN_FAILURE_WINDOW]
     if len(ip_recent) >= 50 or len(recent) >= 5:
         raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "Too many sign-in attempts.", headers={"Retry-After": "900"})
     if auth_db is not None:
         record = auth_db.user_by_email(safe_email(body.email))
         if not record or not record.active or not password_hash.verify(body.password, record.password_hash):
-            repo.login_failures[key] = recent + [now]; repo.login_failures_by_ip[ip] = ip_recent + [now]
+            _prune_stale_login_failures(now); repo.login_failures[key] = recent + [now]; repo.login_failures_by_ip[ip] = ip_recent + [now]
             raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Unable to sign in.")
         repo.login_failures.pop(key, None)
         token, expires = auth_db.issue(record.id, SESSION_SECONDS); response.set_cookie("call_center_session", token, httponly=True, samesite="lax", secure=request.url.hostname not in {"localhost", "127.0.0.1"}, path="/", max_age=SESSION_SECONDS); return User(id=record.id, name=record.name, email=record.email, role=record.role, active=record.active)
     record = next((u for u in repo.users.values() if u["email"] == safe_email(body.email)), None)
     if not record or not record["active"] or not password_hash.verify(body.password, record["password"]):
+        _prune_stale_login_failures(now)
         repo.login_failures[key] = recent + [now]
         repo.login_failures_by_ip[ip] = ip_recent + [now]
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Unable to sign in.")

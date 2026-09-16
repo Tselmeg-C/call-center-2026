@@ -95,17 +95,102 @@ def test_login_never_logs_credentials_or_cookie(caplog) -> None:
     assert "correct horse battery staple" not in caplog.text
     assert token is not None and token not in caplog.text
 
-def test_client_ip_prefers_leftmost_forwarded_for_over_tcp_peer() -> None:
-    from ..main import client_ip
+def test_client_ip_reads_fixed_trusted_hop_from_the_right_not_leftmost() -> None:
+    # A client can prepend as many entries as it wants to X-Forwarded-For -- they only ever land
+    # further left, never displacing the entries our own trusted hops (Railway edge + this app's
+    # frontend nginx, TRUSTED_PROXY_HOPS = 2) append to the right. So the left-most entry
+    # ("203.0.113.7" below) is always attacker-controlled and must NOT be trusted -- only the
+    # second-from-right entry ("10.0.0.5", the address nginx saw) is genuinely ours to trust.
+    from ..main import client_ip, TRUSTED_PROXY_HOPS
     from unittest.mock import Mock
+    assert TRUSTED_PROXY_HOPS == 2
     request = Mock()
     request.headers = {"x-forwarded-for": "203.0.113.7, 10.0.0.5, 10.0.0.1"}
-    assert client_ip(request) == "203.0.113.7"
+    assert client_ip(request) == "10.0.0.5"
+    # Missing header -> safe fallback to the TCP peer.
     request.headers = {}
     request.client = Mock(host="10.0.0.9")
     assert client_ip(request) == "10.0.0.9"
+    # Empty header -> same fallback.
+    request.headers = {"x-forwarded-for": ""}
+    assert client_ip(request) == "10.0.0.9"
+    # Too short (fewer entries than TRUSTED_PROXY_HOPS) -> same fallback, not an exception and not
+    # the lone client-controlled entry.
+    request.headers = {"x-forwarded-for": "203.0.113.7"}
+    assert client_ip(request) == "10.0.0.9"
+    # Malformed (blank entry at the trusted-hop position) -> same fallback.
+    request.headers = {"x-forwarded-for": "203.0.113.7, , 10.0.0.1"}
+    assert client_ip(request) == "10.0.0.9"
+    # No header and no TCP peer either -> last-resort sentinel, never an unhandled exception.
+    request.headers = {}
     request.client = None
     assert client_ip(request) == "unknown"
+
+
+def test_forwarded_for_prepended_entries_cannot_inflate_shrink_or_shift_the_throttle() -> None:
+    repo.reset(); client = TestClient(app, base_url="http://localhost")
+    real_hops = "10.0.0.7, 10.0.0.1"  # the two trusted-hop entries a real request would carry
+
+    def attempt(header: str) -> int:
+        return client.post("/session/login", json={"email": "victim@example.test", "password": "wrong password"}, headers={"x-forwarded-for": header}).status_code
+
+    # Alternate between a clean header and one with attacker-chosen junk prepended (including a
+    # value that looks like another real client's address) -- both share the same trailing trusted
+    # hops, so both must count against the exact same bucket.
+    for index in range(5):
+        header = real_hops if index % 2 == 0 else f"198.51.100.{index}, 203.0.113.99, {real_hops}"
+        assert attempt(header) == 401
+    # The same number of failures (5) throttles it, regardless of how much junk was prepended --
+    # padding neither buys extra attempts nor resets the count.
+    assert attempt(f"a, b, c, {real_hops}") == 429
+
+
+def test_forwarded_for_prepended_entry_cannot_frame_another_ip() -> None:
+    repo.reset(); client = TestClient(app, base_url="http://localhost")
+    victim_ip = "203.0.113.30"
+
+    def attempt(header: str, email: str) -> int:
+        return client.post("/session/login", json={"email": email, "password": "wrong password"}, headers={"x-forwarded-for": header}).status_code
+
+    # The attacker prepends the victim's real address as a fake leftmost entry, but their own
+    # trailing trusted-hop entries (their real address, then the edge's) are different -- this
+    # must count against the ATTACKER's bucket, never the victim's.
+    for index in range(50):
+        assert attempt(f"{victim_ip}, 198.51.100.9, 10.0.0.1", f"attacker-{index}@example.test") == 401
+    assert attempt(f"{victim_ip}, 198.51.100.9, 10.0.0.1", "attacker-final@example.test") == 429
+    # The victim, reaching the endpoint with their own real address at the trusted-hop position,
+    # is unaffected by the attacker's framing attempt.
+    assert attempt(f"{victim_ip}, 10.0.0.1", "victim@example.test") == 401
+
+
+def test_distinct_real_clients_at_trusted_hop_are_throttled_independently() -> None:
+    repo.reset(); client = TestClient(app, base_url="http://localhost")
+
+    def attempt(client_addr: str, email: str) -> int:
+        return client.post("/session/login", json={"email": email, "password": "wrong password"}, headers={"x-forwarded-for": f"{client_addr}, 10.0.0.1"}).status_code
+
+    for index in range(50):
+        assert attempt("203.0.113.10", f"a-{index}@example.test") == 401
+    assert attempt("203.0.113.10", "a-final@example.test") == 429
+    # A distinct real client -- differing only in the address at the trusted-hop position -- is
+    # not bucketed together with the first and is not throttled by its neighbor's failures.
+    assert attempt("203.0.113.20", "b@example.test") == 401
+
+
+def test_login_failure_dicts_evict_stale_keys_at_write_time() -> None:
+    repo.reset(); client = TestClient(app, base_url="http://localhost")
+    stale = datetime.now(timezone.utc) - timedelta(minutes=16)
+    for index in range(200):
+        repo.login_failures[(f"stale-{index}@example.test", f"10.0.{index // 256}.{index % 256}")] = [stale]
+        repo.login_failures_by_ip[f"10.0.{index // 256}.{index % 256}"] = [stale]
+    assert len(repo.login_failures) == 200 and len(repo.login_failures_by_ip) == 200
+    # One new failure, from a client and email never seen before, must sweep every other key whose
+    # timestamps have all aged out of the 15-minute window -- not just filter them on the next read
+    # of that specific key -- so the dicts don't grow without bound across many distinct keys.
+    response = client.post("/session/login", json={"email": "fresh@example.test", "password": "wrong password"}, headers={"x-forwarded-for": "198.51.100.9, 9.9.9.9, 1.1.1.1"})
+    assert response.status_code == 401
+    assert len(repo.login_failures) == 1
+    assert len(repo.login_failures_by_ip) == 1
 
 def test_request_log_reaches_stdout_without_otel() -> None:
     # #27: observability/otel_setup.py only wires this logger's handler/level when OTel is

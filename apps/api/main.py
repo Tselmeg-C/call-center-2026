@@ -295,6 +295,13 @@ async def origin_guard(request: Request, call_next):
         if content_length > 11 * 1024 * 1024:
             logger.warning("request id=%s method=%s route=%s status=413 duration_ms=%.3f error=upload_limit", request_id, request.method, route, (perf_counter() - started) * 1000, extra={"request_id": request_id})
             return Response("Upload is too large.", status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, headers={"x-request-id": request_id}, media_type="application/json")
+    # /session/login is deliberately exempt, not a gap (checked live for #27): this guard exists
+    # to stop CSRF -- an already-authenticated session cookie being replayed cross-site to mutate
+    # state without consent. Login has no such ambient cookie/authority to steal (it's what
+    # *creates* the session), so an Origin/Referer check here would reject legitimate non-browser
+    # or misconfigured-Origin login attempts without stopping any real attack; login's actual
+    # defenses are password verification and the per-IP/email throttle below, both of which apply
+    # unconditionally regardless of Origin.
     if request.method in {"POST", "PATCH", "PUT", "DELETE"} and request.url.path != "/session/login":
         origin = request.headers.get("origin")
         referer = request.headers.get("referer", "")

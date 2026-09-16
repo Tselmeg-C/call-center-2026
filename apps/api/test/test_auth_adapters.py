@@ -476,17 +476,20 @@ def test_shared_identity_validation_and_safe_failures(adapter):
         provision("short@example.test", password=secrets.token_hex(5))
 
 
-def test_shared_operator_provision_bootstraps_first_admin_only(adapter):
+def test_shared_operator_provision_bootstraps_first_admin_only(adapter, monkeypatch):
     # #27: /operator/provision used to be registered only under CALL_CENTER_STORAGE=memory,
     # leaving no HTTP-reachable way to create the first Admin/Sales account against a real
     # Postgres-backed deployment (QA's blocked smoke journey). It's safe in every storage mode
     # because it already refuses once any user exists -- confirm that over HTTP for both adapters.
+    # #59: also requires the operator secret header on every call, in every storage mode.
+    operator_secret = secrets.token_urlsafe(24)
+    monkeypatch.setenv("OPERATOR_PROVISION_SECRET", operator_secret)
     secret = secrets.token_urlsafe(24)
     with TestClient(main.app, base_url="http://localhost") as client:
-        first = client.post("/operator/provision", headers=ORIGIN, json={"name": "Bootstrap", "email": "bootstrap@example.test", "role": "Admin", "password": secret})
+        first = client.post("/operator/provision", headers={**ORIGIN, "x-operator-secret": operator_secret}, json={"name": "Bootstrap", "email": "bootstrap@example.test", "role": "Admin", "password": secret})
         assert first.status_code == 200 and "password" not in first.json()
         assert sign_in(client, "bootstrap@example.test", secret).status_code == 200
-        again = client.post("/operator/provision", headers=ORIGIN, json={"name": "Second", "email": "second@example.test", "role": "Admin", "password": secrets.token_urlsafe(24)})
+        again = client.post("/operator/provision", headers={**ORIGIN, "x-operator-secret": operator_secret}, json={"name": "Second", "email": "second@example.test", "role": "Admin", "password": secrets.token_urlsafe(24)})
         assert again.status_code == 409
 
 

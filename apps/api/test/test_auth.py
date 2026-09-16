@@ -880,15 +880,62 @@ def test_memory_unit_of_work_rolls_back_auth_state() -> None:
     assert repo.users == {}
 
 
-def test_operator_provision_and_recovery_revoke_session() -> None:
+def test_operator_provision_and_recovery_revoke_session(monkeypatch) -> None:
     repo.reset(); client = TestClient(app, base_url="http://localhost"); headers = {"origin": "http://localhost:3000"}
-    provision = client.post("/operator/provision", json={"name": "Initial Admin", "email": "admin@example.test", "role": "Admin", "password": "correct horse battery staple"}, headers=headers)
+    operator_secret = "operator-secret-value"
+    monkeypatch.setenv("OPERATOR_PROVISION_SECRET", operator_secret)
+    provision = client.post("/operator/provision", json={"name": "Initial Admin", "email": "admin@example.test", "role": "Admin", "password": "correct horse battery staple"}, headers={**headers, "x-operator-secret": operator_secret})
     assert provision.status_code == 200 and "password" not in provision.json()
     login = client.post("/session/login", json={"email": "admin@example.test", "password": "correct horse battery staple"}); assert login.status_code == 200
     recovered = client.post(f"/operator/reset-password/{provision.json()['id']}", json={"password": "new correct horse battery staple"}, headers=headers)
     assert recovered.status_code == 200 and "password" not in recovered.json()
     assert client.get("/session/me").status_code == 401
-    assert client.post("/operator/provision", json={"name": "Second", "email": "second@example.test", "role": "Admin", "password": "correct horse battery staple"}, headers=headers).status_code == 409
+    assert client.post("/operator/provision", json={"name": "Second", "email": "second@example.test", "role": "Admin", "password": "correct horse battery staple"}, headers={**headers, "x-operator-secret": operator_secret}).status_code == 409
+
+
+def test_operator_provision_secret_gates_every_storage_mode_and_request_shape(monkeypatch) -> None:
+    # #59: the secret check runs before the "any user exists" lookup, so a missing/wrong secret
+    # gets the identical rejection whether the DB is empty or already provisioned -- an
+    # unauthenticated caller can't use the response to learn deployment state. An unset env var
+    # fails closed (no fallback to the old unauthenticated behavior), and the secret itself never
+    # appears in the response.
+    repo.reset(); client = TestClient(app, base_url="http://localhost"); headers = {"origin": "http://localhost:3000"}
+    payload = {"name": "Someone", "email": "someone@example.test", "role": "Admin", "password": "correct horse battery staple"}
+    operator_secret = "operator-secret-value"
+
+    # Env var unset -> fails closed even with no header at all sent, empty DB.
+    monkeypatch.delenv("OPERATOR_PROVISION_SECRET", raising=False)
+    unset_response = client.post("/operator/provision", json=payload, headers=headers)
+    assert unset_response.status_code == 401
+    assert operator_secret not in unset_response.text
+    assert repo.users == {}
+
+    monkeypatch.setenv("OPERATOR_PROVISION_SECRET", operator_secret)
+
+    # Missing header, empty DB.
+    missing_empty = client.post("/operator/provision", json=payload, headers=headers)
+    assert missing_empty.status_code == 401
+
+    # Wrong secret, empty DB.
+    wrong_empty = client.post("/operator/provision", json=payload, headers={**headers, "x-operator-secret": "not-the-secret"})
+    assert wrong_empty.status_code == 401
+    assert missing_empty.status_code == wrong_empty.status_code and missing_empty.json() == wrong_empty.json()
+    assert repo.users == {}
+
+    # Correct secret, empty DB -> 200, unchanged response shape.
+    created = client.post("/operator/provision", json=payload, headers={**headers, "x-operator-secret": operator_secret})
+    assert created.status_code == 200 and "password" not in created.json()
+
+    # Now a user exists: missing/wrong secret still gets the identical rejection as the empty-DB case.
+    missing_existing = client.post("/operator/provision", json=payload, headers=headers)
+    wrong_existing = client.post("/operator/provision", json=payload, headers={**headers, "x-operator-secret": "not-the-secret"})
+    assert missing_existing.status_code == wrong_existing.status_code == missing_empty.status_code
+    assert missing_existing.json() == wrong_existing.json() == missing_empty.json()
+    assert operator_secret not in missing_existing.text and operator_secret not in wrong_existing.text
+
+    # Correct secret + existing user -> 409, unchanged from today.
+    conflict = client.post("/operator/provision", json=payload, headers={**headers, "x-operator-secret": operator_secret})
+    assert conflict.status_code == 409
 
 
 def test_operator_reset_password_route_requires_explicit_flag() -> None:

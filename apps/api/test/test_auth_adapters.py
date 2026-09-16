@@ -476,6 +476,20 @@ def test_shared_identity_validation_and_safe_failures(adapter):
         provision("short@example.test", password=secrets.token_hex(5))
 
 
+def test_shared_operator_provision_bootstraps_first_admin_only(adapter):
+    # #27: /operator/provision used to be registered only under CALL_CENTER_STORAGE=memory,
+    # leaving no HTTP-reachable way to create the first Admin/Sales account against a real
+    # Postgres-backed deployment (QA's blocked smoke journey). It's safe in every storage mode
+    # because it already refuses once any user exists -- confirm that over HTTP for both adapters.
+    secret = secrets.token_urlsafe(24)
+    with TestClient(main.app, base_url="http://localhost") as client:
+        first = client.post("/operator/provision", headers=ORIGIN, json={"name": "Bootstrap", "email": "bootstrap@example.test", "role": "Admin", "password": secret})
+        assert first.status_code == 200 and "password" not in first.json()
+        assert sign_in(client, "bootstrap@example.test", secret).status_code == 200
+        again = client.post("/operator/provision", headers=ORIGIN, json={"name": "Second", "email": "second@example.test", "role": "Admin", "password": secrets.token_urlsafe(24)})
+        assert again.status_code == 409
+
+
 def test_shared_password_boundaries_and_transport(adapter, caplog):
     for length in (12, 128):
         secret = " " + secrets.token_hex(100)[:length - 3] + "界 "

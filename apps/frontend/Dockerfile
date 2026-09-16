@@ -34,4 +34,10 @@ ENV PORT=8080
 # API_UPSTREAM=${{api.RAILWAY_PRIVATE_DOMAIN}}:8000 -- see _docs/deployment.md. The default here
 # only matters for a local `docker run`.
 ENV API_UPSTREAM=localhost:8000
+# Turns on the base image's built-in /docker-entrypoint.d/15-local-resolvers.envsh, which reads
+# the container's own nameserver(s) from /etc/resolv.conf into $NGINX_LOCAL_RESOLVERS before the
+# envsubst templating step runs -- used by default.conf.template's `resolver` directive so the
+# /api/ proxy re-resolves API_UPSTREAM instead of caching whatever it resolved to at nginx
+# startup (see comment there for why that caching is the actual bug, not just a hardening nice-to-have).
+ENV NGINX_ENTRYPOINT_LOCAL_RESOLVERS=1
 EXPOSE 8080

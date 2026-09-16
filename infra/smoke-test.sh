@@ -57,6 +57,24 @@ docker run -d --network host --name smoke-frontend \
   -e API_UPSTREAM="127.0.0.1:${api_port}" \
   "$frontend_image" >/dev/null
 
+# #27 QA regression: the /api/ proxy hung and 504'd live because API_UPSTREAM is a hostname
+# (Railway private-network domain) that nginx used to resolve once at startup and cache for the
+# life of the worker -- after the API service redeploys and gets a new private IP, the frontend
+# silently kept proxying to the dead old one. The fix (default.conf.template's `resolver` +
+# variable-based proxy_pass) can't be exercised with this script's IP-literal API_UPSTREAM above
+# (a literal IP never goes through resolution at all), so just confirm the rendered config still
+# has the resolver mechanism wired up -- NGINX_LOCAL_RESOLVERS actually substituted, not left as
+# a literal unresolved "${NGINX_LOCAL_RESOLVERS}" placeholder.
+echo "==> Checking frontend nginx has a resolver directive wired up (#27)"
+resolver_line=$(docker exec smoke-frontend grep -E '^\s*resolver ' /etc/nginx/conf.d/default.conf || true)
+case "$resolver_line" in
+  *'${NGINX_LOCAL_RESOLVERS}'*|"")
+    echo "Frontend nginx config is missing a substituted resolver directive: '$resolver_line'" >&2
+    exit 1
+    ;;
+esac
+echo "    $resolver_line"
+
 echo "==> Waiting for /health/ready"
 i=0
 until curl -fsS "http://127.0.0.1:${api_port}/health/ready" >/dev/null 2>&1; do

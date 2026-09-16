@@ -4,6 +4,18 @@ server {
     root /usr/share/nginx/html;
     index index.html;
 
+    # Resolve API_UPSTREAM (a Railway private-network hostname, see Dockerfile) with the
+    # container's own DNS server (NGINX_LOCAL_RESOLVERS, populated by the base image's
+    # 15-local-resolvers.envsh from /etc/resolv.conf -- enabled via
+    # NGINX_ENTRYPOINT_LOCAL_RESOLVERS=1 in the Dockerfile), and re-resolve every 10s instead of
+    # only once at nginx startup. Without this, proxy_pass to a literal (envsubst'd) hostname is
+    # resolved a single time when nginx boots; once the API service redeploys and its private IP
+    # changes, the frontend keeps proxying to the now-dead old IP until nginx itself restarts --
+    # every /api/* request hangs until it hits Railway's edge timeout and 504s. Using a variable
+    # for the proxy target forces nginx to use its own resolver (hence `resolver` below) instead
+    # of caching the address for the life of the worker process.
+    resolver ${NGINX_LOCAL_RESOLVERS} valid=10s;
+
     # Same-origin reverse proxy to the API service. The app's HTTP adapter defaults
     # VITE_API_URL to "/api" (apps/frontend/src/services/http.ts), mirroring the Vite dev
     # proxy in vite.config.ts -- so in production this location, not a build-time API domain,
@@ -11,7 +23,15 @@ server {
     # Origin header on unsafe methods is this frontend's own domain, satisfying the API's
     # Origin/Referer guard without any CORS-specific configuration.
     location /api/ {
-        proxy_pass http://${API_UPSTREAM}/;
+        # proxy_pass's automatic /api/-prefix stripping (the plain "proxy_pass http://host/;"
+        # form) only applies when the target is a literal string -- it's silently skipped once
+        # the target is a variable (required above for per-request DNS re-resolution), so the
+        # prefix has to be stripped explicitly before proxying instead. `set` must come before
+        # `rewrite ... break;` -- break stops the rewrite module from running any later
+        # directives (including `set`) in this location.
+        set $api_upstream http://${API_UPSTREAM};
+        rewrite ^/api/(.*)$ /$1 break;
+        proxy_pass $api_upstream;
         proxy_set_header Host $host;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;

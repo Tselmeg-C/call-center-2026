@@ -193,6 +193,34 @@ be the frontend's public domain, not the API's own. `apps/frontend/Dockerfile` b
 mock adapter (verified locally: `infra/smoke-test.sh` builds both images and asserts the
 frontend's proxied `/api/health/ready` matches the API's own response).
 
+**DNS re-resolution (fixed post-QA-FAIL on #27):** a plain `proxy_pass http://${API_UPSTREAM}/;`
+(a literal string once envsubst substitutes it) is resolved by nginx exactly once, at worker
+startup, and then cached for the life of the process -- there is no periodic re-resolution.
+`API_UPSTREAM` is a Railway private-network **hostname**, and that hostname's IP changes every
+time the `api` service redeploys (new container, new private IP). The frontend's nginx doesn't
+restart on the API's redeploys, so it kept silently proxying to the now-dead old IP -- every
+`/api/*` request hung until it hit Railway edge's own timeout and came back as a `504`. This
+was reproduced live 4/4 times against `frontend-development-83f4.up.railway.app`. The fix:
+`default.conf.template` now declares `resolver ${NGINX_LOCAL_RESOLVERS} valid=10s;` (nginx's
+own async resolver, using the container's real nameserver(s) from `/etc/resolv.conf`, populated
+by the base `nginx:1.27-alpine` image's built-in `15-local-resolvers.envsh` -- turned on via
+`NGINX_ENTRYPOINT_LOCAL_RESOLVERS=1` in `apps/frontend/Dockerfile`) and uses a variable
+(`set $api_upstream http://${API_UPSTREAM}; proxy_pass $api_upstream;`) instead of a literal
+string in `proxy_pass`, so nginx re-resolves `API_UPSTREAM` at most every 10s instead of once at
+startup. Using a variable in `proxy_pass` also turns off nginx's automatic `/api/`-prefix
+stripping, so the location now does that explicitly first (`rewrite ^/api/(.*)$ /$1 break;`,
+*before* the `set` -- `break` stops any later directives, including `set`, from running in that
+location). Verified locally (this sandbox's docker bridge networking doesn't forward
+container-to-container traffic, so the check runs on the host network namespace): two
+`nginx:1.27-alpine` containers, one built from the old static-hostname config and one from the
+fixed variable+resolver config, both pointed at a throwaway DNS server answering a private
+hostname; flipping the DNS answer to a second backend without restarting nginx (simulating an
+API redeploy) left the old config permanently stuck on the first, now-dead backend, while the
+fixed config picked up the new backend automatically within the 10s TTL. `infra/smoke-test.sh`
+also asserts the rendered config actually has a resolver directive (its own upstream is an IP
+literal, so it can't exercise DNS re-resolution itself, but it catches a regression that removes
+the mechanism).
+
 ### Version identification
 
 `GET /health/ready`'s body includes `"version"` (the image's commit SHA, baked in at

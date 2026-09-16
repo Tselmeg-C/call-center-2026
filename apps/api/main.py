@@ -24,7 +24,7 @@ from .db_customers import CustomerDatabase
 from .db_assignment import AssignmentDatabase
 from . import assignment_rules
 from .db_activity import ActivityDatabase
-from . import otel_setup
+from observability import otel_setup
 from sqlalchemy import inspect
 from sqlalchemy.exc import IntegrityError
 
@@ -163,8 +163,8 @@ if storage_mode == "postgres":
     repo.customers.clear(); repo.followups.clear(); repo.interactions.clear(); repo.notes.clear(); repo.imports.clear(); repo.rules.clear(); repo.assignment_runs.clear()
 
 # Configured entirely from OTEL_* environment variables; a no-op with zero network calls
-# when OTEL_EXPORTER_OTLP_ENDPOINT is unset (local dev, CI). See otel_setup.py and
-# _docs/deployment.md.
+# when OTEL_EXPORTER_OTLP_ENDPOINT is unset (local dev, CI). See observability/otel_setup.py
+# and _docs/deployment.md.
 otel_setup.configure_otel(app)
 for _engine in (getattr(auth_db, "engine", None), getattr(customer_db, "engine", None), getattr(assignment_db, "engine", None), getattr(activity_db, "engine", None)):
     otel_setup.instrument_engine(_engine)

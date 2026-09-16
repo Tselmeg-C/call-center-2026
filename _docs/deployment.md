@@ -10,7 +10,7 @@ Use `npm run benchmark:api` for the safe synthetic query benchmark. Logs and smo
 
 ## OpenTelemetry
 
-`apps/api` (see `apps/api/otel_setup.py`) instruments every request (FastAPI), every DB query
+`apps/api` (see `observability/otel_setup.py`) instruments every request (FastAPI), every DB query
 (SQLAlchemy), and the existing `origin_guard` request log with the OpenTelemetry SDK, and can
 export traces, metrics, and logs over OTLP -- all configured only through environment variables,
 never a hardcoded endpoint or credential:
@@ -38,9 +38,9 @@ passes through an explicit attribute allowlist (`otel_setup.ALLOWED_ATTRIBUTES`,
 cover) before export: only route, method, status code, DB system/operation, and the existing
 `x-request-id` are ever allowed through -- cookies, auth headers, connection strings, and
 note/workbook free text are structurally impossible to export, not just absent by convention.
-`apps/api/test_otel.py` asserts this against in-memory OTel exporters (never a live endpoint).
+`observability/test_otel.py` asserts this against in-memory OTel exporters (never a live endpoint).
 
-`_docs/grafana-dashboard.json` is a validated Grafana dashboard JSON model (not uploaded to any
+`observability/grafana-dashboard.json` is a validated Grafana dashboard JSON model (not uploaded to any
 live account -- see #27) with request rate/error rate/duration panels for `/customers`,
 `/sales/workload`, and `/admin/reports`, plus log volume, each split by the `deployment.environment`
 resource attribute, using the exact metric (`http.server.request.duration`) and label
@@ -76,7 +76,7 @@ docker build -f apps/api/Dockerfile -t call-center-api .
 docker build -f apps/frontend/Dockerfile -t call-center-frontend .
 ```
 
-The API image is `python:3.12-slim` (matches CI); the builder stage installs `apps/api/requirements.txt` and the runtime stage copies the installed packages plus `apps/api` source, runs as a non-root user, and execs the unchanged `apps/api/start.sh` -- the migration-before-traffic gate, the `WEB_CONCURRENCY` guard, and `/health/live`/`/health/ready` all behave exactly as they do outside a container. Run it with the same environment variables as any other deployment (`CALL_CENTER_STORAGE`, `DATABASE_URL` when in postgres mode, `FRONTEND_ORIGIN`, `PORT`); nothing environment-specific is baked into the image.
+The API image is `python:3.12-slim` (matches CI); the builder stage installs `apps/api/requirements.txt` and the runtime stage copies the installed packages plus the `apps/api` and `observability` source, runs as a non-root user, and execs the unchanged `apps/api/start.sh` -- the migration-before-traffic gate, the `WEB_CONCURRENCY` guard, and `/health/live`/`/health/ready` all behave exactly as they do outside a container. Run it with the same environment variables as any other deployment (`CALL_CENTER_STORAGE`, `DATABASE_URL` when in postgres mode, `FRONTEND_ORIGIN`, `PORT`); nothing environment-specific is baked into the image.
 
 The frontend image builds with `node:24-alpine` (matches `.nvmrc`) and serves the resulting `dist/` bundle from `nginx:1.27-alpine` -- no Node runtime or extra static-server dependency ships in the final image. nginx's official envsubst-templates mechanism (`apps/frontend/nginx/default.conf.template`) substitutes `$PORT` at container start and falls back unmatched routes to `index.html` for the client-side router.
 

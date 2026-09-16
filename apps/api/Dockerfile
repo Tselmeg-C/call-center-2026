@@ -27,6 +27,7 @@ COPY --from=builder /install /usr/local
 
 WORKDIR /app
 COPY apps/api apps/api
+COPY observability observability
 
 RUN chown -R appuser:appuser /app
 USER appuser

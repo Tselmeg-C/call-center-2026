@@ -22,11 +22,11 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanE
 from sqlalchemy import create_engine
 
 from . import otel_setup
-from .db_auth import AuthDatabase
-from .main import app
+from apps.api.db_auth import AuthDatabase
+from apps.api.main import app
 
 client = TestClient(app, base_url="http://localhost")
-DASHBOARD_PATH = Path(__file__).resolve().parents[2] / "_docs" / "grafana-dashboard.json"
+DASHBOARD_PATH = Path(__file__).resolve().parent / "grafana-dashboard.json"
 
 
 def test_grafana_dashboard_is_a_valid_structural_model():

@@ -1,12 +1,13 @@
-"""One-off generator for _docs/grafana-dashboard.json (issue #34).
+"""One-off generator for observability/grafana-dashboard.json (issue #34).
 
 Not part of the running API -- a local authoring/validation tool only (uses grafanalib,
 which is not an apps/api runtime dependency: `pip install grafanalib` to regenerate).
 Run as a module (not a bare script) so it doesn't pick up apps/api/operator.py in place of
-the stdlib `operator` module:
-    python3 -m apps.api._gen_grafana_dashboard > _docs/grafana-dashboard.json
+the stdlib `operator` module (that collision hits any bare-script invocation whose own
+directory shadows a stdlib module -- running via `-m` from the repo root avoids it):
+    python3 -m observability._gen_grafana_dashboard > observability/grafana-dashboard.json
 
-Every metric/label name below matches exactly what apps/api/otel_setup.py emits and what
+Every metric/label name below matches exactly what observability/otel_setup.py emits and what
 Grafana Cloud's OTLP ingest promotes to Prometheus/Loki naming:
   - http.server.request.duration (histogram, seconds) -> http_server_request_duration_seconds
   - allowlisted attributes http.route / http.request.method / http.response.status_code

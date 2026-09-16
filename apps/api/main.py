@@ -182,13 +182,6 @@ if storage_mode == "postgres":
     # Persistent mode must never let the demonstration fixture shadow database state after restart.
     repo.customers.clear(); repo.followups.clear(); repo.interactions.clear(); repo.notes.clear(); repo.imports.clear(); repo.rules.clear(); repo.assignment_runs.clear()
 
-# Configured entirely from OTEL_* environment variables; a no-op with zero network calls
-# when OTEL_EXPORTER_OTLP_ENDPOINT is unset (local dev, CI). See observability/otel_setup.py
-# and _docs/deployment.md.
-otel_setup.configure_otel(app)
-for _engine in (getattr(auth_db, "engine", None), getattr(customer_db, "engine", None), getattr(assignment_db, "engine", None), getattr(activity_db, "engine", None)):
-    otel_setup.instrument_engine(_engine)
-
 def append_audit(actor_id: str | None, action: str, target: str, details: dict) -> None:
     if assignment_db is not None: assignment_db.append_audit(actor_id=actor_id, action=action, target=target, details=details)
 
@@ -313,6 +306,21 @@ async def origin_guard(request: Request, call_next):
     response.headers["x-app-version"] = APP_VERSION
     logger.info("request id=%s method=%s route=%s status=%s duration_ms=%.3f error=%s", request_id, request.method, route, response.status_code, (perf_counter() - started) * 1000, "none" if response.status_code < 400 else "http_error", extra={"request_id": request_id})
     return response
+
+
+# Configured entirely from OTEL_* environment variables; a no-op with zero network calls
+# when OTEL_EXPORTER_OTLP_ENDPOINT is unset (local dev, CI). See observability/otel_setup.py
+# and _docs/deployment.md.
+#
+# Must run after every app.add_middleware()/@app.middleware() registration above, never before:
+# FastAPIInstrumentor.instrument_app() forces an immediate app.middleware_stack rebuild (see
+# otel_setup.configure_otel's docstring), and Starlette refuses any further add_middleware() call
+# once that stack has been built -- "Cannot add middleware after an application has started".
+# This only surfaces with OTel actually enabled (a real OTLP endpoint configured), which local
+# tests and CI never do, so it was never caught until a real deployment turned OTel on.
+otel_setup.configure_otel(app)
+for _engine in (getattr(auth_db, "engine", None), getattr(customer_db, "engine", None), getattr(assignment_db, "engine", None), getattr(activity_db, "engine", None)):
+    otel_setup.instrument_engine(_engine)
 
 
 def safe_email(value: str) -> str:

@@ -75,6 +75,20 @@ case "$resolver_line" in
 esac
 echo "    $resolver_line"
 
+# #27 QA regression: nginx's own default client_max_body_size (1 MiB) applied to the /api/
+# location, silently 413-ing (bare HTML, no x-request-id) any legitimate import over 1 MiB even
+# though the API itself allows up to 10 MiB (apps/api/main.py's import_customers). Confirm the
+# rendered config carries a limit above that 1 MiB default.
+echo "==> Checking frontend nginx client_max_body_size is raised above the 1 MiB default (#27)"
+body_size_line=$(docker exec smoke-frontend grep -E '^\s*client_max_body_size ' /etc/nginx/conf.d/default.conf || true)
+case "$body_size_line" in
+  ""|*" 1;"|*" 1m;"|*" 1M;"|*" 0;")
+    echo "Frontend nginx /api/ location is missing client_max_body_size above the 1 MiB nginx default: '$body_size_line'" >&2
+    exit 1
+    ;;
+esac
+echo "    $body_size_line"
+
 echo "==> Waiting for /health/ready"
 i=0
 until curl -fsS "http://127.0.0.1:${api_port}/health/ready" >/dev/null 2>&1; do
@@ -103,5 +117,22 @@ if [ "$proxied" != "$(curl -fsS "http://127.0.0.1:${api_port}/health/ready")" ];
   exit 1
 fi
 echo "    frontend /api/health/ready: $proxied"
+
+# #27 QA live repro: a 1.35 MiB .xlsx (well inside the API's real 10 MiB limit) got a bare nginx
+# 413 through the frontend proxy while passing straight through when sent directly to the API.
+# Send a 2 MiB body (above nginx's old 1 MiB default, below the API's 10 MiB limit) through the
+# proxy and confirm nginx no longer rejects it -- any status but 413 means it reached the app.
+echo "==> Checking a >1 MiB upload passes the frontend proxy without a bare nginx 413 (#27)"
+oversize_file="${TMPDIR:-/tmp}/smoke-oversize-upload.bin"
+dd if=/dev/zero of="$oversize_file" bs=1M count=2 >/dev/null 2>&1
+proxy_upload_status=$(curl -s -o /dev/null -w '%{http_code}' \
+  -F "file=@${oversize_file};filename=smoke-test.xlsx" \
+  "http://127.0.0.1:${frontend_port}/api/admin/imports?submission_id=smoke-test")
+rm -f "$oversize_file"
+if [ "$proxy_upload_status" = "413" ]; then
+  echo "Frontend nginx rejected a 2 MiB upload with 413 -- client_max_body_size regression" >&2
+  exit 1
+fi
+echo "    frontend /api/admin/imports 2 MiB upload: HTTP $proxy_upload_status (not 413)"
 
 echo "==> Smoke check passed"

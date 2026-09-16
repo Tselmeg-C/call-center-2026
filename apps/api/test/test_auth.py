@@ -10,12 +10,12 @@ from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 
-from .main import app, password_hash, repo, provision_user
-from .storage import mode
-from .db_auth import AuthDatabase, UserRow, SessionRow, digest
-from .db_customers import CustomerDatabase
-from .db_assignment import AssignmentDatabase
-from .db_activity import ActivityDatabase
+from ..main import app, password_hash, repo, provision_user
+from ..storage import mode
+from ..db_auth import AuthDatabase, UserRow, SessionRow, digest
+from ..db_customers import CustomerDatabase
+from ..db_assignment import AssignmentDatabase
+from ..db_activity import ActivityDatabase
 
 
 def test_login_logout_and_generic_failure() -> None:
@@ -35,7 +35,7 @@ def test_storage_selection_is_explicit(monkeypatch) -> None:
     except RuntimeError as exc: assert "DATABASE_URL" in str(exc)
 
 def test_database_url_pins_psycopg_dialect(monkeypatch) -> None:
-    from .storage import database_url
+    from ..storage import database_url
     # #27: Railway's managed Postgres plugin (and most standard providers) hand back a bare
     # postgresql:// URL. SQLAlchemy's default dialect for that scheme is psycopg2, which is not
     # installed (apps/api/requirements.txt only installs psycopg v3) -- every boot's `alembic
@@ -96,7 +96,7 @@ def test_login_never_logs_credentials_or_cookie(caplog) -> None:
     assert token is not None and token not in caplog.text
 
 def test_client_ip_prefers_leftmost_forwarded_for_over_tcp_peer() -> None:
-    from .main import client_ip
+    from ..main import client_ip
     from unittest.mock import Mock
     request = Mock()
     request.headers = {"x-forwarded-for": "203.0.113.7, 10.0.0.5, 10.0.0.1"}
@@ -113,7 +113,7 @@ def test_request_log_reaches_stdout_without_otel() -> None:
     # must still reach a real stream handler (what `railway logs` captures) on its own, not just
     # propagate to pytest's own log capture. Verified for real against a running container while
     # implementing #27 (`docker logs` showed the line only after this fix).
-    from . import main as main_module
+    from .. import main as main_module
     assert main_module.logger.getEffectiveLevel() <= logging.INFO
     assert any(isinstance(handler, logging.StreamHandler) and handler.level <= logging.INFO for handler in main_module.logger.handlers)
 
@@ -132,14 +132,14 @@ def test_health_endpoints_are_minimal_and_safe() -> None:
     live = client.get("/health/live"); ready = client.get("/health/ready")
     assert live.status_code == 200 and live.json() == {"status": "ok"}
     assert ready.status_code == 200 and ready.json()["storage"] == "memory"
-    from .main import ALEMBIC_HEAD
+    from ..main import ALEMBIC_HEAD
     assert ALEMBIC_HEAD == "029_assignment_conditions"
 
 def test_version_is_visible_without_shell_access(monkeypatch) -> None:
     # #27: the deployed commit must be identifiable from an HTTP response alone. GIT_SHA is
     # baked into the image at build time (apps/api/Dockerfile) into main.APP_VERSION; nothing
     # DB/credential-shaped rides along with it.
-    from . import main as main_module
+    from .. import main as main_module
     monkeypatch.setattr(main_module, "APP_VERSION", "abc1234")
     client = TestClient(app, base_url="http://localhost")
     live = client.get("/health/live")
@@ -149,7 +149,7 @@ def test_version_is_visible_without_shell_access(monkeypatch) -> None:
     assert "DATABASE_URL" not in str(ready.json()) and "password" not in str(ready.json()).lower()
 
 def test_postgres_readiness_rejects_stale_migration(monkeypatch) -> None:
-    from .main import health_ready
+    from ..main import health_ready
     database = AuthDatabase("sqlite+pysqlite:///:memory:")
     with database.engine.begin() as connection:
         connection.execute(text("CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL)"))
@@ -161,7 +161,7 @@ def test_postgres_readiness_rejects_stale_migration(monkeypatch) -> None:
 def test_postgres_readiness_times_out_instead_of_hanging(monkeypatch) -> None:
     # #27 failure drill: a DB outage that black-holes an already-open connection (observed
     # locally via `docker pause` on the Postgres container) must not hang this endpoint forever.
-    from . import main as main_module
+    from .. import main as main_module
     import time
 
     monkeypatch.setattr(main_module, "HEALTH_READY_TIMEOUT_SECONDS", 0.2)
@@ -223,7 +223,7 @@ def test_database_customer_ingest_stores_typed_source_fields() -> None:
 
 def test_database_customer_ingest_stores_extensible_collections() -> None:
     from decimal import Decimal
-    from .db_customers import CustomerCollectionRow
+    from ..db_customers import CustomerCollectionRow
     database = CustomerDatabase("sqlite+pysqlite:///:memory:")
     result = {"jobId": "job-collections", "submissionId": "collections", "filename": "x.xlsx", "processed": 1, "created": 1, "updated": 0, "errorRows": 0, "status": "Completed", "errors": [], "actorId": "admin"}
     record = {"bcn": "000123", "name": "Collections", "source": {}, "collections": [{"kind": "vendor", "slot": 4, "name": "New vendor", "revenue": Decimal("12.50")}], "primary_phone": None}
@@ -269,8 +269,8 @@ def test_assignment_run_retry_returns_persisted_result() -> None:
 def test_assignment_run_concurrent_winner_replays_or_conflicts(tmp_path, monkeypatch) -> None:
     from hashlib import sha256
     from sqlalchemy import event
-    from . import main
-    from .db_assignment import AssignmentRunRow
+    from .. import main
+    from ..db_assignment import AssignmentRunRow
 
     database = AssignmentDatabase(f"sqlite+pysqlite:///{tmp_path / 'assignment.db'}")
     monkeypatch.setattr(main, "assignment_db", database)
@@ -308,7 +308,7 @@ def test_assignment_order_fallback_and_unchanged_owner(monkeypatch, caplog) -> N
     eligible set (a member who is no longer active Sales) falls through to the next rule and logs a
     warning; a workload tie is broken by ascending user id, and the pick shifts mid-run once the first
     candidate's in-run count is bumped."""
-    from . import main
+    from .. import main
     monkeypatch.setattr(main, "assignment_db", None)
     monkeypatch.setattr(main, "customer_db", None)
     repo.reset()
@@ -340,7 +340,7 @@ def test_assignment_fallback_used_and_no_eligible_anywhere_leaves_unchanged(monk
     """No rule matches (none configured): falls back to the global fallback list. An already-correct
     owner is a no-op. An empty fallback (no rule and no fallback member) leaves ownership unchanged
     and reports a 'No eligible salesperson' skip reason."""
-    from . import main
+    from .. import main
     monkeypatch.setattr(main, "assignment_db", None)
     monkeypatch.setattr(main, "customer_db", None)
     repo.reset()
@@ -366,7 +366,7 @@ def test_assignment_fallback_used_and_no_eligible_anywhere_leaves_unchanged(monk
         repo.reset()
 
 def test_condition_null_semantics_reject_wrong_operators_and_unknown_fields() -> None:
-    from . import assignment_rules
+    from .. import assignment_rules
     assert assignment_rules.evaluate_condition(None, {"field": "propensity_tier", "operator": "=", "value": "Gold"}) is False
     assert assignment_rules.evaluate_condition(None, {"field": "propensity_tier", "operator": "!=", "value": "Gold"}) is False  # != never matches null
     assert assignment_rules.evaluate_condition(None, {"field": "propensity_tier", "operator": "is-null", "value": None}) is True
@@ -385,7 +385,7 @@ def test_condition_null_semantics_reject_wrong_operators_and_unknown_fields() ->
             pass
 
 def test_condition_between_is_inclusive_and_rejects_invalid_range_at_save_time() -> None:
-    from . import assignment_rules
+    from .. import assignment_rules
     condition = assignment_rules.validate_condition("propensity_score", "between", [10, 20])
     assert condition == {"field": "propensity_score", "operator": "between", "value": ["10", "20"]}
     assert assignment_rules.evaluate_condition(10, condition) is True
@@ -400,7 +400,7 @@ def test_condition_between_is_inclusive_and_rejects_invalid_range_at_save_time()
             pass
 
 def test_pick_candidate_tie_break_ascending_id_and_mid_run_shift() -> None:
-    from . import assignment_rules
+    from .. import assignment_rules
     counts = {"a": 0, "b": 0}
     assert assignment_rules.pick_candidate(["b", "a"], counts) == "a"
     assignment_rules.record_pick(counts, "a")
@@ -417,7 +417,7 @@ def test_assignment_fallback_rejects_invalid_members_without_partial_write() -> 
     assert client.get("/admin/assignment-fallback", headers={"origin": "http://localhost:3000"}).json() == ["sales-river"]
 
 def test_audit_endpoint_returns_only_whitelisted_detail_keys(tmp_path, monkeypatch) -> None:
-    from . import main
+    from .. import main
     database = AssignmentDatabase(f"sqlite+pysqlite:///{tmp_path / 'audit.db'}")
     monkeypatch.setattr(main, "assignment_db", database)
     try:
@@ -465,7 +465,7 @@ def test_close_lifecycle_commits_cancellations_and_retry_record() -> None:
 def test_close_lifecycle_rolls_back_on_activity_conflict() -> None:
     from datetime import datetime, timezone
     from sqlalchemy.exc import IntegrityError
-    from .db_activity import ActivityRow
+    from ..db_activity import ActivityRow
     database = ActivityDatabase("sqlite+pysqlite:///:memory:")
     database.save_followup({"id": "f-rollback", "bcn": "000123", "actorId": "u1", "type": "Reminder", "due": None, "status": "Open", "note": "next"})
     with database.engine.begin() as connection:
@@ -484,9 +484,9 @@ def test_reopen_customer_commits_owner_status_and_idempotency_atomically(tmp_pat
     from datetime import datetime, timezone
     from sqlalchemy import func, select
     from sqlalchemy.exc import IntegrityError
-    from .db_activity import ActivityRow
-    from .db_assignment import AssignmentDatabase, AssignmentHistoryRow, AuditRow
-    from .db_customers import CustomerDatabase
+    from ..db_activity import ActivityRow
+    from ..db_assignment import AssignmentDatabase, AssignmentHistoryRow, AuditRow
+    from ..db_customers import CustomerDatabase
 
     url = f"sqlite+pysqlite:///{tmp_path / 'reopen.db'}"
     customers = CustomerDatabase(url)
@@ -661,7 +661,7 @@ def test_database_import_errors_are_paginated_in_query() -> None:
     assert total == 2 and items == [{"row": 3, "field": "bcn", "reason": "bad"}]
 
 def test_import_storage_failure_restores_in_memory_staging(monkeypatch) -> None:
-    from . import main
+    from .. import main
     repo.reset(); admin = provision_user(type("P", (), {"name": "Admin", "email": "admin@example.test", "role": "Admin", "password": "correct horse battery staple"})())
     client = TestClient(app, base_url="http://localhost"); client.post("/session/login", json={"email": admin.email, "password": "correct horse battery staple"})
     workbook = Workbook(); workbook.active.append(["bcn", "customer_name"]); workbook.active.append(["999999", "Transient"])

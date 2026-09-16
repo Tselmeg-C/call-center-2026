@@ -48,7 +48,7 @@ export async function startBackend(): Promise<TestBackend> {
   // The Origin doesn't need to be reachable -- the backend only string-compares it against
   // FRONTEND_ORIGIN (see apps/api/main.py's origin_guard) to satisfy the unsafe-method guard.
   const origin = "http://localhost:5173";
-  const repoRoot = new URL("../../../../../../", import.meta.url).pathname;
+  const repoRoot = new URL("../../../../../", import.meta.url).pathname;
   const child: ChildProcess = spawn(
     "python3",
     ["-m", "uvicorn", "apps.api.main:app", "--host", "127.0.0.1", "--port", String(port), "--log-level", "warning"],

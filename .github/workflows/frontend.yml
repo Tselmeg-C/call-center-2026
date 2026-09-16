@@ -87,7 +87,7 @@ jobs:
           echo "IMAGE_FRONTEND=ghcr.io/${OWNER}/${REPO}-frontend" >> "$GITHUB_ENV"
 
       - name: Build API image
-        run: docker build -f apps/api/Dockerfile -t "$IMAGE_API:$GITHUB_SHA" -t "$IMAGE_API:latest" .
+        run: docker build -f apps/api/Dockerfile --build-arg GIT_SHA="$GITHUB_SHA" -t "$IMAGE_API:$GITHUB_SHA" -t "$IMAGE_API:latest" .
 
       - name: Build frontend image
         run: docker build -f apps/frontend/Dockerfile -t "$IMAGE_FRONTEND:$GITHUB_SHA" -t "$IMAGE_FRONTEND:latest" .
@@ -113,3 +113,18 @@ jobs:
         run: |
           docker push "$IMAGE_FRONTEND:$GITHUB_SHA"
           docker push "$IMAGE_FRONTEND:latest"
+
+      # #27: unattended auto-deploy of Railway's `development` environment on every successful
+      # main build. The installed Railway CLI pins an image-sourced service to one fixed image
+      # reference and does not auto-redeploy on a new registry tag the way a GitHub-repo source
+      # does (confirmed against `railway service source --help` while grooming #27) -- so this
+      # step is the trigger, re-pointing each service at the commit's own image tag. Only
+      # production promotion (#33's gated workflow_dispatch) requires human approval.
+      - name: Deploy development (Railway)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+        run: |
+          npm install -g @railway/cli@5
+          railway service source connect --image "$IMAGE_API:$GITHUB_SHA" --service api --environment development --yes
+          railway service source connect --image "$IMAGE_FRONTEND:$GITHUB_SHA" --service frontend --environment development --yes

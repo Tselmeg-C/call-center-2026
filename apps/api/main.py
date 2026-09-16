@@ -3,6 +3,7 @@ from datetime import date
 from decimal import Decimal, InvalidOperation
 from copy import deepcopy
 from contextlib import contextmanager
+from concurrent.futures import ThreadPoolExecutor
 from secrets import token_urlsafe
 from uuid import uuid4
 import re
@@ -30,11 +31,29 @@ from sqlalchemy.exc import IntegrityError
 
 app = FastAPI(title="Call Center API", version="0.1.0")
 logger = logging.getLogger("call-center.api")
+# Always emit this logger's structured request-id/status/duration line (see origin_guard below)
+# to stdout, regardless of whether OTel is enabled: observability/otel_setup.py only attaches its
+# own handler and raises this logger's level to INFO when OTEL_EXPORTER_OTLP_ENDPOINT is actually
+# set, and #27 deploys `development` with OTel deliberately unset (#44 is the live-Grafana issue).
+# Verified locally while implementing #27: without this, `docker logs`/`railway logs` never shows
+# this line at all once deployed -- the logger's effective level stays the root logger's default
+# WARNING and nothing propagates it anywhere, silently defeating the request-id/log-survives-
+# deployment acceptance criterion.
+if not any(isinstance(handler, logging.StreamHandler) for handler in logger.handlers):
+    _stream_handler = logging.StreamHandler()
+    _stream_handler.setFormatter(logging.Formatter("%(message)s"))
+    logger.addHandler(_stream_handler)
+logger.setLevel(logging.INFO)
 ALLOWED_ORIGINS = [os.environ["FRONTEND_ORIGIN"]] if os.environ.get("FRONTEND_ORIGIN") else ["http://localhost:3000", "http://127.0.0.1:3000", "http://localhost:4174", "http://127.0.0.1:4174"]
 app.add_middleware(CORSMiddleware, allow_origins=ALLOWED_ORIGINS, allow_credentials=True, allow_methods=["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"], allow_headers=["*"])
 password_hash = PasswordHash.recommended()
 SESSION_SECONDS = 8 * 60 * 60
 ALEMBIC_HEAD = "029_assignment_conditions"
+# The image's commit SHA, baked in at `docker build --build-arg GIT_SHA=...` (see
+# apps/api/Dockerfile and .github/workflows/frontend.yml) -- lets a deployed version be
+# identified (#27) without shell access, via the x-app-version response header on every
+# response and the /health/ready body below.
+APP_VERSION = os.environ.get("GIT_SHA", "unknown")
 # Every key any append_audit/append_assignment caller writes today; the audit endpoint
 # strips anything else so a future detail field never leaks unreviewed (never a credential).
 AUDIT_DETAIL_KEYS = {"name", "position", "active", "oldOwner", "newOwner", "source", "reason", "role", "outcome", "recordId", "reasonId", "created", "updated", "errors", "label"}
@@ -189,15 +208,36 @@ def readable_followups() -> list[dict]:
 def health_live() -> dict:
     return {"status": "ok"}
 
+def _check_postgres_ready() -> str:
+    with auth_db.engine.connect() as connection:
+        connection.exec_driver_sql("SELECT 1")
+        if not inspect(connection).has_table("users"): raise RuntimeError("migrations incomplete")
+        if not inspect(connection).has_table("alembic_version"): raise RuntimeError("migrations incomplete")
+        migration = connection.exec_driver_sql("SELECT version_num FROM alembic_version").scalar()
+        if migration != ALEMBIC_HEAD: raise RuntimeError("migrations incomplete")
+        return migration
+
+# A DB outage that black-holes an already-open TCP connection (observed locally with
+# `docker pause` on the Postgres container during #27's failure drill) doesn't fail fast --
+# no connect error, no reset -- it just never answers. A bare `engine.connect()` would then hang
+# this endpoint indefinitely instead of returning the 503 Railway's healthcheck and #27's drill
+# both expect. Bound it with a hard deadline instead.
+# ponytail: a timed-out call leaks its thread until the DB call itself returns (or the process
+# restarts) -- fine at this low poll volume (every 5min, tiny pool), not fine under sustained
+# concurrent readiness polling. Upgrade to a query-level statement_timeout (or async DB driver)
+# if that ever changes.
+_health_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="health-ready")
+HEALTH_READY_TIMEOUT_SECONDS = 5
+
 @app.get("/health/ready")
 def health_ready() -> dict:
-    if auth_db is None: return {"status": "ok", "storage": "memory"}
+    if auth_db is None: return {"status": "ok", "storage": "memory", "version": APP_VERSION}
     try:
-        with auth_db.engine.connect() as connection:
-            connection.exec_driver_sql("SELECT 1")
-            if not inspect(connection).has_table("users"): raise RuntimeError("migrations incomplete")
-            if not inspect(connection).has_table("alembic_version") or connection.exec_driver_sql("SELECT version_num FROM alembic_version").scalar() != ALEMBIC_HEAD: raise RuntimeError("migrations incomplete")
-        return {"status": "ok", "storage": "postgres"}
+        migration = _health_pool.submit(_check_postgres_ready).result(timeout=HEALTH_READY_TIMEOUT_SECONDS)
+        # No DATABASE_URL, credentials, or other connection detail is ever included here --
+        # only the already-public commit SHA and the migration revision (itself just a label
+        # from apps/api/migrations/versions, not sensitive).
+        return {"status": "ok", "storage": "postgres", "version": APP_VERSION, "migration": migration}
     except Exception as exc:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Storage is not ready.") from exc
 
@@ -269,12 +309,28 @@ async def origin_guard(request: Request, call_next):
             return Response("Origin not allowed.", status_code=403, headers={"x-request-id": request_id}, media_type="application/json")
     response = await call_next(request)
     response.headers["x-request-id"] = request_id
+    response.headers["x-app-version"] = APP_VERSION
     logger.info("request id=%s method=%s route=%s status=%s duration_ms=%.3f error=%s", request_id, request.method, route, response.status_code, (perf_counter() - started) * 1000, "none" if response.status_code < 400 else "http_error", extra={"request_id": request_id})
     return response
 
 
 def safe_email(value: str) -> str:
     return value.strip().casefold()
+
+
+def client_ip(request: Request) -> str:
+    """The real client IP for the per-IP login throttle. `request.client.host` is the TCP peer,
+    which behind Railway's edge (and, for browser traffic, this app's own frontend nginx reverse
+    proxy at apps/frontend/nginx/default.conf.template) is always a proxy, never the browser --
+    trusting it directly would bucket every real user behind one shared counter. Both hops set
+    X-Forwarded-For and append their own address, so the left-most entry is the original client.
+    This is only safe to trust because nothing but Railway's edge can reach this service (no
+    public port bypasses it) -- see the trusted-proxy note in _docs/deployment.md."""
+    forwarded = request.headers.get("x-forwarded-for", "")
+    first = forwarded.split(",")[0].strip()
+    if first:
+        return first
+    return request.client.host if request.client else "unknown"
 
 
 def current_user(session: Annotated[str | None, Cookie(alias="call_center_session")] = None) -> User:
@@ -303,7 +359,7 @@ def current_user(session: Annotated[str | None, Cookie(alias="call_center_sessio
 
 @app.post("/session/login", response_model=User)
 def login(body: Login, request: Request, response: Response) -> User:
-    now = utcnow(); ip = request.client.host if request.client else "unknown"; key = (safe_email(body.email), ip)
+    now = utcnow(); ip = client_ip(request); key = (safe_email(body.email), ip)
     recent = [stamp for stamp in repo.login_failures.get(key, []) if now - stamp < timedelta(minutes=15)]
     ip_recent = [stamp for stamp in repo.login_failures_by_ip.get(ip, []) if now - stamp < timedelta(minutes=15)]
     if len(ip_recent) >= 50 or len(recent) >= 5:

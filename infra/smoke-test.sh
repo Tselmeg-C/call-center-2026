@@ -54,6 +54,7 @@ docker run -d --network host --name smoke-api \
 echo "==> Starting frontend container"
 docker run -d --network host --name smoke-frontend \
   -e PORT="$frontend_port" \
+  -e API_UPSTREAM="127.0.0.1:${api_port}" \
   "$frontend_image" >/dev/null
 
 echo "==> Waiting for /health/ready"
@@ -76,5 +77,13 @@ if [ "$frontend_status" != "200" ]; then
   exit 1
 fi
 echo "    frontend index: HTTP $frontend_status"
+
+echo "==> Checking frontend's /api/ reverse proxy reaches the real API (#27)"
+proxied=$(curl -fsS "http://127.0.0.1:${frontend_port}/api/health/ready")
+if [ "$proxied" != "$(curl -fsS "http://127.0.0.1:${api_port}/health/ready")" ]; then
+  echo "Frontend /api/ proxy did not return the API's /health/ready body" >&2
+  exit 1
+fi
+echo "    frontend /api/health/ready: $proxied"
 
 echo "==> Smoke check passed"

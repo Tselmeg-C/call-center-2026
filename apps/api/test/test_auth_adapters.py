@@ -156,12 +156,12 @@ def test_rule_updates_compare_persisted_version_and_rollback(tmp_path, monkeypat
         database.update_rule("rule", {"name": "Winner"}, actor.id, 2)
         before = deepcopy(main.repo.rules)
         with pytest.raises(HTTPException) as stale:
-            main.update_assignment_rule("rule", {"name": "Loser", "version": 2}, actor)
+            main.update_assignment_rule("rule", main.AssignmentRulePatch.model_validate({"name": "Loser", "version": 2}), actor)
         assert stale.value.status_code == 409
         assert main.repo.rules == before and main.repo.assignment_version == 2
         assert database.ordered_rules()[0].name == "Winner" and database.get_setting("assignment_version") == {"value": 3}
         assert database.audit()[1] == 2
-        result = main.update_assignment_rule("rule", {"active": False, "version": 3}, actor)
+        result = main.update_assignment_rule("rule", main.AssignmentRulePatch.model_validate({"active": False, "version": 3}), actor)
         assert result["name"] == "Winner" and result["active"] is False
         assert main.repo.assignment_version == 4
         before = deepcopy(main.repo.rules)
@@ -172,7 +172,7 @@ def test_rule_updates_compare_persisted_version_and_rollback(tmp_path, monkeypat
         event.listen(Session, "before_commit", fail_commit)
         try:
             with pytest.raises(RuntimeError, match="Injected failure"):
-                main.update_assignment_rule("rule", {"name": "Rolled back", "version": 4}, actor)
+                main.update_assignment_rule("rule", main.AssignmentRulePatch.model_validate({"name": "Rolled back", "version": 4}), actor)
         finally:
             event.remove(Session, "before_commit", fail_commit)
         assert main.repo.rules == before and main.repo.assignment_version == 4
@@ -203,14 +203,14 @@ def test_rule_member_update_enforces_active_sales(tmp_path, monkeypatch):
         main.repo.users["first"]["active"] = False
         assert database.rule_members(rule["id"]) == ["first"]
         with pytest.raises(HTTPException) as rejected:
-            main.update_assignment_rule(rule["id"], {"memberIds": ["inactive"], "version": main.repo.assignment_version}, actor)
+            main.update_assignment_rule(rule["id"], main.AssignmentRulePatch.model_validate({"memberIds": ["inactive"], "version": main.repo.assignment_version}), actor)
         assert rejected.value.status_code == 422
         assert database.rule_members(rule["id"]) == ["first"] and database.ordered_rules()[0].active is True
         with pytest.raises(HTTPException) as empty:
-            main.update_assignment_rule(rule["id"], {"memberIds": [], "version": main.repo.assignment_version}, actor)
+            main.update_assignment_rule(rule["id"], main.AssignmentRulePatch.model_validate({"memberIds": [], "version": main.repo.assignment_version}), actor)
         assert empty.value.status_code == 422
         main.repo.users["second"] = {"id": "second", "name": "second", "role": "Sales", "active": True}
-        result = main.update_assignment_rule(rule["id"], {"memberIds": ["second"], "version": main.repo.assignment_version}, actor)
+        result = main.update_assignment_rule(rule["id"], main.AssignmentRulePatch.model_validate({"memberIds": ["second"], "version": main.repo.assignment_version}), actor)
         assert result["memberIds"] == ["second"]
         assert database.rule_members(rule["id"]) == ["second"]
     finally:
@@ -1512,8 +1512,8 @@ def test_postgres_bulk_assignment_rule_order_fallback_and_scope(postgres_url, mo
         assert (history_after_ordered - history_before, audit_after_ordered - audit_before) == (1, 1)
 
         # Every rule inactive falls through to the fallback list.
-        main.update_assignment_rule(rule_first["id"], {"active": False, "version": main.repo.assignment_version}, actor)
-        main.update_assignment_rule(rule_second["id"], {"active": False, "version": main.repo.assignment_version}, actor)
+        main.update_assignment_rule(rule_first["id"], main.AssignmentRulePatch.model_validate({"active": False, "version": main.repo.assignment_version}), actor)
+        main.update_assignment_rule(rule_second["id"], main.AssignmentRulePatch.model_validate({"active": False, "version": main.repo.assignment_version}), actor)
         history_before_fallback, audit_before_fallback = counts()
         result = main.run_assignment(main.AssignmentRunRequest(scope="all-open", submissionId="fallback"), actor)
         assert result["assigned"] == 2

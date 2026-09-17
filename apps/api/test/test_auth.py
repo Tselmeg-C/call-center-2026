@@ -327,7 +327,7 @@ def test_assignment_configuration_and_run_are_admin_only() -> None:
     result = client.post("/admin/assignment-runs", json={"scope": "unassigned", "submissionId": "run-1"}, headers={"origin": "http://localhost:3000"})
     assert result.status_code == 200 and result.json()["assigned"] == 1
     assert client.post("/admin/assignment-runs", json={"scope": "all-open", "submissionId": "run-1"}, headers={"origin": "http://localhost:3000"}).status_code == 409
-    assert client.patch("/admin/assignment-rules/rule-1", json={"version": 0}, headers={"origin": "http://localhost:3000"}).status_code == 409
+    assert client.patch("/admin/assignment-rules/rule-1", json={"active": False, "version": 0}, headers={"origin": "http://localhost:3000"}).status_code == 409
 
 def test_assignment_database_keeps_ordered_rules_and_audit() -> None:
     database = AssignmentDatabase("sqlite+pysqlite:///:memory:")

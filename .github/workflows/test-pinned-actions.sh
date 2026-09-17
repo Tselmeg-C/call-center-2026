@@ -2,7 +2,7 @@
 # Self-check for #62: every `uses:` action reference in this directory's workflow
 # files must resolve to a full 40-char commit SHA (not a mutable tag like @v4),
 # carrying a trailing human-readable version comment, and the Railway CLI install
-# in frontend.yml must be pinned to an exact version rather than a floating major.
+# in ci.yml must be pinned to an exact version rather than a floating major.
 #
 # Usage: .github/workflows/test-pinned-actions.sh   (run from anywhere)
 set -eu
@@ -43,7 +43,7 @@ done < "$tmp_uses"
 rm -f "$tmp_uses"
 
 echo "==> Checking Railway CLI install is pinned to an exact version"
-railway_line=$(grep -E 'npm install -g @railway/cli@' "$dir"/frontend.yml)
+railway_line=$(grep -E 'npm install -g @railway/cli@' "$dir"/ci.yml)
 if printf '%s' "$railway_line" | grep -qE '@railway/cli@[0-9]+\.[0-9]+\.[0-9]+'; then
   echo "    $railway_line"
 else

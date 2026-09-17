@@ -52,7 +52,7 @@ LOGIN_DUMMY_HASH = password_hash.hash(token_urlsafe(32))  # #63: built once at l
 SESSION_SECONDS = 8 * 60 * 60
 ALEMBIC_HEAD = "029_assignment_conditions"
 # The image's commit SHA, baked in at `docker build --build-arg GIT_SHA=...` (see
-# apps/api/Dockerfile and .github/workflows/frontend.yml) -- lets a deployed version be
+# apps/api/Dockerfile and .github/workflows/ci.yml) -- lets a deployed version be
 # identified (#27) without shell access, via the x-app-version response header on every
 # response and the /health/ready body below.
 APP_VERSION = os.environ.get("GIT_SHA", "unknown")

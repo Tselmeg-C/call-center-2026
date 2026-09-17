@@ -1,6 +1,6 @@
 name: Promote to production
 
-# Run by hand, or called by frontend.yml after a `v*` release tag publishes images. Takes an
+# Run by hand, or called by ci.yml after a `v*` release tag publishes images. Takes an
 # already-published GHCR image tag (a commit SHA or "latest") and points Railway production at
 # it -- never builds anything. The `production` environment's protection rules gate both paths.
 on:

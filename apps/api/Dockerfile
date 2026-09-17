@@ -36,7 +36,7 @@ ENV PYTHONUNBUFFERED=1
 
 # The commit this image was built from, surfaced without shell access via the
 # x-app-version response header and /health/ready's body (see apps/api/main.py). CI passes
-# --build-arg GIT_SHA=$GITHUB_SHA (.github/workflows/frontend.yml); an unset default keeps
+# --build-arg GIT_SHA=$GITHUB_SHA (.github/workflows/ci.yml); an unset default keeps
 # a plain local `docker build` working.
 ARG GIT_SHA=unknown
 ENV GIT_SHA=${GIT_SHA}

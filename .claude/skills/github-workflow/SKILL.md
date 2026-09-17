@@ -52,15 +52,18 @@ Never skip grooming. Each subagent prompt must be self-contained: issue number, 
 - PR body: `## Summary` + `## Test plan` (checkboxes; say honestly what was not run).
 - If GitHub's "update branch" reports false conflicts, merge `origin/main` into the branch locally and push.
 
-## CI (`.github/workflows/frontend.yml`)
+## CI (`.github/workflows/ci.yml`)
 
 | Event | Tests | Docker build | Push image | Deploy |
 |---|---|---|---|---|
 | Push feature branch (incl. merging `main` into it) | yes | no | no | no |
 | PR opened/updated | yes | no | no | no |
-| Merge → `main` | yes | yes | yes | development |
-| Push `v*` tag | yes | yes | yes | production (via `promote-production.yml`, `production` environment gate) |
+| Merge → `main` | yes | yes (once per commit) | `<sha>`, `<short-sha>`, `latest` | development |
+| Push `v*` tag | yes | no -- re-tags the `<sha>` image main already built (builds only if missing) | adds `v*` tag | production (`promote-production.yml`, `production` approval) |
+| Docs-only change (`_docs/**`, `**/*.md`, `.claude/**`) | no | no | no | no |
+| Re-run of an old `main` run | yes | no (image exists) | no `latest` move | no |
 
-- Image tags: short commit SHA, and `latest` (main) or the release tag name.
+- Build once, promote the same image: deploys always pin the full-SHA tag; short SHA, `latest` and `v*` are extra tags on the same digest.
+- Rollback = explicit promotion of a previous SHA (`promote-production.yml` for production, `railway service source connect --image <sha>` for development), never re-running an old Actions run.
 - Keep this matrix when editing workflows. Run `.github/workflows/test-pinned-actions.sh` (every third-party `uses:` pinned to a full SHA with a version comment) and actionlint before opening a CI PR.
 - A failing check on a PR may be caused by something already on `main`. Read the failing log and the PR diff before blaming the PR.

@@ -1,8 +1,15 @@
-name: Frontend
+name: CI
 
+# check        -> every push and PR (tests, lint, typecheck, PostgreSQL smoke, benchmark)
+# publish      -> merge to main: build once, push <sha>/<short-sha>, move `latest`, deploy development
+#                 v* tag: re-tag the SAME <sha> image with the release name (build only if missing)
+# deploy-production -> v* tag: promote-production.yml (production approval) with that SHA
+# Docs-only changes skip everything. Path filters are ignored for tag pushes, so tags always run.
 on:
   push:
+    paths-ignore: ['_docs/**', '**/*.md', '.claude/**']
   pull_request:
+    paths-ignore: ['_docs/**', '**/*.md', '.claude/**']
 
 permissions:
   contents: read
@@ -64,21 +71,19 @@ jobs:
   publish:
     name: Build and publish images
     needs: check
-    # Only a merge to main (-> dev) or a `v*` release tag (-> production) builds and publishes;
-    # feature-branch pushes and PRs stop at `check`.
     if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
-    # Serialize runs per ref so `latest` can't land out of order.
+    # Serialize runs per ref so `latest` / dev deploys can't land out of order.
     concurrency:
       group: publish-${{ github.ref }}
       cancel-in-progress: false
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - name: Compute lowercased image names
+      - name: Compute image names
         env:
           OWNER_REPO: ${{ github.repository }}
         run: |
@@ -88,20 +93,6 @@ jobs:
           echo "IMAGE_API=ghcr.io/${OWNER}/${REPO}-api" >> "$GITHUB_ENV"
           echo "IMAGE_FRONTEND=ghcr.io/${OWNER}/${REPO}-frontend" >> "$GITHUB_ENV"
 
-      # Tags: full commit SHA (what Railway deploys pin to), short commit SHA, plus `latest` on
-      # main or the release tag name (e.g. v1.2.0) on a tag push.
-      - name: Compute image tags
-        run: |
-          SHORT_SHA="${GITHUB_SHA::7}"
-          if [ "$GITHUB_REF_TYPE" = tag ]; then CHANNEL="$GITHUB_REF_NAME"; else CHANNEL=latest; fi
-          echo "IMAGE_TAGS=$GITHUB_SHA $SHORT_SHA $CHANNEL" >> "$GITHUB_ENV"
-
-      - name: Build API image
-        run: docker build -f apps/api/Dockerfile --build-arg GIT_SHA="$GITHUB_SHA" -t "$IMAGE_API:$GITHUB_SHA" .
-
-      - name: Build frontend image
-        run: docker build -f apps/frontend/Dockerfile -t "$IMAGE_FRONTEND:$GITHUB_SHA" .
-
       - name: Log in to GHCR
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
@@ -109,32 +100,59 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Push API image
-        run: for t in $IMAGE_TAGS; do docker tag "$IMAGE_API:$GITHUB_SHA" "$IMAGE_API:$t"; docker push "$IMAGE_API:$t"; done
+      # Build once per commit: a <sha> image is never rebuilt (reruns, or a v* tag on a commit main
+      # already published), so every environment runs the exact same image digest.
+      - name: Check for an existing image for this commit
+        run: |
+          if docker manifest inspect "$IMAGE_API:$GITHUB_SHA" > /dev/null 2>&1 && docker manifest inspect "$IMAGE_FRONTEND:$GITHUB_SHA" > /dev/null 2>&1; then
+            echo "IMAGE_EXISTS=true" >> "$GITHUB_ENV"
+          else
+            echo "IMAGE_EXISTS=false" >> "$GITHUB_ENV"
+          fi
 
-      - name: Push frontend image
-        run: for t in $IMAGE_TAGS; do docker tag "$IMAGE_FRONTEND:$GITHUB_SHA" "$IMAGE_FRONTEND:$t"; docker push "$IMAGE_FRONTEND:$t"; done
+      - name: Build and push <sha> images
+        if: env.IMAGE_EXISTS == 'false'
+        run: |
+          docker build -f apps/api/Dockerfile --build-arg GIT_SHA="$GITHUB_SHA" -t "$IMAGE_API:$GITHUB_SHA" .
+          docker build -f apps/frontend/Dockerfile -t "$IMAGE_FRONTEND:$GITHUB_SHA" .
+          docker push "$IMAGE_API:$GITHUB_SHA"
+          docker push "$IMAGE_FRONTEND:$GITHUB_SHA"
 
-      # #27: unattended auto-deploy of Railway's `development` environment on every successful
-      # main build. The installed Railway CLI pins an image-sourced service to one fixed image
-      # reference and does not auto-redeploy on a new registry tag the way a GitHub-repo source
-      # does (confirmed against `railway service source --help` while grooming #27) -- so this
-      # step is the trigger, re-pointing each service at the commit's own image tag. Only
-      # production promotion (#33's gated workflow_dispatch) requires human approval.
-      #
-      # RAILWAY_API_TOKEN, not RAILWAY_TOKEN: a Project Token (what RAILWAY_TOKEN expects) is
-      # environment-scoped and read-mostly -- it can query but cannot perform mutations like
-      # `service source connect` (fails with "Unauthorized", confirmed against a real CI run).
-      # Only an account-scoped token (railway.com/account/tokens), set as RAILWAY_API_TOKEN, can
-      # actually change a service's deployed image. This does mean the token has access beyond
-      # just this one project -- Railway's CLI has no narrower mutation-capable scope today.
-      #
-      # An account token isn't tied to one project the way a Project Token is, so the CLI has no
-      # implicit project context in CI's fresh checkout (no `railway link` state) -- it fails with
-      # "No linked project found" without an explicit --project. Pass it directly rather than add
-      # a separate `railway link` step.
-      - name: Deploy development (Railway)
+      # A rerun of an old main run must not move `latest` or redeploy development to that old commit.
+      - name: Check this commit is still the head of main
         if: github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          MAIN_HEAD=$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)
+          if [ "$MAIN_HEAD" = "$GITHUB_SHA" ]; then
+            echo "IS_MAIN_HEAD=true" >> "$GITHUB_ENV"
+          else
+            echo "IS_MAIN_HEAD=false" >> "$GITHUB_ENV"
+            echo "::warning::$GITHUB_SHA is no longer the head of main ($MAIN_HEAD); not moving latest or deploying development. Roll back explicitly instead (see _docs/deployment.md)."
+          fi
+
+      # Extra tags point at the same digest (registry-side copy, no rebuild): short SHA always,
+      # plus `latest` for the current main head or the release name for a v* tag.
+      - name: Add image tags
+        run: |
+          TAGS="${GITHUB_SHA::7}"
+          if [ "$GITHUB_REF_TYPE" = tag ]; then TAGS="$TAGS $GITHUB_REF_NAME"; elif [ "$IS_MAIN_HEAD" = true ]; then TAGS="$TAGS latest"; fi
+          for t in $TAGS; do
+            docker buildx imagetools create -t "$IMAGE_API:$t" "$IMAGE_API:$GITHUB_SHA"
+            docker buildx imagetools create -t "$IMAGE_FRONTEND:$t" "$IMAGE_FRONTEND:$GITHUB_SHA"
+          done
+
+      # #27: unattended auto-deploy of Railway's `development` environment on every new main head.
+      # The Railway CLI pins an image-sourced service to one fixed image reference and does not
+      # auto-redeploy on a new registry tag, so this step is the trigger, re-pointing each service
+      # at the commit's own <sha> image.
+      #
+      # RAILWAY_API_TOKEN, not RAILWAY_TOKEN: a Project Token is environment-scoped and read-mostly
+      # and cannot run `service source connect` ("Unauthorized"). Only an account-scoped token can.
+      # An account token has no implicit project context in CI, so --project is passed explicitly.
+      - name: Deploy development (Railway)
+        if: env.IS_MAIN_HEAD == 'true'
         env:
           RAILWAY_API_TOKEN: ${{ secrets.RAILWAY_API_TOKEN }}
           RAILWAY_PROJECT_ID: e7501ba0-4b15-42e1-a4a5-e4a4aaba614b
@@ -143,8 +161,8 @@ jobs:
           railway service source connect --image "$IMAGE_API:$GITHUB_SHA" --service api --environment development --project "$RAILWAY_PROJECT_ID"
           railway service source connect --image "$IMAGE_FRONTEND:$GITHUB_SHA" --service frontend --environment development --project "$RAILWAY_PROJECT_ID"
 
-  # Release tag -> production, through the same human-gated promotion workflow (`production`
-  # environment), pinned to the image this run just published.
+  # Release tag -> production: same human-approved promotion workflow (`production` environment)
+  # as a manual promotion or rollback, pinned to this commit's <sha> image.
   deploy-production:
     name: Deploy production
     needs: publish

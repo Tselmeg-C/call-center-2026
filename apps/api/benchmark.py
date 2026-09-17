@@ -33,7 +33,7 @@ from sqlalchemy.orm import Session
 # "full" matches the 10,000 customers / 150,000 combined interaction+follow-up+audit rows
 # documented in _docs/persistence.md. "ci" is a deliberately small smoke scale for CI -- it
 # proves the benchmark script and its query paths execute against real PostgreSQL, not that
-# the 1s/p95 target holds at full scale; see .github/workflows/frontend.yml.
+# the 1s/p95 target holds at full scale; see .github/workflows/ci.yml.
 SCALES = {
     "full": {"customers": 10_000, "interactions": 50_000, "followups": 50_000, "audit": 50_000, "owners": 25},
     "ci": {"customers": 300, "interactions": 1_500, "followups": 1_500, "audit": 1_500, "owners": 5},

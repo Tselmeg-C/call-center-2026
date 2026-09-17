@@ -92,21 +92,29 @@ This is additive: the non-container `npm run dev` / `apps/api/start.sh` workflow
 
 ## Publishing images to GHCR
 
-Every push to `main` that passes `check` in `.github/workflows/frontend.yml` runs a `publish` job (`needs: check`) that builds and pushes both images to GitHub Container Registry, from the same `apps/api/Dockerfile` and `apps/frontend/Dockerfile` used for the local `docker build` commands above -- CI does not diverge from them. Pull requests (including from forks) and other branches skip the `publish` job entirely; they only run `check`.
+Every push to `main` that passes `check` in `.github/workflows/ci.yml` runs a `publish` job (`needs: check`) that builds and pushes both images to GitHub Container Registry, from the same `apps/api/Dockerfile` and `apps/frontend/Dockerfile` used for the local `docker build` commands above -- CI does not diverge from them. Pull requests (including from forks) and other branches skip the `publish` job entirely; they only run `check`. Changes that only touch `_docs/**`, `**/*.md` or `.claude/**` skip the workflow entirely (path filters do not apply to tag pushes, so a release tag always runs).
 
 Images are published as:
 
 - `ghcr.io/<owner>/<repo>-api`
 - `ghcr.io/<owner>/<repo>-frontend`
 
-with `<owner>` and `<repo>` lowercased (GHCR requires lowercase paths). For this repository that's `ghcr.io/tselmeg-c/call-center-2026-api` and `ghcr.io/tselmeg-c/call-center-2026-frontend`. Each successful `main` push tags both images with the full commit SHA, the short (7-char) commit SHA, and moves the `latest` tag to point at that same build -- `latest` is the newest `main` build, a commit SHA is a pinned, reproducible one. A pushed `v*` release tag (e.g. `v1.2.0`) runs the same tests and build, publishes the full SHA, short SHA and release-tag name (it does not move `latest` and does not deploy development), then calls the production promotion below with that commit's SHA.
+with `<owner>` and `<repo>` lowercased (GHCR requires lowercase paths). For this repository that's `ghcr.io/tselmeg-c/call-center-2026-api` and `ghcr.io/tselmeg-c/call-center-2026-frontend`.
+
+**Build once, promote the same image.** A commit's images are built at most once and pushed as the full commit SHA; every deploy (development and production) pins that full-SHA tag. Other tags are registry-side copies of the same digest (`docker buildx imagetools create`), never rebuilds:
+
+- short (7-char) commit SHA, always;
+- `latest`, only when the commit is still the head of `main` -- `latest` is the newest `main` build;
+- the release name (e.g. `v1.2.0`) on a `v*` tag push. The tag run re-tags the image `main` already built for that commit (it only builds if that image is missing, e.g. the tagged commit was docs-only), does not move `latest`, does not deploy development, and then calls the production promotion below with the commit SHA.
 
 | Event | Tests | Docker build | Push image | Deploy |
 | --- | --- | --- | --- | --- |
 | Push feature branch (incl. merging `main` into it) | yes | no | no | no |
 | PR opened/updated | yes | no | no | no |
-| Merge to `main` | yes | yes | yes | development |
-| Push `v*` tag | yes | yes | yes | production (via `promote-production.yml`, `production` environment gate) |
+| Merge to `main` | yes | yes (once per commit) | `<sha>`, `<short-sha>`, `latest` | development |
+| Push `v*` tag | yes | only if the `<sha>` image is missing | adds `v*` tag | production (via `promote-production.yml`, `production` environment approval) |
+| Docs-only change | no | no | no | no |
+| Re-run of an old `main` run | yes | no (image exists) | `latest` not moved | no -- see Rollback |
 
 These images are published at GHCR's default visibility for a `GITHUB_TOKEN`-authored package on a public repository, which is **public** (verified while implementing #27: an anonymous `ghcr.io/token` request and unauthenticated manifest pull both succeed for `call-center-2026-api`). This is what lets Railway's `--image` service source pull them directly -- `railway service source connect --image` has no registry-credential flags, so an image-sourced service needs a publicly pullable image.
 
@@ -129,7 +137,7 @@ Swap `<sha>` for `latest` to run the newest `main` build instead of a pinned com
 
 ## Promoting a published tag to production
 
-`.github/workflows/promote-production.yml` is a manual `workflow_dispatch` workflow (also called automatically by `frontend.yml` after a `v*` release tag publishes its images) that takes an image tag (a commit SHA or `latest`) and points Railway's production service at that exact, already-published tag. It runs under the `production` GitHub Environment and never runs `docker build` -- it only re-points Railway at an image GHCR already has. Before touching Railway it verifies the given tag exists in GHCR for *both* `-api` and `-frontend` images (`docker manifest inspect`); if either is missing, the run fails with no Railway change made.
+`.github/workflows/promote-production.yml` is a manual `workflow_dispatch` workflow (also called automatically by `ci.yml` after a `v*` release tag publishes its images) that takes an image tag (a commit SHA or `latest`) and points Railway's production service at that exact, already-published tag. It runs under the `production` GitHub Environment and never runs `docker build` -- it only re-points Railway at an image GHCR already has. Before touching Railway it verifies the given tag exists in GHCR for *both* `-api` and `-frontend` images (`docker manifest inspect`); if either is missing, the run fails with no Railway change made.
 
 The actual "point Railway at this image" step is currently a documented placeholder: this workflow does not yet have a `RAILWAY_TOKEN` secret or the production project/service IDs (those land with #27/#28). The tag-existence verification is fully real and runs regardless. Once `RAILWAY_TOKEN` and the service IDs exist, the placeholder step in the workflow file documents exactly what to replace it with.
 
@@ -239,7 +247,7 @@ without shell access via either surface.
 
 ### Auto-deploy on every `main` build
 
-`.github/workflows/frontend.yml`'s `publish` job, after pushing both images, calls
+`.github/workflows/ci.yml`'s `publish` job, after publishing both images and only if the commit is still the head of `main` (so re-running an old run never redeploys an old commit), calls
 `railway service source connect --image ...:$GITHUB_SHA --service <api|frontend> --environment
 development --yes` for each service, authenticated with a Railway project token in the
 `RAILWAY_TOKEN` GitHub Actions secret. This is a CI-triggered redeploy, not a Railway-side
@@ -372,6 +380,8 @@ of the same reference, not a revision to a different tag, so it is not the right
 to the previous commit"; `railway redeploy` reruns the *current* deployment, which does not help
 either if the current image is the broken one. Use the `service source connect --image
 <previous-sha>` form.
+
+Roll back production the same explicit way: run `promote-production.yml` (Actions -> Promote to production -> Run workflow) with the previous release's full commit SHA; it goes through the same `production` approval. Do not re-run an old GitHub Actions run to roll back: `ci.yml` deliberately does not move `latest` or redeploy development for a commit that is no longer the head of `main`.
 
 ### Known gaps -- blocked in the implementing session, need a human follow-up
 

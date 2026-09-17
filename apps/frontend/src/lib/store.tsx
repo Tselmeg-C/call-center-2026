@@ -8,6 +8,7 @@ import type {
   ClosureReason,
   Customer as ServiceCustomer,
   Result,
+  Services,
 } from "@/services/types";
 import {
   fromFollowUpType,
@@ -55,9 +56,8 @@ type Ctx = {
   runAssignment: () => Promise<{ assigned: number }>;
   toggleUserActive: (id: string) => Promise<boolean>;
   toggleRule: (id: string) => Promise<boolean>;
-  /** Up/down reordering; like `toggleRule`, never version-checked -- reordering keeps its
-   *  existing always-succeeds behavior (see the rule editor's `updateAssignmentRule` for the one
-   *  flow that does surface a stale-version conflict). */
+  /** Up/down reordering via `swapRuleOrder`: two version-checked PATCHes sent one after the other.
+   *  On failure it toasts and resyncs rules + assignment version from the server. */
   moveRule: (id: string, direction: "up" | "down") => Promise<boolean>;
   createAssignmentRule: (input: AssignmentRuleDraft) => Promise<Result<AssignmentRule>>;
   /** Used by the rule editor to save name/conditions/memberIds/active changes; always attaches
@@ -70,6 +70,39 @@ type Ctx = {
 };
 
 const StoreContext = createContext<Ctx | null>(null);
+
+export type RuleSwapOutcome =
+  | { ok: true; updated: [AssignmentRule, AssignmentRule]; version: number }
+  | { ok: false; message: string; rules: AssignmentRule[] | null; version: number | null };
+
+/** Swaps two rules' order. The backend compare-and-swaps the shared assignment version on every
+ *  PATCH (+1 per success), so the two PATCHes must run sequentially, each with the version the
+ *  previous one produced -- concurrent ones race and 409. On any failure (a half-applied swap
+ *  included) the rules and version are refetched so the caller can match server state. */
+export async function swapRuleOrder(
+  services: Pick<Services, "updateAssignmentRule" | "listAssignmentRules" | "getAssignmentVersion">,
+  current: AssignmentRule,
+  neighbor: AssignmentRule,
+  version: number,
+): Promise<RuleSwapOutcome> {
+  const first = await services.updateAssignmentRule(current.id, { order: neighbor.order, version });
+  if (first.ok) {
+    const second = await services.updateAssignmentRule(neighbor.id, { order: current.order, version: version + 1 });
+    if (second.ok) return { ok: true, updated: [first.data, second.data], version: version + 2 };
+    return resync(services, second.error.message);
+  }
+  return resync(services, first.error.message);
+}
+
+async function resync(services: Pick<Services, "listAssignmentRules" | "getAssignmentVersion">, message: string): Promise<RuleSwapOutcome> {
+  const [rulesResult, versionResult] = await Promise.all([services.listAssignmentRules(), services.getAssignmentVersion()]);
+  return {
+    ok: false,
+    message: message || "Could not reorder rules.",
+    rules: rulesResult.ok ? rulesResult.data : null,
+    version: versionResult.ok ? versionResult.data : null,
+  };
+}
 
 export function StoreProvider({ children }: { children: ReactNode }) {
   const services = useServices();
@@ -260,20 +293,20 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     if (index < 0 || swapIndex < 0 || swapIndex >= sorted.length) return false;
     const current = sorted[index]!;
     const neighbor = sorted[swapIndex]!;
-    const [currentResult, neighborResult] = await Promise.all([
-      services.updateAssignmentRule(current.id, { order: neighbor.order }),
-      services.updateAssignmentRule(neighbor.id, { order: current.order }),
-    ]);
-    if (!currentResult.ok || !neighborResult.ok) {
-      reportError((!currentResult.ok && currentResult.error.message) || (!neighborResult.ok && neighborResult.error.message) || "Could not reorder rules.");
+    const outcome = await swapRuleOrder(services, current, neighbor, assignmentVersion.current);
+    if (!outcome.ok) {
+      reportError(outcome.message);
+      if (outcome.rules) setRules(outcome.rules);
+      if (outcome.version !== null) assignmentVersion.current = outcome.version;
       return false;
     }
+    const [currentData, neighborData] = outcome.updated;
     setRules((prev) =>
       prev
-        .map((item) => (item.id === current.id ? currentResult.data : item.id === neighbor.id ? neighborResult.data : item))
+        .map((item) => (item.id === current.id ? currentData : item.id === neighbor.id ? neighborData : item))
         .sort((a, b) => a.order - b.order),
     );
-    assignmentVersion.current += 2;
+    assignmentVersion.current = outcome.version;
     return true;
   };
 

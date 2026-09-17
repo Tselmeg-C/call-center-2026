@@ -120,11 +120,53 @@ def test_followup_missing_type_and_bad_due_on_patch_keep_old_values(env):
         assert [(item["type"], item["note"]) for item in detail["followUps"]] == [("Appointment", "Visit")]
 
 
-@pytest.mark.parametrize("due", [None, YESTERDAY, NOW.date().isoformat(), ISO_Z, "2026-09-20T08:00:00+02:00", "2000-01-01"])
+FUTURE_PLUS2 = (NOW + timedelta(days=3)).astimezone(timezone(timedelta(hours=2))).isoformat(timespec="seconds")
+
+
+@pytest.mark.parametrize("due", [None, YESTERDAY, NOW.date().isoformat(), ISO_Z, FUTURE_PLUS2, "2000-01-01"])
 def test_followup_accepts_valid_due_including_past(env, due):
     created = create_followup(env.sales, due=due)
-    updated = env.sales.patch(f"/customers/{BCN}/follow-ups/{created['id']}", json={"type": "Appointment" if due else "Reminder", "due": due, "note": "Edited", "submissionId": sid()}, headers=ORIGIN)
+    kind = "Appointment" if due in (ISO_Z, FUTURE_PLUS2) else "Reminder"  # #86: past appointments are covered below
+    updated = env.sales.patch(f"/customers/{BCN}/follow-ups/{created['id']}", json={"type": kind, "due": due, "note": "Edited", "submissionId": sid()}, headers=ORIGIN)
     assert updated.status_code == 200, updated.text
+
+
+# ---- #86: appointments are scheduled in the future ---------------------------------------------
+# Margins are whole days/hours away from "now" so the tests never race the clock.
+
+PAST_APPOINTMENT_DUES = [YESTERDAY, (NOW - timedelta(hours=2)).isoformat(), (NOW - timedelta(days=3)).astimezone(timezone(timedelta(hours=2))).isoformat(timespec="seconds"), "2000-01-01"]
+
+
+@pytest.mark.parametrize("due", PAST_APPOINTMENT_DUES)
+def test_appointment_create_in_past_is_rejected_without_writing(env, due):
+    assert_invalid(env.sales.post(f"/customers/{BCN}/follow-ups", json={"type": "Appointment", "due": due, "note": "Visit", "submissionId": sid()}, headers=ORIGIN))
+    assert not main.repo.followups and (main.activity_db is None or not main.activity_db.followups(BCN))
+    create_followup(env.sales, type="Reminder", due=due)  # reminders may still be overdue
+
+
+@pytest.mark.parametrize("due", [ISO_Z, FUTURE_PLUS2, (NOW + timedelta(days=2)).date().isoformat()])
+def test_appointment_create_in_future_is_accepted(env, due):
+    assert create_followup(env.sales, type="Appointment", due=due, note="Visit")["due"] == due
+
+
+@pytest.mark.parametrize("overdue", [(NOW - timedelta(days=3)).date().isoformat(), (NOW - timedelta(days=3)).astimezone(timezone(timedelta(hours=2))).isoformat(timespec="seconds")])
+def test_overdue_appointment_edit_keeps_due_but_cannot_move_it_into_past(env, overdue):
+    appointment = create_followup(env.sales, type="Appointment", due=ISO_Z, note="Visit")
+    reminder = create_followup(env.sales, type="Reminder", due=overdue, note="Call")
+    item = next(value for value in main.repo.followups.values() if value["id"] == appointment["id"])
+    item["due"] = overdue; main.persist_followup(item)  # time passes: the appointment is now overdue
+    if main.activity_db is not None: main.repo.followups.clear()  # read back from PostgreSQL (due re-serialised)
+    url = f"/customers/{BCN}/follow-ups/{appointment['id']}"
+    kept = env.sales.patch(url, json={"type": "Appointment", "due": overdue, "note": "Visit rescheduled later", "submissionId": sid()}, headers=ORIGIN)
+    assert kept.status_code == 200 and kept.json()["note"] == "Visit rescheduled later", kept.text
+    before = followup_state(appointment["id"])
+    moved = (NOW - timedelta(days=4)).date().isoformat()
+    assert_invalid(env.sales.patch(url, json={"type": "Appointment", "due": moved, "note": "Moved", "submissionId": sid()}, headers=ORIGIN))
+    assert followup_state(appointment["id"]) == before
+    # Turning an overdue reminder into an appointment schedules a past appointment too.
+    assert_invalid(env.sales.patch(f"/customers/{BCN}/follow-ups/{reminder['id']}", json={"type": "Appointment", "due": overdue, "note": "Call", "submissionId": sid()}, headers=ORIGIN))
+    future = env.sales.patch(url, json={"type": "Appointment", "due": ISO_Z, "note": "Moved", "submissionId": sid()}, headers=ORIGIN)
+    assert future.status_code == 200, future.text
 
 
 def test_followup_note_is_trimmed_before_storage_and_idempotency(env):

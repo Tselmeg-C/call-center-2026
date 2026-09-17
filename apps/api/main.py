@@ -123,6 +123,21 @@ class NoteCreate(BaseModel):
     text: Annotated[StrictStr, StringConstraints(strip_whitespace=True, min_length=1, max_length=4000)]
     submissionId: SubmissionId
 
+def due_instant(value: str) -> datetime:
+    """A `due` value as a datetime; date-only values are midnight UTC."""
+    if DATE_ONLY.fullmatch(value): return datetime.combine(date.fromisoformat(value), datetime.min.time(), timezone.utc)
+    return datetime.fromisoformat(value)
+
+def reject_past_appointment(body: "FollowUpCreate", stored: dict | None = None) -> None:
+    """#86: an Appointment's due must not be in the past (date-only: before today UTC) when it is
+    scheduled -- on create, or on an edit that changes due or turns a record into an Appointment.
+    An already-overdue appointment edited with the same due stays editable."""
+    if body.type != "Appointment" or body.due is None: return
+    if stored and stored.get("type") == "Appointment" and stored.get("due") and due_instant(stored["due"]) == due_instant(body.due): return
+    now = datetime.now(timezone.utc)
+    past = date.fromisoformat(body.due) < now.date() if DATE_ONLY.fullmatch(body.due) else due_instant(body.due) < now
+    if past: raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Invalid request.")
+
 class FollowUpCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
     type: Literal["Appointment", "Reminder"]
@@ -135,10 +150,8 @@ class FollowUpCreate(BaseModel):
     def _check_due(cls, value: str | None) -> str | None:
         """YYYY-MM-DD or an ISO-8601 datetime with an offset, between 2000-01-01 and now + 5 years (UTC). Stored as sent."""
         if value is None: return None
-        if DATE_ONLY.fullmatch(value): parsed = datetime.combine(date.fromisoformat(value), datetime.min.time(), timezone.utc)
-        else:
-            parsed = datetime.fromisoformat(value)  # ValueError -> 422
-            if parsed.tzinfo is None: raise ValueError("due needs an offset")
+        parsed = due_instant(value)  # ValueError -> 422
+        if parsed.tzinfo is None: raise ValueError("due needs an offset")
         now = datetime.now(timezone.utc)
         try: latest = now.replace(year=now.year + 5)
         except ValueError: latest = now.replace(year=now.year + 5, day=28)  # Feb 29
@@ -629,6 +642,7 @@ def create_followup(bcn: str, body: FollowUpCreate, user: Annotated[User, Depend
             raise HTTPException(status.HTTP_409_CONFLICT, "Submission already used.")
         return prior
     if body.type not in {"Appointment", "Reminder"}: raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Invalid follow-up type.")
+    reject_past_appointment(body)
     record = {"id": f"followup-{uuid4()}", "bcn": bcn, "type": body.type, "due": body.due, "note": body.note, "status": "Open", "actor": user.name, "actorId": user.id, "createdAt": datetime.now(timezone.utc).isoformat()}
     if activity_db is not None:
         try: record = activity_db.create_followup(record, submission_id=body.submissionId, payload=payload)
@@ -728,6 +742,7 @@ def update_followup(bcn: str, followup_id: str, body: FollowUpCreate, user: Anno
         try: persisted = activity_db.get_idempotent(actor_id=user.id, operation="followup-edit", submission_id=body.submissionId, payload=payload)
         except ValueError as exc: raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
         if persisted: return persisted
+    reject_past_appointment(body, item)
     item.update(type=body.type, due=body.due, note=body.note, version=item.get("version", 0) + 1, updatedAt=datetime.now(timezone.utc).isoformat()); persist_followup(item); persist_activity({"id": f"activity-{uuid4()}", "bcn": bcn, "kind": "Follow-up edit", "actorId": user.id, "text": item.get("note")})
     if activity_db is not None: activity_db.save_idempotent(actor_id=user.id, operation="followup-edit", submission_id=body.submissionId, payload=payload, result=item)
     return item

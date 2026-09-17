@@ -50,6 +50,15 @@ export const Route = createFileRoute("/customer/$bcn")({
   component: CustomerDetail,
 });
 
+/** #86: the API rejects an appointment whose due time is already past, so explain it before sending.
+ * `localValue` is the datetime-local input value (browser local time). */
+export function pastAppointmentError(type: FollowUpType, localValue: string, now = new Date()) {
+  if (type !== "appointment" || !localValue) return null;
+  return new Date(localValue).getTime() < now.getTime()
+    ? "Appointments must be scheduled in the future."
+    : null;
+}
+
 function CustomerDetail() {
   const { bcn } = Route.useParams();
   const {
@@ -97,6 +106,7 @@ function CustomerDetail() {
   const custFollowUps = followUps.filter((f) => f.bcn === bcn);
   const custAssignments = assignmentHistory.filter((h) => h.bcn === bcn);
   const open = openFollowUp(followUps, bcn);
+  const dueError = pastAppointmentError(fuType, fuDate);
   const userName = (id: string) => users.find((u) => u.id === id)?.name ?? "Unknown";
 
   const logActivity = async (completeFollowUp: boolean) => {
@@ -381,7 +391,14 @@ function CustomerDetail() {
                     value={fuDate}
                     onChange={(e) => setFuDate(e.target.value)}
                     disabled={!editable}
+                    aria-invalid={dueError ? true : undefined}
+                    aria-describedby={dueError ? "due-error" : undefined}
                   />
+                  {dueError && (
+                    <p id="due-error" role="alert" className="text-xs text-destructive">
+                      {dueError}
+                    </p>
+                  )}
                 </div>
               )}
               <Input
@@ -393,8 +410,13 @@ function CustomerDetail() {
               <Button
                 size="sm"
                 variant="secondary"
-                disabled={!editable || (fuType !== "needed" && !fuDate)}
+                disabled={!editable || (fuType !== "needed" && !fuDate) || !!dueError}
                 onClick={async () => {
+                  const error = pastAppointmentError(fuType, fuDate); // time may have passed since render
+                  if (error) {
+                    toast.error(error);
+                    return;
+                  }
                   const succeeded = await addFollowUp(
                     bcn,
                     fuType,

@@ -189,14 +189,17 @@ def configure_otel(app, *, span_exporter=None, log_exporter=None, metric_reader=
 
     resource = Resource.create({"service.name": os.environ.get("OTEL_SERVICE_NAME") or "call-center-api"})
 
+    # HTTP/protobuf, not gRPC (issue #44): Grafana Cloud's OTLP gateway (`.../otlp`) only speaks
+    # OTLP/HTTP. The HTTP exporters append /v1/traces|metrics|logs to OTEL_EXPORTER_OTLP_ENDPOINT;
+    # the gRPC ones ignored the path and dialled the host on :443 over gRPC -> UNAVAILABLE.
     if span_exporter is None:
-        from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
+        from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
         span_exporter = OTLPSpanExporter()
     if log_exporter is None:
-        from opentelemetry.exporter.otlp.proto.grpc._log_exporter import OTLPLogExporter
+        from opentelemetry.exporter.otlp.proto.http._log_exporter import OTLPLogExporter
         log_exporter = OTLPLogExporter()
     if metric_reader is None:
-        from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import OTLPMetricExporter
+        from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExporter
         metric_reader = PeriodicExportingMetricReader(OTLPMetricExporter())
     _redact_metric_reader(metric_reader)
 

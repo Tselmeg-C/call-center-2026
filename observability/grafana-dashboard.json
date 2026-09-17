@@ -3,7 +3,7 @@
   "annotations": {
     "list": []
   },
-  "description": "Request rate/error rate/duration for /customers, /sales/workload, /admin/reports, plus correlated log volume, split by deployment.environment. Sourced from apps/api's OpenTelemetry instrumentation (issue #34) via Grafana Cloud OTLP ingest (traces->Tempo, metrics->Mimir/Prometheus, logs->Loki).",
+  "description": "Request rate/error rate/duration for /customers, /workload, /sales/workload, /admin/reports, plus correlated log volume, split by deployment.environment (metrics via a join on target_info). Sourced from apps/api's OpenTelemetry instrumentation (issue #34) via Grafana Cloud OTLP ingest (traces->Tempo, metrics->Mimir/Prometheus, logs->Loki).",
   "editable": true,
   "gnetId": null,
   "graphTooltip": 0,
@@ -47,14 +47,17 @@
       "targets": [],
       "timeFrom": null,
       "timeShift": null,
-      "title": "HTTP -- /customers, /sales/workload, /admin/reports",
+      "title": "HTTP -- /customers, /workload, /sales/workload, /admin/reports",
       "transformations": [],
       "transparent": false,
       "type": "row"
     },
     {
       "cacheTimeout": null,
-      "datasource": "Grafana Cloud Metrics",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${metrics}"
+      },
       "description": null,
       "editable": true,
       "error": false,
@@ -134,7 +137,7 @@
       "targets": [
         {
           "datasource": null,
-          "expr": "sum by (http_route) (rate(http_server_request_duration_seconds_count{http_route=~\"\\/customers|\\/sales\\/workload|\\/admin\\/reports\", deployment_environment=\"$environment\"}[5m]))",
+          "expr": "sum by (http_route) (rate(http_server_request_duration_seconds_count{job=\"call-center-api\", http_route=~\"/customers|/workload|/sales/workload|/admin/reports\"}[5m]) * on (job, instance) group_left(deployment_environment) max by (job, instance, deployment_environment) (target_info{job=\"call-center-api\", deployment_environment=\"$environment\"}))",
           "format": "time_series",
           "hide": false,
           "instant": false,
@@ -142,7 +145,7 @@
           "intervalFactor": 2,
           "legendFormat": "{{http_route}}",
           "metric": "",
-          "query": "sum by (http_route) (rate(http_server_request_duration_seconds_count{http_route=~\"\\/customers|\\/sales\\/workload|\\/admin\\/reports\", deployment_environment=\"$environment\"}[5m]))",
+          "query": "sum by (http_route) (rate(http_server_request_duration_seconds_count{job=\"call-center-api\", http_route=~\"/customers|/workload|/sales/workload|/admin/reports\"}[5m]) * on (job, instance) group_left(deployment_environment) max by (job, instance, deployment_environment) (target_info{job=\"call-center-api\", deployment_environment=\"$environment\"}))",
           "refId": "",
           "step": 10,
           "target": ""
@@ -150,14 +153,17 @@
       ],
       "timeFrom": null,
       "timeShift": null,
-      "title": "Request rate -- /customers, /sales/workload, /admin/reports ($environment)",
+      "title": "Request rate -- /customers, /workload, /sales/workload, /admin/reports ($environment)",
       "transformations": [],
       "transparent": false,
       "type": "timeseries"
     },
     {
       "cacheTimeout": null,
-      "datasource": "Grafana Cloud Metrics",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${metrics}"
+      },
       "description": null,
       "editable": true,
       "error": false,
@@ -237,7 +243,7 @@
       "targets": [
         {
           "datasource": null,
-          "expr": "sum by (http_route) (rate(http_server_request_duration_seconds_count{http_route=~\"\\/customers|\\/sales\\/workload|\\/admin\\/reports\", http_response_status_code=~\"5..\", deployment_environment=\"$environment\"}[5m]))",
+          "expr": "sum by (http_route) (rate(http_server_request_duration_seconds_count{job=\"call-center-api\", http_route=~\"/customers|/workload|/sales/workload|/admin/reports\", http_response_status_code=~\"5..\"}[5m]) * on (job, instance) group_left(deployment_environment) max by (job, instance, deployment_environment) (target_info{job=\"call-center-api\", deployment_environment=\"$environment\"}))",
           "format": "time_series",
           "hide": false,
           "instant": false,
@@ -245,7 +251,7 @@
           "intervalFactor": 2,
           "legendFormat": "{{http_route}}",
           "metric": "",
-          "query": "sum by (http_route) (rate(http_server_request_duration_seconds_count{http_route=~\"\\/customers|\\/sales\\/workload|\\/admin\\/reports\", http_response_status_code=~\"5..\", deployment_environment=\"$environment\"}[5m]))",
+          "query": "sum by (http_route) (rate(http_server_request_duration_seconds_count{job=\"call-center-api\", http_route=~\"/customers|/workload|/sales/workload|/admin/reports\", http_response_status_code=~\"5..\"}[5m]) * on (job, instance) group_left(deployment_environment) max by (job, instance, deployment_environment) (target_info{job=\"call-center-api\", deployment_environment=\"$environment\"}))",
           "refId": "",
           "step": 10,
           "target": ""
@@ -253,14 +259,17 @@
       ],
       "timeFrom": null,
       "timeShift": null,
-      "title": "Error rate (5xx) -- /customers, /sales/workload, /admin/reports ($environment)",
+      "title": "Error rate (5xx) -- /customers, /workload, /sales/workload, /admin/reports ($environment)",
       "transformations": [],
       "transparent": false,
       "type": "timeseries"
     },
     {
       "cacheTimeout": null,
-      "datasource": "Grafana Cloud Metrics",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${metrics}"
+      },
       "description": null,
       "editable": true,
       "error": false,
@@ -340,7 +349,7 @@
       "targets": [
         {
           "datasource": null,
-          "expr": "histogram_quantile(0.95, sum by (le, http_route) (rate(http_server_request_duration_seconds_bucket{http_route=~\"\\/customers|\\/sales\\/workload|\\/admin\\/reports\", deployment_environment=\"$environment\"}[5m])))",
+          "expr": "histogram_quantile(0.95, sum by (le, http_route) (rate(http_server_request_duration_seconds_bucket{job=\"call-center-api\", http_route=~\"/customers|/workload|/sales/workload|/admin/reports\"}[5m]) * on (job, instance) group_left(deployment_environment) max by (job, instance, deployment_environment) (target_info{job=\"call-center-api\", deployment_environment=\"$environment\"})))",
           "format": "time_series",
           "hide": false,
           "instant": false,
@@ -348,7 +357,7 @@
           "intervalFactor": 2,
           "legendFormat": "{{http_route}}",
           "metric": "",
-          "query": "histogram_quantile(0.95, sum by (le, http_route) (rate(http_server_request_duration_seconds_bucket{http_route=~\"\\/customers|\\/sales\\/workload|\\/admin\\/reports\", deployment_environment=\"$environment\"}[5m])))",
+          "query": "histogram_quantile(0.95, sum by (le, http_route) (rate(http_server_request_duration_seconds_bucket{job=\"call-center-api\", http_route=~\"/customers|/workload|/sales/workload|/admin/reports\"}[5m]) * on (job, instance) group_left(deployment_environment) max by (job, instance, deployment_environment) (target_info{job=\"call-center-api\", deployment_environment=\"$environment\"})))",
           "refId": "",
           "step": 10,
           "target": ""
@@ -356,7 +365,7 @@
       ],
       "timeFrom": null,
       "timeShift": null,
-      "title": "Duration p95 -- /customers, /sales/workload, /admin/reports ($environment)",
+      "title": "Duration p95 -- /customers, /workload, /sales/workload, /admin/reports ($environment)",
       "transformations": [],
       "transparent": false,
       "type": "timeseries"
@@ -404,7 +413,10 @@
     },
     {
       "cacheTimeout": null,
-      "datasource": "Grafana Cloud Logs",
+      "datasource": {
+        "type": "loki",
+        "uid": "${logs}"
+      },
       "description": null,
       "editable": true,
       "error": false,
@@ -484,7 +496,7 @@
       "targets": [
         {
           "datasource": null,
-          "expr": "sum by (route) (count_over_time({service_name=\"call-center-api\", deployment_environment=\"$environment\"} | logfmt | route=~\"\\/customers|\\/sales\\/workload|\\/admin\\/reports\" [5m]))",
+          "expr": "sum by (route) (count_over_time({service_name=\"call-center-api\", deployment_environment=\"$environment\"} | logfmt | route=~\"/customers|/workload|/sales/workload|/admin/reports\" [5m]))",
           "format": "time_series",
           "hide": false,
           "instant": false,
@@ -492,7 +504,7 @@
           "intervalFactor": 2,
           "legendFormat": "{{route}}",
           "metric": "",
-          "query": "sum by (route) (count_over_time({service_name=\"call-center-api\", deployment_environment=\"$environment\"} | logfmt | route=~\"\\/customers|\\/sales\\/workload|\\/admin\\/reports\" [5m]))",
+          "query": "sum by (route) (count_over_time({service_name=\"call-center-api\", deployment_environment=\"$environment\"} | logfmt | route=~\"/customers|/workload|/sales/workload|/admin/reports\" [5m]))",
           "refId": "",
           "step": 10,
           "target": ""
@@ -507,7 +519,10 @@
     },
     {
       "cacheTimeout": null,
-      "datasource": "Grafana Cloud Logs",
+      "datasource": {
+        "type": "loki",
+        "uid": "${logs}"
+      },
       "description": null,
       "editable": true,
       "error": false,
@@ -551,7 +566,7 @@
       "targets": [
         {
           "datasource": null,
-          "expr": "{service_name=\"call-center-api\", deployment_environment=\"$environment\"} | logfmt | route=~\"\\/customers|\\/sales\\/workload|\\/admin\\/reports\"",
+          "expr": "{service_name=\"call-center-api\", deployment_environment=\"$environment\"} | logfmt | route=~\"/customers|/workload|/sales/workload|/admin/reports\"",
           "format": "time_series",
           "hide": false,
           "instant": false,
@@ -559,7 +574,7 @@
           "intervalFactor": 2,
           "legendFormat": "",
           "metric": "",
-          "query": "{service_name=\"call-center-api\", deployment_environment=\"$environment\"} | logfmt | route=~\"\\/customers|\\/sales\\/workload|\\/admin\\/reports\"",
+          "query": "{service_name=\"call-center-api\", deployment_environment=\"$environment\"} | logfmt | route=~\"/customers|/workload|/sales/workload|/admin/reports\"",
           "refId": "",
           "step": 10,
           "target": ""
@@ -591,19 +606,76 @@
         "auto_count": 30,
         "auto_min": "10s",
         "current": {
+          "selected": false,
+          "tags": [],
+          "text": null,
+          "value": null
+        },
+        "datasource": null,
+        "hide": 0,
+        "includeAll": false,
+        "label": "Metrics datasource",
+        "multi": false,
+        "name": "metrics",
+        "options": [],
+        "query": "prometheus",
+        "refresh": 1,
+        "regex": "/grafanacloud-.*-prom$/",
+        "sort": 1,
+        "tagValuesQuery": null,
+        "tagsQuery": null,
+        "type": "datasource",
+        "useTags": false
+      },
+      {
+        "allValue": null,
+        "auto": false,
+        "auto_count": 30,
+        "auto_min": "10s",
+        "current": {
+          "selected": false,
+          "tags": [],
+          "text": null,
+          "value": null
+        },
+        "datasource": null,
+        "hide": 0,
+        "includeAll": false,
+        "label": "Logs datasource",
+        "multi": false,
+        "name": "logs",
+        "options": [],
+        "query": "loki",
+        "refresh": 1,
+        "regex": "/grafanacloud-.*-logs$/",
+        "sort": 1,
+        "tagValuesQuery": null,
+        "tagsQuery": null,
+        "type": "datasource",
+        "useTags": false
+      },
+      {
+        "allValue": null,
+        "auto": false,
+        "auto_count": 30,
+        "auto_min": "10s",
+        "current": {
           "selected": true,
           "tags": [],
-          "text": "prod",
-          "value": "prod"
+          "text": "dev",
+          "value": "dev"
         },
-        "datasource": "Grafana Cloud Metrics",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${metrics}"
+        },
         "hide": 0,
         "includeAll": false,
         "label": "Environment",
         "multi": false,
         "name": "environment",
         "options": [],
-        "query": "label_values(http_server_request_duration_seconds_count, deployment_environment)",
+        "query": "label_values(target_info{job=\"call-center-api\"}, deployment_environment)",
         "refresh": 1,
         "regex": null,
         "sort": 1,
@@ -647,6 +719,6 @@
   },
   "timezone": "utc",
   "title": "Call Center API -- Request Telemetry",
-  "uid": null,
+  "uid": "call-center-api",
   "version": 0
 }

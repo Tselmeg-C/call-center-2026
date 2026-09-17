@@ -12,7 +12,7 @@ Grafana Cloud's OTLP ingest promotes to Prometheus/Loki naming:
   - http.server.request.duration (histogram, seconds) -> http_server_request_duration_seconds
   - allowlisted attributes http.route / http.request.method / http.response.status_code
     -> labels http_route / http_request_method / http_response_status_code
-  - the deployment.environment resource attribute -> label deployment_environment
+  - the deployment.environment resource attribute -> label deployment_environment on target_info
   - the origin_guard request log line ("request id=... method=... route=... status=...
     duration_ms=... error=...") is logfmt-shaped, so Loki panels parse it with `| logfmt`.
 """
@@ -30,10 +30,25 @@ from grafanalib.core import (
     Template,
 )
 
-ROUTES = ["/customers", "/sales/workload", "/admin/reports"]
-ROUTE_REGEX = "|".join(route.replace("/", r"\/") for route in ROUTES)
+ROUTES = ["/customers", "/workload", "/sales/workload", "/admin/reports"]
+ROUTE_LIST = ", ".join(ROUTES)
+# Plain "/" -- no "\/" escaping: "/" isn't a regex metacharacter, and "\/" is an invalid escape
+# inside PromQL/LogQL double-quoted strings.
+ROUTE_REGEX = "|".join(ROUTES)
+JOB = "call-center-api"
 ENV_LABEL = "deployment_environment"
 ENV_FILTER = f'{ENV_LABEL}="$environment"'
+# Datasource template variables, so the dashboard binds to whatever the stack's Prometheus/Loki
+# datasources are called (grafanacloud-<stack>-prom / -logs) without hand-editing panels.
+METRICS_DS = {"type": "prometheus", "uid": "${metrics}"}
+LOGS_DS = {"type": "loki", "uid": "${logs}"}
+# deployment.environment is a *resource* attribute: Grafana Cloud's OTLP ingest puts it only on
+# target_info, not on every series. So metric panels join it in. `max by` collapses several
+# target_info series per (job, instance) (replicas, redeploys) so the join never goes many-to-many.
+ENV_JOIN = (
+    f"* on (job, instance) group_left({ENV_LABEL}) "
+    f'max by (job, instance, {ENV_LABEL}) (target_info{{job="{JOB}", {ENV_FILTER}}})'
+)
 
 
 def route_panels(y):
@@ -42,24 +57,24 @@ def route_panels(y):
     for title, expr, unit in [
         (
             "Request rate",
-            f'sum by (http_route) (rate(http_server_request_duration_seconds_count{{http_route=~"{ROUTE_REGEX}", {ENV_FILTER}}}[5m]))',
+            f'sum by (http_route) (rate(http_server_request_duration_seconds_count{{job="{JOB}", http_route=~"{ROUTE_REGEX}"}}[5m]) {ENV_JOIN})',
             "reqps",
         ),
         (
             "Error rate (5xx)",
-            f'sum by (http_route) (rate(http_server_request_duration_seconds_count{{http_route=~"{ROUTE_REGEX}", http_response_status_code=~"5..", {ENV_FILTER}}}[5m]))',
+            f'sum by (http_route) (rate(http_server_request_duration_seconds_count{{job="{JOB}", http_route=~"{ROUTE_REGEX}", http_response_status_code=~"5.."}}[5m]) {ENV_JOIN})',
             "reqps",
         ),
         (
             "Duration p95",
-            f'histogram_quantile(0.95, sum by (le, http_route) (rate(http_server_request_duration_seconds_bucket{{http_route=~"{ROUTE_REGEX}", {ENV_FILTER}}}[5m])))',
+            f'histogram_quantile(0.95, sum by (le, http_route) (rate(http_server_request_duration_seconds_bucket{{job="{JOB}", http_route=~"{ROUTE_REGEX}"}}[5m]) {ENV_JOIN}))',
             "s",
         ),
     ]:
         panels.append(
             TimeSeries(
-                title=f"{title} -- /customers, /sales/workload, /admin/reports ($environment)",
-                dataSource="Grafana Cloud Metrics",
+                title=f"{title} -- {ROUTE_LIST} ($environment)",
+                dataSource=METRICS_DS,
                 targets=[Target(expr=expr, legendFormat="{{http_route}}")],
                 unit=unit,
                 gridPos=GridPos(h=8, w=8, x=x, y=y),
@@ -76,7 +91,7 @@ def log_volume_panel(y):
     )
     return TimeSeries(
         title="Log volume by route ($environment)",
-        dataSource="Grafana Cloud Logs",
+        dataSource=LOGS_DS,
         targets=[Target(expr=logql, legendFormat="{{route}}")],
         unit="short",
         gridPos=GridPos(h=8, w=16, x=0, y=y),
@@ -90,7 +105,7 @@ def raw_logs_panel(y):
     )
     return Logs(
         title="Recent request log lines ($environment)",
-        dataSource="Grafana Cloud Logs",
+        dataSource=LOGS_DS,
         targets=[Target(expr=logql)],
         gridPos=GridPos(h=8, w=16, x=0, y=y + 8),
     )
@@ -98,16 +113,18 @@ def raw_logs_panel(y):
 
 dashboard = Dashboard(
     title="Call Center API -- Request Telemetry",
+    uid="call-center-api",
     description=(
-        "Request rate/error rate/duration for /customers, /sales/workload, /admin/reports, "
-        "plus correlated log volume, split by deployment.environment. Sourced from "
+        f"Request rate/error rate/duration for {ROUTE_LIST}, "
+        "plus correlated log volume, split by deployment.environment (metrics via a join on "
+        "target_info). Sourced from "
         "apps/api's OpenTelemetry instrumentation (issue #34) via Grafana Cloud OTLP ingest "
         "(traces->Tempo, metrics->Mimir/Prometheus, logs->Loki)."
     ),
     tags=["call-center", "api", "otel"],
     timezone="utc",
     panels=[
-        RowPanel(title="HTTP -- /customers, /sales/workload, /admin/reports", gridPos=GridPos(h=1, w=24, x=0, y=0)),
+        RowPanel(title=f"HTTP -- {ROUTE_LIST}", gridPos=GridPos(h=1, w=24, x=0, y=0)),
         *route_panels(1),
         RowPanel(title="Logs", gridPos=GridPos(h=1, w=24, x=0, y=9)),
         log_volume_panel(10),
@@ -115,13 +132,17 @@ dashboard = Dashboard(
     ],
     templating=Templating(
         list=[
+            # The stack also has -usage (prometheus) and -history/-insights (loki) datasources;
+            # the regex preselects the ones OTLP ingest actually writes to.
+            Template(name="metrics", type="datasource", query="prometheus", regex="/grafanacloud-.*-prom$/", label="Metrics datasource"),
+            Template(name="logs", type="datasource", query="loki", regex="/grafanacloud-.*-logs$/", label="Logs datasource"),
             Template(
                 name="environment",
-                query="label_values(http_server_request_duration_seconds_count, deployment_environment)",
-                dataSource="Grafana Cloud Metrics",
-                default="prod",
+                query=f'label_values(target_info{{job="{JOB}"}}, {ENV_LABEL})',
+                dataSource=METRICS_DS,
+                default="dev",
                 label="Environment",
-            )
+            ),
         ]
     ),
 ).auto_panel_ids()

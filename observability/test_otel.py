@@ -11,6 +11,7 @@ usage) and each test just clears its own view of the in-memory exporters first.
 """
 import json
 import logging
+import re
 from pathlib import Path
 
 import pytest
@@ -53,6 +54,93 @@ def test_grafana_dashboard_is_a_valid_structural_model():
     assert "deployment_environment" in text
     for route in ("/customers", "/sales/workload", "/admin/reports"):
         assert route in text
+
+
+DASHBOARD_ROUTES = ("/customers", "/workload", "/sales/workload", "/admin/reports")
+ENV_JOIN = (
+    '* on (job, instance) group_left(deployment_environment) '
+    'max by (job, instance, deployment_environment) '
+    '(target_info{job="call-center-api", deployment_environment="$environment"})'
+)
+
+
+def _dashboard_panels():
+    return [p for p in json.loads(DASHBOARD_PATH.read_text())["panels"] if p["type"] != "row"]
+
+
+def test_dashboard_route_regex_matches_all_request_routes_exactly():
+    panels = _dashboard_panels()
+    assert panels
+    for panel in panels:
+        for target in panel["targets"]:
+            found = re.findall(r'(?:http_route|route)=~"([^"]*)"', target["expr"])
+            assert found, (panel["title"], target["expr"])
+            for pattern in found:
+                pattern = pattern.replace("\\/", "/")
+                for route in DASHBOARD_ROUTES:
+                    assert re.fullmatch(pattern, route), (panel["title"], route)
+                for route in ("/workloads", "/sales"):
+                    assert not re.fullmatch(pattern, route), (panel["title"], route)
+        if panel["type"] == "timeseries" and panel["datasource"]["type"] == "prometheus":
+            assert "/workload" in panel["title"]
+    dashboard = json.loads(DASHBOARD_PATH.read_text())
+    assert "/workload," in dashboard["description"]
+    assert all("/workload," in p["title"] for p in dashboard["panels"] if p["type"] == "row" and p["title"].startswith("HTTP"))
+
+
+def test_dashboard_metric_panels_join_environment_from_target_info():
+    dashboard = json.loads(DASHBOARD_PATH.read_text())
+    metric_panels = [p for p in _dashboard_panels() if p["datasource"]["type"] == "prometheus"]
+    assert len(metric_panels) == 3
+    for panel in metric_panels:
+        for target in panel["targets"]:
+            assert ENV_JOIN in target["expr"], panel["title"]
+            # Only target_info carries deployment_environment; the request metric must not filter on it.
+            assert target["expr"].count("deployment_environment=") == 1, panel["title"]
+    environment = next(t for t in dashboard["templating"]["list"] if t["name"] == "environment")
+    assert environment["query"] == 'label_values(target_info{job="call-center-api"}, deployment_environment)'
+
+
+def test_dashboard_uses_datasource_variables_not_hardcoded_names():
+    dashboard = json.loads(DASHBOARD_PATH.read_text())
+    text = json.dumps(dashboard)
+    assert "Grafana Cloud Metrics" not in text and "Grafana Cloud Logs" not in text
+    variables = {t["name"]: t for t in dashboard["templating"]["list"]}
+    assert (variables["metrics"]["type"], variables["metrics"]["query"]) == ("datasource", "prometheus")
+    assert (variables["logs"]["type"], variables["logs"]["query"]) == ("datasource", "loki")
+    for panel in _dashboard_panels():
+        assert panel["datasource"] in ({"type": "prometheus", "uid": "${metrics}"}, {"type": "loki", "uid": "${logs}"})
+    assert variables["environment"]["datasource"] == {"type": "prometheus", "uid": "${metrics}"}
+
+
+def test_default_exporters_use_otlp_http_paths(monkeypatch):
+    """Grafana Cloud's /otlp gateway is OTLP/HTTP: the default exporters must append the per-signal
+    paths. export() is stubbed on every exporter class so nothing reaches the network."""
+    from opentelemetry.exporter.otlp.proto.http._log_exporter import OTLPLogExporter
+    from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExporter
+    from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+
+    for exporter_class in (OTLPSpanExporter, OTLPLogExporter, OTLPMetricExporter):
+        monkeypatch.setattr(exporter_class, "export", lambda self, *a, **k: pytest.fail("network export attempted"))
+    for name in ("TRACES", "METRICS", "LOGS"):
+        monkeypatch.delenv(f"OTEL_EXPORTER_OTLP_{name}_ENDPOINT", raising=False)
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "https://example.invalid/otlp")
+    scratch_app = FastAPI()
+    state = otel_setup.configure_otel(scratch_app)
+    try:
+        span_exporter = state["tracer_provider"]._active_span_processor._span_processors[0]._batch_processor._exporter._wrapped
+        log_exporter = state["logger_provider"]._multi_log_record_processor._log_record_processors[0]._batch_processor._exporter._wrapped
+        metric_exporter = state["meter_provider"]._metric_readers[0]._exporter
+        assert isinstance(span_exporter, OTLPSpanExporter)
+        assert isinstance(log_exporter, OTLPLogExporter)
+        assert isinstance(metric_exporter, OTLPMetricExporter)
+        assert span_exporter._endpoint == "https://example.invalid/otlp/v1/traces"
+        assert metric_exporter._endpoint == "https://example.invalid/otlp/v1/metrics"
+        assert log_exporter._endpoint == "https://example.invalid/otlp/v1/logs"
+    finally:
+        for exporter_class in (OTLPSpanExporter, OTLPLogExporter, OTLPMetricExporter):
+            monkeypatch.setattr(exporter_class, "export", lambda self, *a, **k: None)
+        otel_setup.shutdown_otel(scratch_app)
 
 
 def test_disabled_when_otlp_endpoint_unset(monkeypatch, caplog):

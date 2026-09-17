@@ -40,7 +40,7 @@ VITE_SERVICE_MODE=http npm run dev -- --port 4174
 
 `FRONTEND_ORIGIN` must match the origin the frontend actually runs at — the backend rejects unsafe requests (POST/PATCH/PUT/DELETE) from any other Origin (see `packages/shared/service-map.md`).
 
-Known, deliberate gaps given the current backend contract (not introduced by this frontend work): `GET /admin/closure-reasons` is Admin-only, so a Sales session in HTTP mode can't list reasons to close its own customers (the mock relaxes this one read for Sales, since it's non-sensitive reference data); `PATCH /admin/assignment-rules` supports one owner per rule with no per-field conditions, so the Assignment screen's per-rule "conditions" text is a generated description of that behavior, not a stored condition language.
+Known, deliberate gap given the current backend contract: `GET /admin/closure-reasons` is Admin-only, so a Sales session in HTTP mode can't list reasons to close its own customers (the mock relaxes this one read for Sales, since it's non-sensitive reference data).
 
 Customer browsing decisions and display rules are documented in [`_docs/customer-browsing.md`](_docs/customer-browsing.md).
 Sales workload bucket definitions, UTC behavior, and the boundary fixture table are documented in [`_docs/workload.md`](_docs/workload.md).
@@ -72,7 +72,25 @@ npm run test:journey
 
 They're kept separate from `npm test` (a different Vitest config, `apps/frontend/vitest.journey.config.ts`) so the default fast lane never needs Python.
 
-GitHub Actions runs installation, linting, type checking, unit tests, and a production build on pushes and pull requests.
+## CI/CD
+
+`.github/workflows/ci.yml` runs `check` (install, contract check, lint, typecheck, unit tests, build, backend auth tests, PostgreSQL migration + HTTP smoke, benchmark smoke), then publishes and deploys:
+
+| Event | Tests | Docker build | Push image | Deploy |
+| --- | --- | --- | --- | --- |
+| Push to a feature branch / PR | yes | no | no | no |
+| Merge to `main` | yes | yes (once per commit) | `<full-sha>`, `<short-sha>`, `latest` | Railway `development` |
+| Push a `v*` tag (e.g. `v1.0.0`) | yes | no (re-tags `main`'s image; builds only if missing) | adds `v1.0.0` | Railway `production`, after approval |
+| Docs-only change (`_docs/**`, `**/*.md`, `.claude/**`) | no | no | no | no |
+
+Deploys always pin the full-SHA image. Re-running an old `main` run does not move `latest` or redeploy development; roll back explicitly (see [Rollback](#rollback)).
+
+Cut a release:
+
+```sh
+git checkout main && git pull
+git tag v1.0.0 && git push origin v1.0.0
+```
 
 ## Production build locally
 
@@ -82,6 +100,108 @@ npm start
 ```
 
 Open http://localhost:3000. The root npm workspace scripts delegate to `apps/frontend`; dependencies are locked in the root `package-lock.json`.
+
+## Railway deployment
+
+The app runs on [Railway](https://railway.com) project `call-center-2026` with two isolated environments, `development` and `production` (separate Postgres, separate variables). Full details: [`_docs/deployment.md`](_docs/deployment.md); config-as-code: [`.railway/railway.ts`](.railway/railway.ts) and [`infra/railway.md`](infra/railway.md).
+
+### Services
+
+| Service | Source | Notes |
+| --- | --- | --- |
+| `Postgres` | Railway managed Postgres plugin | region `ams`, own volume |
+| `api` | `ghcr.io/tselmeg-c/call-center-2026-api:<sha>` | runs migrations before traffic; healthcheck `/health/ready`; **exactly 1 replica** (login throttle is process-local) |
+| `frontend` | `ghcr.io/tselmeg-c/call-center-2026-frontend:<sha>` | nginx; proxies `/api/` to `api` over Railway's private network |
+
+### One-time setup
+
+Install the CLI (`npm install -g @railway/cli`), then `railway login` and `railway link` to the project.
+
+```sh
+railway environment link development
+railway add -d postgres -s postgres
+railway add -s api --image ghcr.io/tselmeg-c/call-center-2026-api:latest
+railway add -s frontend --image ghcr.io/tselmeg-c/call-center-2026-frontend:latest
+railway scale ams=1 --service api
+railway domain --service api
+railway domain --service frontend
+```
+
+Set service variables (Railway dashboard → service → Variables, or `railway variables --set "NAME=value" --service <service> --environment <env>`). Never commit the values.
+
+| Service | Variable | Value |
+| --- | --- | --- |
+| `api` | `CALL_CENTER_STORAGE` | `postgres` |
+| `api` | `DATABASE_URL` | `${{Postgres.DATABASE_URL}}` |
+| `api` | `PORT` | `8000` |
+| `api` | `WEB_CONCURRENCY` | `1` |
+| `api` | `FRONTEND_ORIGIN` | `https://${{frontend.RAILWAY_PUBLIC_DOMAIN}}` |
+| `api` | `OPERATOR_PROVISION_SECRET` | long random secret, only for bootstrapping the first Admin |
+| `api` | `OTEL_*` | see [Grafana Cloud observability](#grafana-cloud-observability) |
+| `frontend` | `PORT` | `8080` |
+| `frontend` | `API_UPSTREAM` | `${{api.RAILWAY_PRIVATE_DOMAIN}}:8000` |
+
+GitHub repository settings:
+
+- **Secret `RAILWAY_API_TOKEN`**: a Railway *account* token (railway.com/account/tokens). CI uses it to re-point the `development` services at each new image; a project token can't do that (`Unauthorized`).
+- **Environment `production`** (Settings → Environments): add required reviewers, otherwise production promotions run without approval.
+
+### Bootstrap the first Admin
+
+On a fresh database, create the first Admin once; afterwards `POST /operator/provision` returns `409` and further users are created in the app (Admin → Users).
+
+```sh
+curl -X POST https://<api-domain>/operator/provision \
+  -H 'Content-Type: application/json' \
+  -H "x-operator-secret: $OPERATOR_PROVISION_SECRET" \
+  -d '{"name":"<name>","email":"<email>","role":"Admin","password":"<12+ chars>"}'
+```
+
+Locked out later? Run the local operator console inside the service: `railway run --service api --environment development -- python -m apps.api.operator` and choose `reset`.
+
+### Deploys
+
+- **Development**: automatic on every merge to `main` (see [CI/CD](#cicd)).
+- **Production**: push a `v*` tag, or run *Actions → Promote to production* with a full commit SHA. Both go through the `production` approval. (The final Railway call in `promote-production.yml` is still a placeholder until production is provisioned, #28.)
+
+### Rollback
+
+Point the service back at a previous, already-published image — never re-run an old Actions run:
+
+```sh
+railway service source connect --image ghcr.io/tselmeg-c/call-center-2026-api:<previous-sha> --service api --environment development
+railway service source connect --image ghcr.io/tselmeg-c/call-center-2026-frontend:<previous-sha> --service frontend --environment development
+```
+
+For production, run *Actions → Promote to production* with the previous release's SHA.
+
+Health: `GET /health/live` (process up), `GET /health/ready` (database reachable and migrated; body and the `x-app-version` header show the deployed commit SHA).
+
+## Grafana Cloud observability
+
+The API exports traces, metrics and logs over OTLP ([`observability/otel_setup.py`](observability/otel_setup.py)). It's configured only by environment variables; with `OTEL_EXPORTER_OTLP_ENDPOINT` unset, OTel is fully disabled (local dev and CI). Only an allowlist of attributes (route, method, status, DB operation, request id) is ever exported — no cookies, credentials, notes or workbook content.
+
+### Setup
+
+1. In Grafana Cloud, open **Connections → Add new connection → OpenTelemetry (OTLP)** and create a token. Its access policy should only have `metrics:write`, `logs:write` and `traces:write`.
+2. Copy the endpoint and the ready-made `Authorization=Basic ...` header from that page (the value is `base64(instanceID:token)`, don't assemble it by hand).
+3. Set on the Railway `api` service, per environment:
+
+   | Variable | Value |
+   | --- | --- |
+   | `OTEL_EXPORTER_OTLP_ENDPOINT` | `https://otlp-gateway-<region>.grafana.net/otlp` |
+   | `OTEL_EXPORTER_OTLP_HEADERS` | `Authorization=Basic <from step 2>` |
+   | `OTEL_SERVICE_NAME` | `call-center-api` |
+   | `OTEL_RESOURCE_ATTRIBUTES` | `deployment.environment=dev` (or `prod`) |
+
+   Dev and prod share one Grafana Cloud stack; `deployment.environment` tells them apart.
+4. Redeploy `api`, send a few requests, then check **Explore** (Tempo for traces, Loki for logs, Prometheus for `http_server_request_duration_seconds_*`).
+
+### Dashboard
+
+Import [`observability/grafana-dashboard.json`](observability/grafana-dashboard.json) via **Dashboards → New → Import** (request rate, error rate and latency for `/customers`, `/sales/workload`, `/admin/reports`, plus log volume, split by environment). Regenerate it with `python3 -m observability._gen_grafana_dashboard > observability/grafana-dashboard.json`. Importing via the Grafana HTTP API needs a Grafana **service account token** (Editor), not the OTLP ingest token.
+
+OTel names show up in Grafana with underscores: `http.route` → `http_route`, `deployment.environment` → `deployment_environment`, `http.server.request.duration` → `http_server_request_duration_seconds`. Checking that data actually reaches Grafana from the deployed environment is tracked in #44.
 
 ## Containers
 

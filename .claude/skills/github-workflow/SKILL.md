@@ -31,15 +31,16 @@ The orchestrator only launches subagents; it does not groom, implement or test i
 | Step | Subagent | Role doc | Output |
 |---|---|---|---|
 | 1 | PM | `_docs/team/pm.md` + `_docs/task-template.md` | Issue body rewritten (Goal / Acceptance criteria / Out of scope / Constraints); out-of-scope items linked to follow-up issues |
-| 2 | Engineer | `_docs/team/software-engineer.md` | Branch, commits, tests, PR, comment on issue. Does not merge or close |
+| 2 | Engineer | `_docs/team/software-engineer.md` | Branch, commits, tests, **draft** PR (`gh pr create --draft`), comment on issue. Does not merge, mark ready, or close |
 | 3 | QA | `_docs/team/qa-engineer.md` | `## QA: PASS` / `## QA: FAIL` comment with a checkbox per criterion and tests run. Changes no code |
-| 4 | Orchestrator | - | FAIL → step 2 with the QA comment. PASS → close the issue |
+| 4 | Orchestrator | - | FAIL → step 2 with the QA comment (PR stays draft). PASS → `gh pr ready N`, close the issue, ask the owner to merge |
 
 Never skip grooming. Each subagent prompt must be self-contained: issue number, which role doc to follow, what "done" is, and "never print credentials".
 
 ## Owner's preferences
 
 - **Close issues immediately on QA PASS** - `gh issue close N --comment "QA PASS; fix in PR #X."`. No need to ask.
+- **PRs stay draft until QA passes.** A draft can't be merged by accident; only the orchestrator marks it ready, and only after `## QA: PASS`. Tell engineer subagents to open drafts.
 - **Never merge a PR without asking.** Always stop and ask the owner; they merge (or explicitly tell you to).
 - **Report concisely**: what changed, test results, what's blocked on the owner, what's next. Offer the next issue rather than silently starting a different kind of work.
 - Engineer and QA subagents leave the main checkout on `main` when they finish. When you make changes while a subagent is working in the main checkout, use a separate `git worktree` in the scratchpad so you don't switch branches under it.

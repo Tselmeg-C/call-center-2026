@@ -662,8 +662,8 @@
         "current": {
           "selected": true,
           "tags": [],
-          "text": "dev",
-          "value": "dev"
+          "text": "development",
+          "value": "development"
         },
         "datasource": {
           "type": "prometheus",

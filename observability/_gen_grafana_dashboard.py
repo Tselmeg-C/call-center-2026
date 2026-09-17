@@ -140,7 +140,7 @@ dashboard = Dashboard(
                 name="environment",
                 query=f'label_values(target_info{{job="{JOB}"}}, {ENV_LABEL})',
                 dataSource=METRICS_DS,
-                default="dev",
+                default="development",
                 label="Environment",
             ),
         ]

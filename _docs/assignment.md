@@ -35,6 +35,26 @@ A rule's conditions are stored as an ordered JSON list on the rule row (`assignm
 matching how other JSON-shaped data (audit details, run results, settings) is already stored in this
 codebase; there is no separate condition-order column.
 
+## Input limits
+
+Rule create (`POST /admin/assignment-rules`) and update (`PATCH /admin/assignment-rules/{id}`)
+bodies are checked before anything is stored, in memory and PostgreSQL mode alike. A malformed body
+returns `422 {"detail": "Invalid request."}`; a condition value error returns `422` with its message.
+
+- Unknown fields on the rule body or on a condition are rejected. `null` is rejected for every field.
+- `name`: trimmed on create and PATCH, 1-120 characters; duplicates (case-insensitive) return `409`.
+- `active`: JSON boolean only. `order` (PATCH): JSON integer from 1 to 1,000,000; rules may share one.
+- `version` (PATCH): JSON integer; a mismatch returns `409`. Omit it to skip the check.
+- PATCH must carry at least one of `name`, `conditions`, `memberIds`, `active`, `order`; an empty
+  body or a body with only `version` returns `422` and does not bump the assignment version.
+- `conditions`: a list of at most 50 objects; `field` and `operator` are strings of at most 64
+  characters.
+- Text values (`=`, `!=`, `contains`): non-empty, not whitespace-only, at most 255 characters.
+- `in`: 1-500 items, each a non-empty string of at most 255 characters.
+- Numeric values: finite numbers only (`NaN`/`Infinity` are rejected), at most 64 characters.
+- Date values: strictly `YYYY-MM-DD`.
+- `memberIds`: a list of at most 100 strings, each 1-120 characters (duplicates are removed).
+
 ## Eligible members
 
 A rule's eligible members live in `assignment_rule_members` (`rule_id`, `user_id`; unordered, no

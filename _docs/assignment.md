@@ -55,6 +55,21 @@ returns `422 {"detail": "Invalid request."}`; a condition value error returns `4
 - Date values: strictly `YYYY-MM-DD`.
 - `memberIds`: a list of at most 100 strings, each 1-120 characters (duplicates are removed).
 
+Manual assignment, assignment runs and the fallback list are checked the same way (`422 {"detail": "Invalid request."}`,
+nothing stored, the rejected `submissionId` stays usable). `submissionId` is 1-120 characters with at
+least one non-whitespace character.
+
+- Manual assignment (`POST /admin/assignments/manual/{bcn}`): only `ownerId`, `submissionId`,
+  `expectedVersion`. `ownerId` is required and is `null` (unassign) or a string of 1-120 characters;
+  a well-formed id that is not an active Sales user returns `422 "Owner must be an active Sales user."`.
+  `expectedVersion` may be omitted or `null`, otherwise a JSON integer from 0 to 2,147,483,647; a
+  stale value returns `409`.
+- Assignment runs (`POST /admin/assignment-runs` and `POST /admin/assignments/run`): only `scope`
+  and `submissionId`. `scope` is exactly `unassigned` or `all-open` and defaults to `unassigned`.
+- Fallback (`PUT /admin/assignment-fallback`): a JSON array of at most 100 strings, each 1-120
+  characters. `[]` clears it, duplicates are removed, and an id that is not an active Sales user
+  returns `422 "Fallback members must be active Sales users."`.
+
 ## Eligible members
 
 A rule's eligible members live in `assignment_rule_members` (`rule_id`, `user_id`; unordered, no

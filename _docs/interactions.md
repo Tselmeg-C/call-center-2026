@@ -7,3 +7,10 @@ Only the current Sales owner or an Admin may create records. Closed customers re
 Deletion is a soft operation. The original record remains in mock storage and its history entry becomes a tombstone with the deleting actor and UTC time. Deleted interaction outcomes and notes are hidden from ordinary content and deleted interactions do not affect contact status. The mock adapter uses an injectable clock for deterministic tests and synthetic data only.
 
 These decisions are shared by [#5](https://github.com/Tselmeg-C/call-center-2026/issues/5), [#10](https://github.com/Tselmeg-C/call-center-2026/issues/10), [#11](https://github.com/Tselmeg-C/call-center-2026/issues/11), [#16](https://github.com/Tselmeg-C/call-center-2026/issues/16), and [#25](https://github.com/Tselmeg-C/call-center-2026/issues/25).
+
+## Note input rules (API)
+
+`POST /customers/{bcn}/notes` accepts only `text` and `submissionId`; anything else, or a wrong JSON type, returns `422 {"detail": "Invalid request."}` before anything is stored.
+
+- `text` is trimmed, then must be 1-4,000 characters. The trimmed text is stored and is what a retry is compared against, so `"Called back"` and `"  Called back  "` under one `submissionId` return the same record.
+- `submissionId` is 1-120 characters with at least one non-whitespace character. A rejected request does not use up its `submissionId`.

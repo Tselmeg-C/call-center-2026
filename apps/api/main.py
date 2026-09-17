@@ -18,7 +18,7 @@ from fastapi import Body, Cookie, Depends, FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, StrictStr, StringConstraints, field_validator, model_validator
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, StrictBool, StrictInt, StrictStr, StringConstraints, field_validator, model_validator
 from pwdlib import PasswordHash
 from .storage import mode, database_url
 from .db_auth import AuthDatabase, StorageError, utcnow
@@ -102,14 +102,20 @@ class CustomerPage(BaseModel):
     total: int
 
 
+# #91: passwords are never trimmed; login email keeps no format rule so any existing account still signs in.
+Password = Annotated[StrictStr, StringConstraints(min_length=12, max_length=128)]
+
 class Login(BaseModel):
-    email: str = Field(min_length=3, max_length=254)
-    password: str = Field(min_length=12, max_length=128)
+    model_config = ConfigDict(extra="forbid")
+    email: Annotated[StrictStr, StringConstraints(min_length=3, max_length=254)]
+    password: Password
 
 # #64: 1-120 chars (PostgreSQL submission_id String(120)) with at least one non-whitespace character.
 SubmissionId = Annotated[StrictStr, StringConstraints(min_length=1, max_length=120, pattern=r"\S")]
 # #68: user, rule and closure-reason ids are String(120) columns.
 Id120 = Annotated[StrictStr, StringConstraints(min_length=1, max_length=120)]
+# Trimmed, then 1-120 chars (String(120) columns): rule names, closure-reason labels and user names.
+RuleName = Annotated[StrictStr, StringConstraints(strip_whitespace=True, min_length=1, max_length=120)]
 DATE_ONLY = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
 
 class InteractionCreate(BaseModel):
@@ -827,49 +833,58 @@ def assign_customer(bcn: str, body: AssignmentRequest, user: Annotated[User, Dep
     return result
 
 
+def new_email(value: str) -> str:
+    """#91: safe_email, then what PostgreSQL's users_email_normalized check needs, plus exactly one @ with text on both sides."""
+    value = safe_email(value)
+    local, _, domain = value.partition("@")
+    if not (3 <= len(value) <= 254 and value.isascii() and not any(char.isspace() for char in value) and local and domain and "@" not in domain):
+        raise ValueError("Invalid email")
+    return value
+
+NewEmail = Annotated[StrictStr, AfterValidator(new_email)]
+Role = Literal["Admin", "Sales"]
+
 class Provision(BaseModel):
-    name: str = Field(min_length=1, max_length=120)
-    email: str = Field(min_length=3, max_length=254)
-    role: str = "Admin"
-    password: str = Field(min_length=12, max_length=128)
+    model_config = ConfigDict(extra="forbid")
+    name: RuleName
+    email: NewEmail
+    role: Role = "Admin"
+    password: Password
 
 
 class ResetPassword(BaseModel):
-    password: str = Field(min_length=12, max_length=128)
+    model_config = ConfigDict(extra="forbid")
+    password: Password
 
-class UserDraft(BaseModel):
-    name: str = Field(min_length=1, max_length=120)
-    email: str = Field(min_length=3, max_length=254)
-    role: str = "Sales"
-    password: str = Field(min_length=12, max_length=128)
+class UserDraft(Provision):
+    role: Role = "Sales"
 
-class UserPatch(BaseModel):
-    name: str | None = Field(default=None, min_length=1, max_length=120)
-    role: str | None = None
-    active: bool | None = None
+class PatchBody(BaseModel):
+    """Every field optional; an explicit null fails its type (defaults are not validated), and an empty body is rejected."""
+    model_config = ConfigDict(extra="forbid")
+
+    @model_validator(mode="after")
+    def _has_update(self):
+        if not self.model_fields_set: raise ValueError("No updatable field")
+        return self
+
+class UserPatch(PatchBody):
+    name: RuleName = None
+    role: Role = None
+    active: StrictBool = None
 
 class ClosureReason(BaseModel):
     id: str
     label: str
     active: bool = True
 
-# Trimmed, then 1-120 chars (String(120) columns): rule names and closure-reason labels.
-RuleName = Annotated[StrictStr, StringConstraints(strip_whitespace=True, min_length=1, max_length=120)]
-
 class ClosureReasonDraft(BaseModel):
     model_config = ConfigDict(extra="forbid")
     label: RuleName
 
-class ClosureReasonPatch(BaseModel):
-    """Same pattern as AssignmentRulePatch: explicit null fails its type, an empty body is rejected."""
-    model_config = ConfigDict(extra="forbid")
+class ClosureReasonPatch(PatchBody):
     label: RuleName = None
     active: StrictBool = None
-
-    @model_validator(mode="after")
-    def _has_update(self):
-        if not self.model_fields_set: raise ValueError("No updatable field")
-        return self
 
 class RuleCondition(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -910,16 +925,13 @@ class AssignmentRunRequest(BaseModel):
 
 def provision_user(data: Provision) -> User:
     data = Provision.model_validate({key: getattr(data, key) for key in ("name", "email", "role", "password")})
-    email = safe_email(data.email)
+    email = data.email
     if auth_db is not None:
         if auth_db.user_by_email(email): raise ValueError("normalized identity already exists")
-        if data.role not in {"Admin", "Sales"}: raise ValueError("invalid role")
         row = auth_db.create_user(user_id=f"user-{uuid4()}", name=data.name, email=email, role=data.role, password_hash=password_hash.hash(data.password))
         return User(id=row.id, name=row.name, email=row.email, role=row.role, active=row.active)
     if any(item["email"] == email for item in repo.users.values()):
         raise ValueError("normalized identity already exists")
-    if data.role not in {"Admin", "Sales"}:
-        raise ValueError("invalid role")
     record = {"id": f"user-{len(repo.users) + 1}", "name": data.name, "email": email, "role": data.role, "active": True, "password": password_hash.hash(data.password)}
     repo.users[record["id"]] = record
     return User.model_validate(record)
@@ -943,8 +955,6 @@ def update_user(user_id: str, patch: UserPatch, actor: Annotated[User, Depends(a
     if not record: raise HTTPException(status.HTTP_404_NOT_FOUND, "User not found.")
     changes = patch.model_dump(exclude_none=True)
     if user_id == actor.id and (changes.get("active") is False or changes.get("role") == "Sales"): raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Cannot disable or demote yourself.")
-    if changes.get("role") not in {None, "Admin", "Sales"}: raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Invalid role.")
-    if changes.get("email"): changes["email"] = safe_email(changes["email"])
     if auth_db is not None and customer_db is not None and assignment_db is not None:
         persisted = assignment_db.update_identity(user_id, changes, actor.id)
         if persisted is None: raise HTTPException(status.HTTP_404_NOT_FOUND, "User not found.")

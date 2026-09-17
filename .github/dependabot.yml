@@ -1,0 +1,11 @@
+# Keeps the SHA-pinned actions in .github/workflows (#62) current (#65).
+# Dependabot bumps the commit SHA and its trailing `# vX.Y.Z` comment together.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      github-actions:
+        patterns: ['*']

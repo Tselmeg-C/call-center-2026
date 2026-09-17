@@ -352,6 +352,29 @@ async def origin_guard(request: Request, call_next):
     return response
 
 
+# #72: fixed baseline security headers on every API response, so a client hitting the API's own
+# domain directly gets the same protection as one going through the frontend's /api/ proxy. Values
+# match apps/frontend/nginx/default.conf.template (#61); CSP/X-Frame-Options are omitted because the
+# API only serves JSON. A fixed set on purpose (like otel_setup's attribute allowlist), not a
+# configurable header framework. Registered after origin_guard, so it wraps it and also covers that
+# guard's early 403/413 returns and CORS preflights.
+SECURITY_HEADERS = {"Strict-Transport-Security": "max-age=31536000", "X-Content-Type-Options": "nosniff", "Referrer-Policy": "strict-origin-when-cross-origin"}
+
+
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers.update(SECURITY_HEADERS)
+    return response
+
+
+# Unhandled exceptions are answered by Starlette's outermost ServerErrorMiddleware, which bypasses
+# every middleware above; this keeps its default plain-text 500 body and just adds the headers.
+@app.exception_handler(Exception)
+async def unhandled_error(_: Request, __: Exception) -> Response:
+    return Response("Internal Server Error", status_code=500, headers=SECURITY_HEADERS, media_type="text/plain")
+
+
 # Configured entirely from OTEL_* environment variables; a no-op with zero network calls
 # when OTEL_EXPORTER_OTLP_ENDPOINT is unset (local dev, CI). See observability/otel_setup.py
 # and _docs/deployment.md.

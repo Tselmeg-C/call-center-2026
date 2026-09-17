@@ -48,6 +48,7 @@ logger.setLevel(logging.INFO)
 ALLOWED_ORIGINS = [os.environ["FRONTEND_ORIGIN"]] if os.environ.get("FRONTEND_ORIGIN") else ["http://localhost:3000", "http://127.0.0.1:3000", "http://localhost:4174", "http://127.0.0.1:4174"]
 app.add_middleware(CORSMiddleware, allow_origins=ALLOWED_ORIGINS, allow_credentials=True, allow_methods=["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"], allow_headers=["*"])
 password_hash = PasswordHash.recommended()
+LOGIN_DUMMY_HASH = password_hash.hash(token_urlsafe(32))  # #63: built once at load; same Argon2 params as stored hashes
 SESSION_SECONDS = 8 * 60 * 60
 ALEMBIC_HEAD = "029_assignment_conditions"
 # The image's commit SHA, baked in at `docker build --build-arg GIT_SHA=...` (see
@@ -409,17 +410,23 @@ def login(body: Login, request: Request, response: Response) -> User:
         raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "Too many sign-in attempts.", headers={"Retry-After": "900"})
     if auth_db is not None:
         record = auth_db.user_by_email(safe_email(body.email))
-        if not record or not record.active or not password_hash.verify(body.password, record.password_hash):
-            _prune_stale_login_failures(now); repo.login_failures[key] = recent + [now]; repo.login_failures_by_ip[ip] = ip_recent + [now]
-            raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Unable to sign in.")
-        repo.login_failures.pop(key, None)
-        token, expires = auth_db.issue(record.id, SESSION_SECONDS); response.set_cookie("call_center_session", token, httponly=True, samesite="lax", secure=request.url.hostname not in {"localhost", "127.0.0.1"}, path="/", max_age=SESSION_SECONDS); return User(id=record.id, name=record.name, email=record.email, role=record.role, active=record.active)
-    record = next((u for u in repo.users.values() if u["email"] == safe_email(body.email)), None)
-    if not record or not record["active"] or not password_hash.verify(body.password, record["password"]):
+        active, stored = (record.active, record.password_hash) if record else (False, None)
+    else:
+        record = next((u for u in repo.users.values() if u["email"] == safe_email(body.email)), None)
+        active, stored = (record["active"], record["password"]) if record else (False, None)
+    # #63: every attempt past the throttle runs exactly one verify() of the same Argon2 cost, so response
+    # time can't reveal whether an account exists or is active. Unknown emails and unparseable stored
+    # hashes (which would raise UnknownHashError -> 500) verify against the dummy hash and always fail.
+    if not isinstance(stored, str) or not any(hasher.identify(stored) for hasher in password_hash.hashers):
+        stored, active = None, False
+    if not password_hash.verify(body.password, stored or LOGIN_DUMMY_HASH) or not active:
         _prune_stale_login_failures(now)
         repo.login_failures[key] = recent + [now]
         repo.login_failures_by_ip[ip] = ip_recent + [now]
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Unable to sign in.")
+    if auth_db is not None:
+        repo.login_failures.pop(key, None)
+        token, expires = auth_db.issue(record.id, SESSION_SECONDS); response.set_cookie("call_center_session", token, httponly=True, samesite="lax", secure=request.url.hostname not in {"localhost", "127.0.0.1"}, path="/", max_age=SESSION_SECONDS); return User(id=record.id, name=record.name, email=record.email, role=record.role, active=record.active)
     repo.login_failures.pop(key, None)
     token = token_urlsafe(32); repo.sessions[token] = (record["id"], utcnow() + timedelta(seconds=SESSION_SECONDS))
     response.set_cookie("call_center_session", token, httponly=True, samesite="lax", secure=request.url.hostname not in {"localhost", "127.0.0.1"}, path="/", max_age=SESSION_SECONDS)

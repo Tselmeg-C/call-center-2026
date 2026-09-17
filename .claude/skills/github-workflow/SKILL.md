@@ -63,6 +63,7 @@ Never skip grooming. Each subagent prompt must be self-contained: issue number, 
 | Docs-only change (`_docs/**`, `**/*.md`, `.claude/**`) | no | no | no | no |
 | Re-run of an old `main` run | yes | no (image exists) | no `latest` move | no |
 
+- Image tags: full SHA, short SHA, and `latest` for the dev images; add the version/release tag to the production ones.
 - Build once, promote the same image: deploys always pin the full-SHA tag; short SHA, `latest` and `v*` are extra tags on the same digest.
 - Rollback = explicit promotion of a previous SHA (`promote-production.yml` for production, `railway service source connect --image <sha>` for development), never re-running an old Actions run.
 - Keep this matrix when editing workflows. Run `.github/workflows/test-pinned-actions.sh` (every third-party `uses:` pinned to a full SHA with a version comment) and actionlint before opening a CI PR.

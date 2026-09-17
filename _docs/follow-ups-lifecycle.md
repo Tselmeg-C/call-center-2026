@@ -1,6 +1,6 @@
 # Follow-ups and customer lifecycle
 
-Follow-ups are separate records with type `Appointment`, `Reminder`, or `Follow-up needed`. Appointments use a future UTC timestamp, reminders use a UTC date or timestamp, and undated follow-ups carry no due value. Date-only values stay date-only and are compared with the UTC calendar date. The next action is the earliest open dated follow-up, with undated work after dated work and stable ID ordering for ties.
+Follow-ups are separate records with type `Appointment` or `Reminder`; the UI's "Follow-up needed" option is sent as a `Reminder` with no due value. Appointments use a future UTC timestamp, reminders use a UTC date or timestamp, and undated follow-ups carry no due value. Date-only values stay date-only and are compared with the UTC calendar date. The next action is the earliest open dated follow-up, with undated work after dated work and stable ID ordering for ties.
 
 The current owner or an Admin may create, edit, cancel, and complete follow-ups. Editing is limited to open records and records before/after values in history. Cancellation retains the record and creates a history event. Completion creates one linked interaction and retains both records. Submission IDs make retries idempotent; a new submission against a completed or cancelled record returns a conflict.
 

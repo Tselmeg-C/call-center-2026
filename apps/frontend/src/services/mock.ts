@@ -78,6 +78,9 @@ function seedCustomers(): Customer[] {
  *  Mirrors the real FastAPI backend's rules (apps/api/main.py) closely enough for the UI to
  *  behave the same way in both modes: idempotent mutations keyed by submissionId, ownership
  *  gates, single-owner-per-rule bulk assignment, and role checks. */
+// (order, id) with plain string id compare, matching PostgreSQL ORDER BY position, id (#103).
+const byRuleOrder = (a: AssignmentRule, b: AssignmentRule) => a.order - b.order || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+
 export function createMockServices(): Services {
   let users = seedUsers();
   let reasons = seedReasons();
@@ -495,7 +498,7 @@ export function createMockServices(): Services {
       const memberIds = validateMemberIds(input.memberIds);
       if (!memberIds.ok) return Promise.resolve(memberIds);
       const rule: AssignmentRule = { id: uid("rule"), name, conditions: input.conditions, memberIds: memberIds.data, active: input.active ?? true, order: rules.length + 1 };
-      rules = [...rules, rule];
+      rules = [...rules, rule].sort(byRuleOrder);
       assignmentVersion += 1;
       audit(admin.data.id, "Assignment rule created", rule.id, { name: rule.name });
       return Promise.resolve(ok(rule));
@@ -514,7 +517,7 @@ export function createMockServices(): Services {
         memberIds = validated.data;
       }
       const updated: AssignmentRule = { ...target, ...(patch.name !== undefined ? { name: patch.name } : {}), conditions: patch.conditions !== undefined ? patch.conditions : target.conditions, memberIds, ...(patch.active !== undefined ? { active: patch.active } : {}), ...(patch.order !== undefined ? { order: patch.order } : {}) };
-      rules = rules.map((item) => (item.id === id ? updated : item)).sort((a, b) => a.order - b.order);
+      rules = rules.map((item) => (item.id === id ? updated : item)).sort(byRuleOrder);
       assignmentVersion += 1;
       return Promise.resolve(ok(updated));
     },
@@ -528,7 +531,7 @@ export function createMockServices(): Services {
         // ponytail: real matching (apps/api/assignment_rules.py) walks conditions per customer and
         // picks the least-loaded eligible member; the mock only needs a believable local/demo
         // stand-in (per issue #40), so it just takes the first active rule's eligible member pool.
-        const owners = rules.filter((item) => item.active).sort((a, b) => a.order - b.order).flatMap((item) => item.memberIds.filter((memberId) => eligible.has(memberId)));
+        const owners = rules.filter((item) => item.active).sort(byRuleOrder).flatMap((item) => item.memberIds.filter((memberId) => eligible.has(memberId)));
         const pool = owners.length ? owners : fallback.filter((id) => eligible.has(id));
         const candidates = customers.filter((item) => item.status === "Open" && (scope === "all-open" || !item.ownerId));
         let assigned = 0;

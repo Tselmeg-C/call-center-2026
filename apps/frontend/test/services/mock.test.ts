@@ -202,3 +202,43 @@ describe("mock services: assignment rules", () => {
     expect(afterUpdate.ok && afterUpdate.data).toBe(3);
   });
 });
+
+describe("mock services: assignment rule order ties (#103)", () => {
+  async function tiedRules() {
+    const services = createMockServices();
+    await signIn(services, "alex@example.test");
+    const a = await services.createAssignmentRule({ name: "A", conditions: [], memberIds: ["sales-river"], active: true });
+    const b = await services.createAssignmentRule({ name: "B", conditions: [], memberIds: ["sales-sky"], active: true });
+    if (!a.ok || !b.ok) throw new Error("create failed");
+    await services.updateAssignmentRule(a.data.id, { order: 2 });
+    await services.updateAssignmentRule(b.data.id, { order: 2 });
+    const [first, second] = a.data.id < b.data.id ? [a.data, b.data] : [b.data, a.data];
+    return { services, first, second };
+  }
+
+  it("lists equal-order rules by id with plain string comparison", async () => {
+    const { services, first, second } = await tiedRules();
+    const listed = await services.listAssignmentRules();
+    expect(listed.ok && listed.data.map((item) => item.id)).toEqual([first.id, second.id]);
+  });
+
+  it("runs the id-first tied rule", async () => {
+    const { services, first } = await tiedRules();
+    const run = await services.runAssignments("unassigned", "tie-run");
+    expect(run.ok && run.data.assigned).toBeGreaterThan(0);
+    const customer = await services.getCustomer("000125"); // was unassigned
+    expect(customer.ok && customer.data.ownerId).toBe(first.memberIds[0]);
+  });
+
+  it("places a newly created rule in (order, id) position straight away", async () => {
+    const services = createMockServices();
+    await signIn(services, "alex@example.test");
+    const a = await services.createAssignmentRule({ name: "A", conditions: [], memberIds: ["sales-river"], active: true });
+    if (!a.ok) throw new Error("create failed");
+    await services.updateAssignmentRule(a.data.id, { order: 5 });
+    const b = await services.createAssignmentRule({ name: "B", conditions: [], memberIds: ["sales-sky"], active: true });
+    if (!b.ok) throw new Error("create failed");
+    const listed = await services.listAssignmentRules();
+    expect(listed.ok && listed.data.map((item) => item.id)).toEqual([b.data.id, a.data.id]);
+  });
+});

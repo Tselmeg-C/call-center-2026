@@ -7,12 +7,12 @@ from openpyxl import Workbook
 if os.getenv("CALL_CENTER_STORAGE") != "postgres" or not os.getenv("DATABASE_URL"):
     raise SystemExit("Set CALL_CENTER_STORAGE=postgres and DATABASE_URL")
 
-from apps.api.main import app, operator_provision, Provision
+from apps.api.main import app, provision_user, Provision
 
 client = TestClient(app, base_url="http://localhost")
 origin = {"origin": "http://localhost:3000"}
 password = __import__("secrets").token_urlsafe(24)
-created = operator_provision(Provision(name="Smoke Admin", email="smoke-admin@example.test", role="Admin", password=password))
+created = provision_user(Provision(name="Smoke Admin", email="smoke-admin@example.test", role="Admin", password=password))
 assert client.post("/session/login", json={"email": "smoke-admin@example.test", "password": password}).status_code == 200
 assert client.get("/health/ready").status_code == 200
 sales = client.post("/admin/users", json={"name": "Smoke Sales", "email": "smoke-sales@example.test", "role": "Sales", "password": password}, headers=origin)

@@ -142,6 +142,13 @@ export function conditionToDraft(condition: RuleCondition): ConditionDraft {
 /** Validates + shapes one condition draft exactly like apps/api/assignment_rules.py's
  *  `validate_condition` (required bounds, low <= high, non-empty `in` list, ...), so the form can
  *  block a bad `between`/empty value locally instead of round-tripping a 422. */
+/** A new rule starts with one blank condition to fill in; an existing rule starts with exactly its
+ *  saved conditions -- none for a zero-condition rule, so its "matches every customer" warning
+ *  shows and it can be saved without touching conditions. */
+export function initialConditionDrafts(rule?: AssignmentRule): ConditionDraft[] {
+  return rule ? rule.conditions.map(conditionToDraft) : [blankConditionDraft()];
+}
+
 export function draftToCondition(draft: ConditionDraft): { condition: RuleCondition } | { error: string } {
   const kind = fieldKind(draft.field);
   const operator = draft.operator;
@@ -458,9 +465,7 @@ function RuleForm({
 }) {
   const { createAssignmentRule, updateAssignmentRule, refreshAssignmentRules } = useStore();
   const [name, setName] = useState(rule?.name ?? "");
-  const [conditions, setConditions] = useState<ConditionDraft[]>(() =>
-    rule && rule.conditions.length ? rule.conditions.map(conditionToDraft) : [blankConditionDraft()],
-  );
+  const [conditions, setConditions] = useState<ConditionDraft[]>(() => initialConditionDrafts(rule));
   const [memberIds, setMemberIds] = useState<string[]>(rule?.memberIds ?? []);
   const [active, setActive] = useState(rule?.active ?? true);
   const [nameError, setNameError] = useState<string | null>(null);

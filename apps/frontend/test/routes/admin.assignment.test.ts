@@ -6,6 +6,7 @@ import {
   describeCondition,
   draftToCondition,
   fieldKind,
+  initialConditionDrafts,
   isDuplicateNameConflict,
   isStaleVersionConflict,
 } from "@/routes/admin.assignment";
@@ -117,5 +118,22 @@ describe("admin assignment: conflict message classification", () => {
     expect(isDuplicateNameConflict("Assignment configuration is stale.")).toBe(false);
     expect(isStaleVersionConflict("Assignment configuration is stale.")).toBe(true);
     expect(isStaleVersionConflict("Rule already exists.")).toBe(false);
+  });
+});
+
+describe("admin assignment: initialConditionDrafts", () => {
+  const rule = { id: "rule-1", name: "Everyone", conditions: [], memberIds: ["sales-river"], active: true, order: 1 };
+
+  it("starts a new rule with one blank condition", () => {
+    expect(initialConditionDrafts()).toHaveLength(1);
+  });
+
+  it("starts editing a saved zero-condition rule with no conditions (no injected blank one)", () => {
+    expect(initialConditionDrafts(rule)).toEqual([]);
+  });
+
+  it("starts editing a rule with exactly its saved conditions", () => {
+    const drafts = initialConditionDrafts({ ...rule, conditions: [{ field: "propensity_tier", operator: "=", value: "A" }] });
+    expect(drafts.map(draftToCondition)).toEqual([{ condition: { field: "propensity_tier", operator: "=", value: "A" } }]);
   });
 });

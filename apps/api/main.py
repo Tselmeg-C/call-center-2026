@@ -996,7 +996,7 @@ def update_reason(reason_id: str, patch: ClosureReasonPatch, _: Annotated[User, 
     reason.update(label=label, **({"active": patch.active} if patch.active is not None else {})); persist_reason(reason); append_audit(_.id, "Closure reason changed", reason_id, {"label": reason["label"], "active": reason["active"]}); return ClosureReason.model_validate(reason)
 
 @app.post("/admin/imports", status_code=201)
-async def import_customers(file: UploadFile = File(...), submission_id: SubmissionId = Query(...), user: Annotated[User, Depends(admin_user)] = None) -> dict:
+async def import_customers(file: UploadFile = File(...), submission_id: str = Query(min_length=1, max_length=120, pattern=r"\S"), user: Annotated[User, Depends(admin_user)] = None) -> dict:
     if file.filename and len(file.filename) > 255: raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Invalid request.")  # import_jobs.filename String(255)
     if not file.filename or not file.filename.casefold().endswith(".xlsx"):
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Upload an .xlsx workbook.")

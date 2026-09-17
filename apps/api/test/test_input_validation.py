@@ -1,13 +1,19 @@
-"""#64: follow-up and assignment-rule input is rejected with 422 before anything is stored,
+"""#64/#68: write-endpoint input is rejected with 422 before anything is stored,
 identically in memory mode and PostgreSQL mode (PostgreSQL runs need TEST_DATABASE_URL).
 
 Use --tb=no so even unexpected assertion failures cannot print credentials."""
 import secrets
+from copy import deepcopy
 from datetime import datetime, timedelta, timezone
+from io import BytesIO
 from types import SimpleNamespace
+from uuid import uuid4
+from zipfile import ZIP_DEFLATED, ZipFile
 
 import pytest
 from fastapi.testclient import TestClient
+from openpyxl import Workbook
+from sqlalchemy import inspect
 
 from .. import assignment_rules, main
 from ..assignment_rules import ConditionError
@@ -361,3 +367,190 @@ def test_inactive_member_blocks_rule_save_until_unchecked(env):
     url = f"/admin/assignment-rules/{rule['id']}"
     blocked = env.admin.patch(url, json={"name": "Still", "memberIds": [env.sales_id], "version": version(env)}, headers=ORIGIN)
     assert blocked.status_code == 422 and blocked.json() == {"detail": "Eligible members must be active Sales users."}
+
+
+# ---- #68: notes, close/reopen, manual assignment, runs, fallback, closure reasons, imports ------
+
+def uid() -> str:
+    return str(uuid4())  # what crypto.randomUUID() sends
+
+
+def stored_state(env):
+    """Customer row, memory stores and (PostgreSQL) every table's row count: a rejection must change none of it."""
+    customer = env.admin.get(f"/customers/{BCN}").json()
+    repo = main.repo
+    memory = (len(repo.notes), len(repo.submissions), len(repo.imports), len(repo.assignment_runs), deepcopy(repo.reasons), list(repo.fallback_sales))
+    tables = None
+    if main.activity_db is not None:
+        with main.activity_db.engine.connect() as connection:
+            tables = {name: connection.exec_driver_sql(f'SELECT count(*) FROM "{name}"').scalar() for name in inspect(connection).get_table_names()}
+    return (customer["version"], customer["status"], customer["ownerId"], len(customer["histories"])), memory, tables, version(env)
+
+
+def reject_all(env, send, bodies):
+    """Every body is 422 Invalid request. and nothing is stored."""
+    before = stored_state(env)
+    for body in bodies:
+        response = send(body)
+        assert response.status_code == 422 and response.json() == INVALID, (body, response.text)
+    assert stored_state(env) == before
+
+
+BAD_SUBMISSION_IDS = ["", "   ", "s" * 121, None, 5, True]
+
+
+def test_note_rejects_bad_input_and_trims(env):
+    send = lambda body: env.sales.post(f"/customers/{BCN}/notes", json=body, headers=ORIGIN)
+    submission = uid()
+    bad = [*({"text": value, "submissionId": submission} for value in ("", "   \n", "x" * 4001, " " + "x" * 4001, None, 5, ["x"])),
+           *({"text": "ok", "submissionId": value} for value in BAD_SUBMISSION_IDS), {"text": "ok"}, {"submissionId": submission},
+           {"text": "ok", "submissionId": submission, "extra": 1}]
+    reject_all(env, send, bad)
+    first = send({"text": "Called back", "submissionId": submission})  # reuses the rejected id
+    assert first.status_code == 200 and first.json()["text"] == "Called back"
+    replay = send({"text": "  Called back  ", "submissionId": submission})
+    assert replay.status_code == 200 and replay.json()["id"] == first.json()["id"]
+    exact = send({"text": "  " + "y" * 4000 + " ", "submissionId": "s" * 120})
+    assert exact.status_code == 200 and exact.json()["text"] == "y" * 4000
+
+
+def test_close_rejects_bad_input_and_keeps_business_rules(env):
+    send = lambda body: env.sales.post(f"/customers/{BCN}/close", json=body, headers=ORIGIN)
+    submission = uid()
+    bad = [*({"reasonId": value, "submissionId": submission} for value in ("", "r" * 121, None, 1, True, ["closure-1"])),
+           {"submissionId": submission}, *({"reasonId": "closure-1", "submissionId": value} for value in BAD_SUBMISSION_IDS),
+           {"reasonId": "closure-1"}, {"reasonId": "closure-1", "submissionId": submission, "note": "x"}]
+    reject_all(env, send, bad)
+    inactive = env.admin.post("/admin/closure-reasons", json={"label": "Old"}, headers=ORIGIN).json()
+    assert env.admin.patch(f"/admin/closure-reasons/{inactive['id']}", json={"active": False}, headers=ORIGIN).status_code == 200
+    before = stored_state(env)
+    for reason in ("ghost", inactive["id"]):
+        response = send({"reasonId": reason, "submissionId": submission})
+        assert response.status_code == 422 and response.json() == {"detail": "Choose an active closure reason."}
+    assert stored_state(env) == before
+    reason = env.admin.post("/admin/closure-reasons", json={"label": "Won again"}, headers=ORIGIN).json()
+    body = {"reasonId": reason["id"], "submissionId": submission}
+    closed = send(body)
+    assert closed.status_code == 200 and closed.json()["status"] == "Closed"
+    assert env.admin.patch(f"/admin/closure-reasons/{reason['id']}", json={"active": False}, headers=ORIGIN).status_code == 200
+    replay = send(body)
+    assert replay.status_code == 200 and replay.json()["status"] == "Closed" and replay.json()["version"] == closed.json()["version"]
+
+
+def test_reopen_accepts_only_submission_id(env):
+    send = lambda body: env.sales.post(f"/customers/{BCN}/reopen", json=body, headers=ORIGIN)
+    submission = uid()
+    assert env.sales.post(f"/customers/{BCN}/close", json={"reasonId": "closure-1", "submissionId": uid()}, headers=ORIGIN).status_code == 200
+    bad = [{"submissionId": submission, "reasonId": "closure-1"}, {"submissionId": submission, "extra": None},
+           *({"submissionId": value} for value in BAD_SUBMISSION_IDS), {}]
+    reject_all(env, send, bad)
+    reopened = send({"submissionId": submission})
+    assert reopened.status_code == 200 and reopened.json()["status"] == "Open"
+
+
+def test_manual_assignment_rejects_bad_input_and_keeps_business_rules(env):
+    url = f"/admin/assignments/manual/{BCN}"
+    send = lambda body: env.admin.post(url, json=body, headers=ORIGIN)
+    submission = uid()
+    base = {"ownerId": None, "submissionId": submission}
+    bad = [base | {"ownerId": value} for value in ("", "o" * 121, 5, True, ["x"])]
+    bad += [{"submissionId": submission}, base | {"extra": 1}, *({"ownerId": None, "submissionId": value} for value in BAD_SUBMISSION_IDS), {"ownerId": None}]
+    bad += [base | {"expectedVersion": value} for value in (-1, 1.5, "2", True, 2_147_483_648)]
+    reject_all(env, send, bad)
+    before = stored_state(env)
+    ghost = send({"ownerId": "ghost", "submissionId": submission})
+    assert ghost.status_code == 422 and ghost.json() == {"detail": "Owner must be an active Sales user."}
+    stale = send({"ownerId": None, "submissionId": submission, "expectedVersion": 7})
+    assert stale.status_code == 409
+    assert stored_state(env) == before
+    current = env.admin.get(f"/customers/{BCN}").json()["version"]
+    unassigned = send({"ownerId": None, "submissionId": submission, "expectedVersion": current})  # reuses the rejected id
+    assert unassigned.status_code == 200 and unassigned.json()["ownerId"] is None
+    # The Customers screen's reassign call: {ownerId, submissionId, expectedVersion}, expectedVersion possibly undefined.
+    with_version = send({"ownerId": env.sales_id, "submissionId": uid(), "expectedVersion": unassigned.json()["version"]})
+    assert with_version.status_code == 200 and with_version.json()["ownerId"] == env.sales_id
+    without_version = send({"ownerId": None, "submissionId": uid()})
+    assert without_version.status_code == 200 and without_version.json()["ownerId"] is None
+    assert send({"ownerId": env.sales_id, "submissionId": uid(), "expectedVersion": 2_147_483_647}).status_code == 409
+
+
+@pytest.mark.parametrize("route", ["/admin/assignment-runs", "/admin/assignments/run"])
+def test_assignment_run_rejects_bad_input(env, route):
+    send = lambda body: env.admin.post(route, json=body, headers=ORIGIN)
+    submission = uid()
+    bad = [*({"scope": value, "submissionId": submission} for value in ("all", "UNASSIGNED", "", None, 1)),
+           *({"scope": "unassigned", "submissionId": value} for value in BAD_SUBMISSION_IDS), {"scope": "unassigned"},
+           {"scope": "unassigned", "submissionId": submission, "extra": 1}]
+    reject_all(env, send, bad)
+    ran = send({"submissionId": submission})  # scope defaults to unassigned; reuses the rejected id
+    assert ran.status_code == 200 and ran.json()["scope"] == "unassigned"
+    assert send({"scope": "all-open", "submissionId": uid()}).status_code == 200
+    assert send({"scope": "unassigned", "submissionId": uid()}).status_code == 200  # what the frontend sends
+
+
+def test_assignment_fallback_rejects_bad_input(env):
+    send = lambda body: env.admin.put("/admin/assignment-fallback", json=body, headers=ORIGIN)
+    reject_all(env, send, [{"ids": [env.sales_id]}, env.sales_id, None, 5, [1], [None], [""], ["m" * 121], [env.sales_id] * 101, [[env.sales_id]]])
+    ghost = send([env.sales_id, "ghost"])
+    assert ghost.status_code == 422 and ghost.json() == {"detail": "Fallback members must be active Sales users."}
+    saved = send([env.sales_id] * 100)
+    assert saved.status_code == 200 and saved.json() == [env.sales_id]
+    cleared = send([])
+    assert cleared.status_code == 200 and cleared.json() == []
+
+
+def test_closure_reasons_reject_bad_input(env):
+    reason = env.admin.post("/admin/closure-reasons", json={"label": "  Lost  "}, headers=ORIGIN)
+    assert reason.status_code == 201 and reason.json()["label"] == "Lost"
+    rid = reason.json()["id"]
+    bad_labels = ["", "   ", "l" * 121, " " + "l" * 121, None, 5, ["x"]]
+    reject_all(env, lambda body: env.admin.post("/admin/closure-reasons", json=body, headers=ORIGIN),
+               [*({"label": value} for value in bad_labels), {}, {"label": "New", "active": True}, {"label": "New", "id": "x"}])
+    reject_all(env, lambda body: env.admin.patch(f"/admin/closure-reasons/{rid}", json=body, headers=ORIGIN),
+               [*({"label": value} for value in bad_labels), {}, {"active": None}, *({"active": value} for value in ("false", 0, 1)),
+                {"label": "Fine", "active": None}, {"label": "Fine", "extra": 1}, None, []])
+    if main.assignment_db is not None:
+        assert not [row for row in main.assignment_db.audit(1, 100, action="Closure reason changed")[0]]
+    long_label = env.admin.post("/admin/closure-reasons", json={"label": " " + "l" * 120 + " "}, headers=ORIGIN)
+    assert long_label.status_code == 201 and long_label.json()["label"] == "l" * 120
+    renamed = env.admin.patch(f"/admin/closure-reasons/{rid}", json={"label": "  " + "m" * 120 + "  "}, headers=ORIGIN)
+    assert renamed.status_code == 200 and renamed.json()["label"] == "m" * 120
+    toggled = env.admin.patch(f"/admin/closure-reasons/{rid}", json={"active": False}, headers=ORIGIN)
+    assert toggled.status_code == 200 and toggled.json()["active"] is False
+    for response in (env.admin.post("/admin/closure-reasons", json={"label": "  WON "}, headers=ORIGIN),
+                     env.admin.patch(f"/admin/closure-reasons/{rid}", json={"label": " won"}, headers=ORIGIN)):
+        assert response.status_code == 409 and response.json() == {"detail": "Reason already exists."}
+
+
+def workbook(*rows) -> bytes:
+    book = Workbook(); book.active.append(["bcn", "customer_name"])
+    for row in rows: book.active.append(row)
+    payload = BytesIO(); book.save(payload); return payload.getvalue()
+
+
+def upload(env, submission_id, content, filename="customers.xlsx"):
+    url = "/admin/imports" if submission_id is None else f"/admin/imports?submission_id={submission_id}"
+    return env.admin.post(url, files={"file": (filename, content, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")}, headers=ORIGIN)
+
+
+def test_import_rejects_bad_submission_id_and_filename(env):
+    content = workbook(["964001", "Imported"])
+    reject_all(env, lambda sub: upload(env, sub, content), [None, "", "%20%20", "s" * 121])
+    reject_all(env, lambda name: upload(env, uid(), content, filename=name), ["n" * 251 + ".xlsx"])
+    before = stored_state(env)
+    wrong = upload(env, uid(), content, filename="customers.csv")
+    assert wrong.status_code == 422 and wrong.json() == {"detail": "Upload an .xlsx workbook."}
+    assert stored_state(env) == before
+    submission = uid()
+    assert upload(env, submission, content, filename="n" * 250 + ".xlsx").status_code == 201
+    assert upload(env, submission, workbook(["964002", "Other"])).status_code == 409
+    assert upload(env, "s" * 120, content).status_code == 201
+
+
+def test_import_limits_unchanged(env):
+    assert upload(env, uid(), b"x" * (10 * 1024 * 1024 + 1)).status_code == 413
+    bomb = BytesIO()
+    with ZipFile(bomb, "w", ZIP_DEFLATED) as archive: archive.writestr("xl/big.bin", b"\0" * (100 * 1024 * 1024 + 1))
+    assert upload(env, uid(), bomb.getvalue()).status_code == 413
+    too_many = upload(env, uid(), workbook(*([f"{index}", "Row"] for index in range(1, 10_002))))
+    assert too_many.status_code == 413 and too_many.json() == {"detail": "Workbook has too many rows."}

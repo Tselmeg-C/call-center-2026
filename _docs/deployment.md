@@ -92,7 +92,7 @@ This is additive: the non-container `npm run dev` / `apps/api/start.sh` workflow
 
 ## Publishing images to GHCR
 
-Every push to `main` that passes `check` in `.github/workflows/frontend.yml` runs a `publish` job (`needs: check`) that builds and pushes both images to GitHub Container Registry, from the same `apps/api/Dockerfile` and `apps/frontend/Dockerfile` used for the local `docker build` commands above -- CI does not diverge from them. Pull requests (including from forks) only run the `docker build` steps; nothing is ever pushed off `main`.
+Every push to `main` that passes `check` in `.github/workflows/frontend.yml` runs a `publish` job (`needs: check`) that builds and pushes both images to GitHub Container Registry, from the same `apps/api/Dockerfile` and `apps/frontend/Dockerfile` used for the local `docker build` commands above -- CI does not diverge from them. Pull requests (including from forks) and other branches skip the `publish` job entirely; they only run `check`.
 
 Images are published as:
 

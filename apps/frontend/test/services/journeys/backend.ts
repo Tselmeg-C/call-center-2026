@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { createServer } from "node:net";
 import makeFetchCookie from "fetch-cookie";
 
@@ -33,7 +34,9 @@ async function waitForHealth(baseUrl: string, deadline: number): Promise<void> {
   throw new Error(`Backend did not become healthy at ${baseUrl} in time.`);
 }
 
-export type TestBackend = { baseUrl: string; origin: string; stop: () => Promise<void> };
+/** `operatorSecret` is a fresh random value per run, handed to the spawned API only via its env
+ *  (#110) so journeys can send it as `x-operator-secret`. Never log it. */
+export type TestBackend = { baseUrl: string; origin: string; operatorSecret: string; stop: () => Promise<void> };
 
 /** Node's global fetch (unlike a browser) has no cookie jar, so a fresh one per simulated actor
  *  (Admin, Sales, "anonymous", ...) keeps their sessions independent -- exactly what a real
@@ -48,13 +51,15 @@ export async function startBackend(): Promise<TestBackend> {
   // The Origin doesn't need to be reachable -- the backend only string-compares it against
   // FRONTEND_ORIGIN (see apps/api/main.py's origin_guard) to satisfy the unsafe-method guard.
   const origin = "http://localhost:5173";
+  // Always overrides any OPERATOR_PROVISION_SECRET already exported in the developer's shell.
+  const operatorSecret = randomBytes(32).toString("hex");
   const repoRoot = new URL("../../../../../", import.meta.url).pathname;
   const child: ChildProcess = spawn(
     "python3",
     ["-m", "uvicorn", "apps.api.main:app", "--host", "127.0.0.1", "--port", String(port), "--log-level", "warning"],
     {
       cwd: repoRoot,
-      env: { ...process.env, CALL_CENTER_STORAGE: "memory", FRONTEND_ORIGIN: origin },
+      env: { ...process.env, CALL_CENTER_STORAGE: "memory", FRONTEND_ORIGIN: origin, OPERATOR_PROVISION_SECRET: operatorSecret },
       stdio: "pipe",
     },
   );
@@ -64,7 +69,7 @@ export async function startBackend(): Promise<TestBackend> {
   });
   const exited = new Promise<never>((_, reject) => {
     child.on("exit", (code) => {
-      if (code !== null && code !== 0) reject(new Error(`Backend process exited with code ${code}:\n${stderr}`));
+      if (code !== null && code !== 0) reject(new Error(`Backend process exited with code ${code}:\n${stderr.replaceAll(operatorSecret, "[redacted]")}`));
     });
   });
 
@@ -73,6 +78,7 @@ export async function startBackend(): Promise<TestBackend> {
   return {
     baseUrl,
     origin,
+    operatorSecret,
     stop: () =>
       new Promise<void>((resolve) => {
         child.once("exit", () => resolve());

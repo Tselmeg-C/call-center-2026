@@ -1,6 +1,6 @@
 name: CI
 
-# check        -> every push and PR (tests, lint, typecheck, PostgreSQL smoke, benchmark)
+# check        -> every push and PR (tests, lint, typecheck, real-HTTP journeys, PostgreSQL smoke, benchmark)
 # publish      -> merge to main: build once, push <sha>/<short-sha>, move `latest`, deploy development
 #                 v* tag: re-tag the SAME <sha> image with the release name (build only if missing)
 # deploy-production -> v* tag: promote-production.yml (production approval) with that SHA
@@ -48,6 +48,8 @@ jobs:
           python -m compileall -q apps/api
           python -m pytest apps/api/test/test_auth.py apps/api/test/test_auth_adapters.py --tb=no
           DATABASE_URL=sqlite+pysqlite:////tmp/call-center-ci.db alembic -c apps/api/alembic.ini upgrade head
+      - name: Real-HTTP journeys
+        run: npm run test:journey
       - name: PostgreSQL authentication acceptance
         env:
           TEST_DATABASE_URL: postgresql+psycopg://postgres@localhost:5432/call_center_ci

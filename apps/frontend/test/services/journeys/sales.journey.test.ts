@@ -18,7 +18,7 @@ describe("real-HTTP Sales journey", () => {
     const admin = createHttpServices({ baseUrl: backend.baseUrl, origin: backend.origin, fetch: newActorFetch() });
     const provisioned = await fetch(`${backend.baseUrl}/operator/provision`, {
       method: "POST",
-      headers: { "content-type": "application/json", origin: backend.origin },
+      headers: { "content-type": "application/json", origin: backend.origin, "x-operator-secret": backend.operatorSecret },
       body: JSON.stringify({ name: "Alex Admin", email: "alex@example.test", role: "Admin", password: "synthetic-only-admin" }),
     });
     expect(provisioned.status).toBe(200);

@@ -16,7 +16,7 @@ describe("real-HTTP Admin journey", () => {
     admin = createHttpServices({ baseUrl: backend.baseUrl, origin: backend.origin, fetch: newActorFetch() });
     const provisioned = await fetch(`${backend.baseUrl}/operator/provision`, {
       method: "POST",
-      headers: { "content-type": "application/json", origin: backend.origin },
+      headers: { "content-type": "application/json", origin: backend.origin, "x-operator-secret": backend.operatorSecret },
       body: JSON.stringify({ name: "Alex Admin", email: "alex@example.test", role: "Admin", password: "synthetic-only-admin" }),
     });
     expect(provisioned.status).toBe(200);
@@ -26,6 +26,15 @@ describe("real-HTTP Admin journey", () => {
 
   afterAll(async () => {
     await backend.stop();
+  });
+
+  it("rejects operator provisioning without the operator secret header", async () => {
+    const response = await fetch(`${backend.baseUrl}/operator/provision`, {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: backend.origin },
+      body: JSON.stringify({ name: "Mallory", email: "mallory@example.test", role: "Admin", password: "synthetic-only-mallory" }),
+    });
+    expect(response.status).toBe(401);
   });
 
   it("rejects unauthenticated and unauthorized direct requests", async () => {

@@ -11,6 +11,7 @@ import {
   isDuplicateNameConflict,
   isStaleVersionConflict,
   rulesMayOverlap,
+  sortByPriority,
 } from "@/routes/admin.assignment";
 import type { RuleCondition } from "@/services/types";
 
@@ -199,5 +200,17 @@ describe("admin assignment: overlap detection (#71)", () => {
     const a = [c("propensity_tier", "=", "A"), c("recent", "=", true)];
     expect(rulesMayOverlap(a, [c("branch_code", "=", "X1")])).toBe(true);
     expect(rulesMayOverlap(a, [c("branch_code", "=", "X1"), c("recent", "=", false)])).toBe(false);
+  });
+});
+
+describe("admin assignment: sortByPriority", () => {
+  it("sorts by order, then by id for rules sharing an order (like ordered_rules())", () => {
+    const rules = [
+      { id: "rule-b", order: 2 },
+      { id: "rule-z", order: 1 },
+      { id: "rule-a", order: 2 },
+    ];
+    expect(sortByPriority(rules).map((r) => r.id)).toEqual(["rule-z", "rule-a", "rule-b"]);
+    expect(rules.map((r) => r.id)).toEqual(["rule-b", "rule-z", "rule-a"]); // input untouched
   });
 });

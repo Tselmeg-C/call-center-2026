@@ -253,6 +253,11 @@ export function rulesMayOverlap(a: RuleCondition[], b: RuleCondition[]): boolean
   return !a.some((ca) => b.some((cb) => ca.field === cb.field && conditionsDisjoint(ca, cb)));
 }
 
+/** Priority order, same as PostgreSQL ordered_rules(): `order`, then `id` for rules sharing one. */
+export function sortByPriority<T extends Pick<AssignmentRule, "id" | "order">>(rules: readonly T[]): T[] {
+  return rules.slice().sort((a, b) => a.order - b.order || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+}
+
 // A 409 from POST/PATCH /admin/assignment-rules is either a duplicate name or a stale `version`
 // (see apps/api/main.py's create_assignment_rule/update_assignment_rule); services/http.ts and
 // services/mock.ts both surface the backend's own detail text as the error message, so branching
@@ -278,8 +283,7 @@ function AdminAssignment() {
   const unassigned = customers.filter((c) => !c.ownerId && c.status !== "closed");
   const salesUsers = users.filter((u) => u.role === "sales" && u.active);
   const userName = (id: string | null) => (id ? (users.find((u) => u.id === id)?.name ?? id) : "Unassigned");
-  // Same order as the backend's ordered_rules(): position, then id for rules sharing a position.
-  const sortedRules = assignmentRules.slice().sort((a, b) => a.order - b.order || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  const sortedRules = sortByPriority(assignmentRules);
 
   const closeForm = () => setEditing(null);
 
@@ -555,15 +559,14 @@ function RuleForm({
   // them from the picker. Show them too, flagged, instead of silently losing that membership.
   const noActiveSalesUsers = salesUsers.length === 0;
 
-  // Live overlap warning (#71): incomplete condition drafts are skipped, so this reflects what
-  // would be saved right now.
-  const draftConditions = conditions.flatMap((draft) => {
-    const result = draftToCondition(draft);
-    return "condition" in result ? [result.condition] : [];
-  });
-  const overlapping = active
-    ? assignmentRules.filter((other) => other.active && other.id !== rule?.id && rulesMayOverlap(other.conditions, draftConditions))
-    : [];
+  // Live overlap warning (#71): only once every condition row is complete and valid (zero rows is a
+  // valid catch-all), so a half-filled form doesn't warn against every active rule.
+  const draftResults = conditions.map(draftToCondition);
+  const draftConditions = draftResults.flatMap((result) => ("condition" in result ? [result.condition] : []));
+  const overlapping =
+    active && draftConditions.length === draftResults.length
+      ? sortByPriority(assignmentRules).filter((other) => other.active && other.id !== rule?.id && rulesMayOverlap(other.conditions, draftConditions))
+      : [];
   const pickableUsers = [...salesUsers, ...allUsers.filter((u) => memberIds.includes(u.id) && !salesUsers.some((s) => s.id === u.id))];
 
   const submit = async () => {
@@ -743,11 +746,7 @@ function RuleForm({
             <AlertTitle>May overlap with other active rules</AlertTitle>
             <AlertDescription>
               A customer could match both this rule and{" "}
-              {overlapping
-                .slice()
-                .sort((a, b) => a.order - b.order)
-                .map((other) => `#${other.order} ${other.name}`)
-                .join(", ")}
+              {overlapping.map((other) => `#${other.order} ${other.name}`).join(", ")}
               . Only the rule earliest in priority order assigns them.
             </AlertDescription>
           </Alert>

@@ -476,6 +476,121 @@ def test_shared_identity_validation_and_safe_failures(adapter):
         provision("short@example.test", password=secrets.token_hex(5))
 
 
+def _count_verify(monkeypatch):
+    calls = []
+    real = main.password_hash.verify
+    monkeypatch.setattr(main.password_hash, "verify", lambda password, hash: calls.append(1) or real(password, hash))
+    return calls
+
+
+def _deactivate(adapter, user_id):
+    if adapter:
+        adapter.update_user(user_id, {"active": False})
+    else:
+        main.repo.users[user_id]["active"] = False
+
+
+def test_shared_login_failures_do_equal_verify_work(adapter, monkeypatch, caplog):
+    # #63: every failed login past the throttle runs exactly one Argon2 verify(), whether or not
+    # the account exists, is active, or has a parseable stored hash -- so timing can't reveal it.
+    user, secret = provision("admin@example.test")
+    inactive, inactive_secret = provision("inactive@example.test")
+    _deactivate(adapter, inactive.id)
+    cases = [
+        ("unknown email", "unknown@example.test", secrets.token_urlsafe(24)),
+        ("wrong password", user.email, secrets.token_urlsafe(24)),
+        ("normalized email, wrong password", "  ADMIN@Example.TEST ", secrets.token_urlsafe(24)),
+        ("inactive, correct password", inactive.email, inactive_secret),
+        ("inactive, wrong password", inactive.email, secrets.token_urlsafe(24)),
+    ]
+    if adapter is None:
+        blank, blank_secret = provision("blank@example.test")
+        main.repo.users[blank.id]["password"] = ""
+        cases.append(("unparseable stored hash", blank.email, blank_secret))
+    calls = _count_verify(monkeypatch)
+    caplog.set_level("INFO", logger="call-center.api")
+    headers, access_lines = [], []
+    with TestClient(main.app, base_url="http://localhost") as client:
+        for name, email, password in cases:
+            key = (main.safe_email(email), "testclient")
+            before, before_ip = len(main.repo.login_failures.get(key, [])), len(main.repo.login_failures_by_ip.get("testclient", []))
+            calls.clear(); caplog.clear()
+            response = sign_in(client, email, password)
+            assert len(calls) == 1, name
+            assert response.status_code == 401 and response.content == b'{"detail":"Unable to sign in."}', name
+            assert len(main.repo.login_failures[key]) == before + 1 and len(main.repo.login_failures_by_ip["testclient"]) == before_ip + 1, name
+            headers.append({name: value for name, value in response.headers.items() if name != "x-request-id"})
+            lines = [record.getMessage() for record in caplog.records if record.name == "call-center.api"]
+            assert len(lines) == 1, name
+            access_lines.append(" ".join(part for part in lines[0].split() if not part.startswith(("id=", "duration_ms="))))
+        assert all(item == headers[0] for item in headers) and "set-cookie" not in headers[0]
+        assert set(access_lines) == {"request method=POST route=/session/login status=401 error=http_error"}
+        key = (user.email, "testclient")
+        calls.clear()
+        response = sign_in(client, user.email, secret)
+        assert response.status_code == 200 and "set-cookie" in response.headers and len(calls) == 1
+        assert key not in main.repo.login_failures
+
+
+def test_shared_throttled_login_skips_lookup_and_verify(adapter, monkeypatch):
+    # #63: a 429 is decided before any user lookup or verify(), for known and unknown emails alike.
+    user, _ = provision("admin@example.test")
+    calls = _count_verify(monkeypatch)
+    lookups = []
+    if adapter:
+        real_lookup = adapter.user_by_email
+        monkeypatch.setattr(adapter, "user_by_email", lambda email: lookups.append(1) or real_lookup(email))
+    else:
+        class Users(dict):
+            def values(self):
+                lookups.append(1)
+                return super().values()
+        monkeypatch.setattr(main.repo, "users", Users(main.repo.users))
+    with TestClient(main.app, base_url="http://localhost") as client:
+        for email in ("unknown@example.test", user.email):
+            for _ in range(5):
+                assert sign_in(client, email, secrets.token_urlsafe(24)).status_code == 401
+            calls.clear(); lookups.clear()
+            response = sign_in(client, email, secrets.token_urlsafe(24))
+            assert response.status_code == 429 and response.headers["retry-after"] == "900"
+            assert response.json() == {"detail": "Too many sign-in attempts."}
+            assert calls == [] and lookups == []
+
+
+@pytest.mark.skipif(os.getenv("RUN_TIMING_CHECKS") != "1", reason="opt-in wall-clock check; set RUN_TIMING_CHECKS=1")
+@pytest.mark.parametrize("adapter", ["memory"], indirect=True)
+def test_login_failure_timing_parity(adapter, capsys):
+    # #63 QA check, not a CI gate: medians for unknown email and inactive user within +-25% of wrong password.
+    from statistics import median
+    from time import perf_counter
+    user, _ = provision("admin@example.test")
+    inactive, inactive_secret = provision("inactive@example.test")
+    _deactivate(adapter, inactive.id)
+    cases = {"unknown": "unknown@example.test", "wrong_password": user.email, "inactive": inactive.email}
+    timings = {name: [] for name in cases}
+    counter = iter(range(1, 10_000))
+    with TestClient(main.app, base_url="http://localhost") as client:
+        def attempt(email, password):
+            n = next(counter)
+            started = perf_counter()
+            response = client.post("/session/login", json={"email": email, "password": password}, headers={"x-forwarded-for": f"10.{n // 65536}.{n // 256 % 256}.{n % 256}, 10.255.255.254"})
+            elapsed = perf_counter() - started
+            assert response.status_code == 401
+            return elapsed
+        for _ in range(5):
+            for email in cases.values():
+                attempt(email, secrets.token_urlsafe(24))
+        for _ in range(30):
+            for name, email in cases.items():
+                timings[name].append(attempt(email, inactive_secret if name == "inactive" else secrets.token_urlsafe(24)))
+    medians = {name: median(values) for name, values in timings.items()}
+    with capsys.disabled():
+        print("\nlogin median seconds: " + " ".join(f"{name}={value:.4f}" for name, value in medians.items()))
+    base = medians["wrong_password"]
+    assert 0.75 * base <= medians["unknown"] <= 1.25 * base
+    assert 0.75 * base <= medians["inactive"] <= 1.25 * base
+
+
 def test_shared_operator_provision_bootstraps_first_admin_only(adapter, monkeypatch):
     # #27: /operator/provision used to be registered only under CALL_CENTER_STORAGE=memory,
     # leaving no HTTP-reachable way to create the first Admin/Sales account against a real

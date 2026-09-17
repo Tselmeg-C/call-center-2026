@@ -19,7 +19,8 @@ else
 fi
 
 echo "==> Checking every 'uses:' ref is a 40-char SHA with a version comment"
-uses_lines=$(grep -rnE '^\s*-?\s*uses:' "$dir"/*.yml)
+# Local reusable workflows (`uses: ./...`) live in this repo and can't be SHA-pinned.
+uses_lines=$(grep -rnE '^\s*-?\s*uses:' "$dir"/*.yml | grep -vE 'uses:\s*\./')
 tmp_uses=$(mktemp)
 printf '%s\n' "$uses_lines" > "$tmp_uses"
 while IFS= read -r line; do

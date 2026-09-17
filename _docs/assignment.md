@@ -79,7 +79,9 @@ member -- saving a rule with zero eligible members is rejected with `422`, the s
 
 ## Evaluation algorithm
 
-1. Walk active rules in `position` order (the existing column already used by `ordered_rules()`).
+1. Walk active rules in `position` order (the existing column already used by `ordered_rules()`),
+   with ties broken by ascending `id` using plain string comparison (so `rule-10` comes before
+   `rule-2`). Memory mode, PostgreSQL mode and the frontend mock all use this same order.
 2. A rule matches a candidate customer only if **every** one of its conditions matches (AND). A
    rule with zero conditions matches unconditionally.
 3. On match, the rule's eligible members are re-filtered to users who are *currently* active Sales

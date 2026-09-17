@@ -64,15 +64,16 @@ jobs:
   publish:
     name: Build and publish images
     needs: check
-    # Only a push to main (i.e. a merged PR) builds and publishes; PRs and other branches stop at `check`.
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    # Only a merge to main (-> dev) or a `v*` release tag (-> production) builds and publishes;
+    # feature-branch pushes and PRs stop at `check`.
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
-    # Serialize main runs so `latest` can't land out of order.
+    # Serialize runs per ref so `latest` can't land out of order.
     concurrency:
-      group: publish-main
+      group: publish-${{ github.ref }}
       cancel-in-progress: false
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -87,18 +88,19 @@ jobs:
           echo "IMAGE_API=ghcr.io/${OWNER}/${REPO}-api" >> "$GITHUB_ENV"
           echo "IMAGE_FRONTEND=ghcr.io/${OWNER}/${REPO}-frontend" >> "$GITHUB_ENV"
 
-      # No formal semver in this repo -- this is a human-readable, sortable, unique-per-build
-      # label (UTC build date + short commit SHA), not a version bump process. The full-SHA tag
-      # below stays the tag #28's promote-production.yml and Railway's config-as-code use;
-      # this is purely an additional, friendlier label alongside it.
-      - name: Compute build version tag
-        run: echo "BUILD_VERSION=$(date -u +%Y.%m.%d)-${GITHUB_SHA::7}" >> "$GITHUB_ENV"
+      # Tags: full commit SHA (what Railway deploys pin to), short commit SHA, plus `latest` on
+      # main or the release tag name (e.g. v1.2.0) on a tag push.
+      - name: Compute image tags
+        run: |
+          SHORT_SHA="${GITHUB_SHA::7}"
+          if [ "$GITHUB_REF_TYPE" = tag ]; then CHANNEL="$GITHUB_REF_NAME"; else CHANNEL=latest; fi
+          echo "IMAGE_TAGS=$GITHUB_SHA $SHORT_SHA $CHANNEL" >> "$GITHUB_ENV"
 
       - name: Build API image
-        run: docker build -f apps/api/Dockerfile --build-arg GIT_SHA="$GITHUB_SHA" -t "$IMAGE_API:$GITHUB_SHA" -t "$IMAGE_API:$BUILD_VERSION" -t "$IMAGE_API:latest" .
+        run: docker build -f apps/api/Dockerfile --build-arg GIT_SHA="$GITHUB_SHA" -t "$IMAGE_API:$GITHUB_SHA" .
 
       - name: Build frontend image
-        run: docker build -f apps/frontend/Dockerfile -t "$IMAGE_FRONTEND:$GITHUB_SHA" -t "$IMAGE_FRONTEND:$BUILD_VERSION" -t "$IMAGE_FRONTEND:latest" .
+        run: docker build -f apps/frontend/Dockerfile -t "$IMAGE_FRONTEND:$GITHUB_SHA" .
 
       - name: Log in to GHCR
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
@@ -108,16 +110,10 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Push API image
-        run: |
-          docker push "$IMAGE_API:$GITHUB_SHA"
-          docker push "$IMAGE_API:$BUILD_VERSION"
-          docker push "$IMAGE_API:latest"
+        run: for t in $IMAGE_TAGS; do docker tag "$IMAGE_API:$GITHUB_SHA" "$IMAGE_API:$t"; docker push "$IMAGE_API:$t"; done
 
       - name: Push frontend image
-        run: |
-          docker push "$IMAGE_FRONTEND:$GITHUB_SHA"
-          docker push "$IMAGE_FRONTEND:$BUILD_VERSION"
-          docker push "$IMAGE_FRONTEND:latest"
+        run: for t in $IMAGE_TAGS; do docker tag "$IMAGE_FRONTEND:$GITHUB_SHA" "$IMAGE_FRONTEND:$t"; docker push "$IMAGE_FRONTEND:$t"; done
 
       # #27: unattended auto-deploy of Railway's `development` environment on every successful
       # main build. The installed Railway CLI pins an image-sourced service to one fixed image
@@ -138,6 +134,7 @@ jobs:
       # "No linked project found" without an explicit --project. Pass it directly rather than add
       # a separate `railway link` step.
       - name: Deploy development (Railway)
+        if: github.ref == 'refs/heads/main'
         env:
           RAILWAY_API_TOKEN: ${{ secrets.RAILWAY_API_TOKEN }}
           RAILWAY_PROJECT_ID: e7501ba0-4b15-42e1-a4a5-e4a4aaba614b
@@ -145,3 +142,17 @@ jobs:
           npm install -g @railway/cli@5.57.5
           railway service source connect --image "$IMAGE_API:$GITHUB_SHA" --service api --environment development --project "$RAILWAY_PROJECT_ID"
           railway service source connect --image "$IMAGE_FRONTEND:$GITHUB_SHA" --service frontend --environment development --project "$RAILWAY_PROJECT_ID"
+
+  # Release tag -> production, through the same human-gated promotion workflow (`production`
+  # environment), pinned to the image this run just published.
+  deploy-production:
+    name: Deploy production
+    needs: publish
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: read
+      packages: read
+    uses: ./.github/workflows/promote-production.yml
+    with:
+      image_tag: ${{ github.sha }}
+    secrets: inherit

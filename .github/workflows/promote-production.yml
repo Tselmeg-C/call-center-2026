@@ -1,12 +1,18 @@
 name: Promote to production
 
-# Human-triggered only. Takes an already-published GHCR image tag (a commit SHA
-# or "latest") and points Railway production at it -- never builds anything.
+# Run by hand, or called by frontend.yml after a `v*` release tag publishes images. Takes an
+# already-published GHCR image tag (a commit SHA or "latest") and points Railway production at
+# it -- never builds anything. The `production` environment's protection rules gate both paths.
 on:
   workflow_dispatch:
     inputs:
       image_tag:
         description: 'Image tag to promote (commit SHA or "latest")'
+        required: true
+        type: string
+  workflow_call:
+    inputs:
+      image_tag:
         required: true
         type: string
 

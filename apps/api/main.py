@@ -102,18 +102,14 @@ class CustomerPage(BaseModel):
     total: int
 
 
-class AssignmentRequest(BaseModel):
-    ownerId: str | None
-    submissionId: str = Field(min_length=1)
-    expectedVersion: int | None = None
-
-
 class Login(BaseModel):
     email: str = Field(min_length=3, max_length=254)
     password: str = Field(min_length=12, max_length=128)
 
 # #64: 1-120 chars (PostgreSQL submission_id String(120)) with at least one non-whitespace character.
 SubmissionId = Annotated[StrictStr, StringConstraints(min_length=1, max_length=120, pattern=r"\S")]
+# #68: user, rule and closure-reason ids are String(120) columns.
+Id120 = Annotated[StrictStr, StringConstraints(min_length=1, max_length=120)]
 DATE_ONLY = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
 
 class InteractionCreate(BaseModel):
@@ -123,8 +119,9 @@ class InteractionCreate(BaseModel):
     submissionId: SubmissionId
 
 class NoteCreate(BaseModel):
-    text: str = Field(min_length=1, max_length=4000)
-    submissionId: str = Field(min_length=1)
+    model_config = ConfigDict(extra="forbid")
+    text: Annotated[StrictStr, StringConstraints(strip_whitespace=True, min_length=1, max_length=4000)]
+    submissionId: SubmissionId
 
 class FollowUpCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -157,9 +154,20 @@ class FollowUpCancel(BaseModel):
     model_config = ConfigDict(extra="forbid")
     submissionId: SubmissionId
 
-class LifecycleRequest(BaseModel):
-    reasonId: str | None = None
-    submissionId: str = Field(min_length=1)
+class CloseRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    reasonId: Id120
+    submissionId: SubmissionId
+
+class ReopenRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    submissionId: SubmissionId
+
+class AssignmentRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    ownerId: Id120 | None
+    submissionId: SubmissionId
+    expectedVersion: Annotated[StrictInt, Field(ge=0, le=2_147_483_647)] | None = None
 
 
 class MemoryRepo:
@@ -631,7 +639,7 @@ def create_followup(bcn: str, body: FollowUpCreate, user: Annotated[User, Depend
     return record
 
 @app.post("/customers/{bcn}/close")
-def close_customer(bcn: str, body: LifecycleRequest, user: Annotated[User, Depends(current_user)]) -> Customer:
+def close_customer(bcn: str, body: CloseRequest, user: Annotated[User, Depends(current_user)]) -> Customer:
     local_key = (user.id, bcn, "close", body.submissionId)
     payload = f"{bcn}|close|{body.reasonId}"
     prior = repo.submissions.get(local_key)
@@ -642,7 +650,7 @@ def close_customer(bcn: str, body: LifecycleRequest, user: Annotated[User, Depen
         try: persisted = activity_db.get_idempotent(actor_id=user.id, operation="close", submission_id=body.submissionId, payload=payload)
         except ValueError as exc: raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
         if persisted: return get_customer(bcn, user)
-    row = writable_customer(bcn, user); reason = repo.reasons.get(body.reasonId or "")
+    row = writable_customer(bcn, user); reason = repo.reasons.get(body.reasonId)
     if not reason or not reason["active"]: raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Choose an active closure reason.")
     timestamp = datetime.now(timezone.utc).isoformat(); row["status"] = "Closed"; row["version"] += 1; event = {"id": f"closure-{bcn}-{row['version']}", "bcn": bcn, "kind": "Closure", "reasonId": reason["id"], "reason": reason["label"], "actor": user.name, "actorId": user.id, "timestamp": timestamp}; row["histories"].append(event)
     if activity_db is not None:
@@ -664,7 +672,7 @@ def close_customer(bcn: str, body: LifecycleRequest, user: Annotated[User, Depen
     return result
 
 @app.post("/customers/{bcn}/reopen")
-def reopen_customer(bcn: str, body: LifecycleRequest, user: Annotated[User, Depends(current_user)]) -> Customer:
+def reopen_customer(bcn: str, body: ReopenRequest, user: Annotated[User, Depends(current_user)]) -> Customer:
     row = repo.customers.get(bcn)
     if row is None and customer_db is not None:
         stored = customer_db.get(bcn)
@@ -845,12 +853,23 @@ class ClosureReason(BaseModel):
     label: str
     active: bool = True
 
+# Trimmed, then 1-120 chars (String(120) columns): rule names and closure-reason labels.
+RuleName = Annotated[StrictStr, StringConstraints(strip_whitespace=True, min_length=1, max_length=120)]
+
 class ClosureReasonDraft(BaseModel):
-    label: str = Field(min_length=1, max_length=120)
+    model_config = ConfigDict(extra="forbid")
+    label: RuleName
 
 class ClosureReasonPatch(BaseModel):
-    label: str | None = Field(default=None, min_length=1, max_length=120)
-    active: bool | None = None
+    """Same pattern as AssignmentRulePatch: explicit null fails its type, an empty body is rejected."""
+    model_config = ConfigDict(extra="forbid")
+    label: RuleName = None
+    active: StrictBool = None
+
+    @model_validator(mode="after")
+    def _has_update(self):
+        if not self.model_fields_set: raise ValueError("No updatable field")
+        return self
 
 class RuleCondition(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -858,9 +877,8 @@ class RuleCondition(BaseModel):
     operator: StrictStr = Field(max_length=64)
     value: object = None
 
-RuleName = Annotated[StrictStr, StringConstraints(strip_whitespace=True, min_length=1, max_length=120)]
 RuleConditions = Annotated[list[RuleCondition], Field(max_length=50)]
-RuleMemberIds = Annotated[list[Annotated[StrictStr, StringConstraints(min_length=1, max_length=120)]], Field(max_length=100)]
+RuleMemberIds = Annotated[list[Id120], Field(max_length=100)]
 
 class AssignmentRuleDraft(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -885,8 +903,9 @@ class AssignmentRulePatch(BaseModel):
         return self
 
 class AssignmentRunRequest(BaseModel):
-    scope: str = "unassigned"
-    submissionId: str = Field(min_length=1)
+    model_config = ConfigDict(extra="forbid")
+    scope: Literal["unassigned", "all-open"] = "unassigned"
+    submissionId: SubmissionId
 
 
 def provision_user(data: Provision) -> User:
@@ -977,7 +996,8 @@ def update_reason(reason_id: str, patch: ClosureReasonPatch, _: Annotated[User, 
     reason.update(label=label, **({"active": patch.active} if patch.active is not None else {})); persist_reason(reason); append_audit(_.id, "Closure reason changed", reason_id, {"label": reason["label"], "active": reason["active"]}); return ClosureReason.model_validate(reason)
 
 @app.post("/admin/imports", status_code=201)
-async def import_customers(file: UploadFile = File(...), submission_id: str = Query(..., min_length=1), user: Annotated[User, Depends(admin_user)] = None) -> dict:
+async def import_customers(file: UploadFile = File(...), submission_id: str = Query(min_length=1, max_length=120, pattern=r"\S"), user: Annotated[User, Depends(admin_user)] = None) -> dict:
+    if file.filename and len(file.filename) > 255: raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Invalid request.")  # import_jobs.filename String(255)
     if not file.filename or not file.filename.casefold().endswith(".xlsx"):
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Upload an .xlsx workbook.")
     payload = await file.read()
@@ -1169,7 +1189,7 @@ def assignment_fallback(_: Annotated[User, Depends(admin_user)]) -> list[str]:
     return repo.fallback_sales
 
 @app.put("/admin/assignment-fallback")
-def set_assignment_fallback(ids: Annotated[list[str], Body()], _: Annotated[User, Depends(admin_user)]) -> list[str]:
+def set_assignment_fallback(ids: Annotated[list[Id120], Body(max_length=100)], _: Annotated[User, Depends(admin_user)]) -> list[str]:
     valid = {item["id"] for item in repo.users.values() if item["role"] == "Sales" and item["active"]}
     if any(item not in valid for item in ids): raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Fallback members must be active Sales users.")
     repo.fallback_sales = list(dict.fromkeys(ids)); repo.assignment_version += 1
@@ -1194,7 +1214,6 @@ def run_assignment(body: AssignmentRunRequest, _: Annotated[User, Depends(admin_
         persisted = repo.assignment_runs[run_key]
         if persisted.get("scope") != body.scope: raise HTTPException(status.HTTP_409_CONFLICT, "Submission already used.")
         return persisted
-    if body.scope not in {"unassigned", "all-open"}: raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Invalid assignment scope.")
     if assignment_db is not None and customer_db is not None:
         try: result, changes = assignment_db.run_bulk(actor_id=_.id, submission_id=body.submissionId, scope=body.scope, fallback_ids=repo.fallback_sales)
         except ValueError as exc: raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc

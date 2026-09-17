@@ -7,6 +7,7 @@ what a condition means or how a candidate is picked.
 from datetime import date
 from decimal import Decimal, InvalidOperation
 import logging
+import re
 
 logger = logging.getLogger("call-center.assignment")
 
@@ -20,6 +21,12 @@ TEXT_OPERATORS = {"=", "!=", "contains", "in", "is-null", "is-not-null"}
 ORDERED_OPERATORS = {"=", "!=", "<", "<=", ">", ">=", "between", "is-null", "is-not-null"}
 BOOLEAN_OPERATORS = {"=", "!=", "is-null", "is-not-null"}
 NULL_OPERATORS = {"is-null", "is-not-null"}
+
+
+MAX_TEXT_LENGTH = 255
+MAX_IN_ITEMS = 500
+MAX_NUMERIC_LENGTH = 64
+DATE_ONLY = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
 
 
 class ConditionError(ValueError):
@@ -64,6 +71,19 @@ def _store_scalar(kind: str, value):
     return value
 
 
+def _text_ok(value: object) -> bool:
+    return isinstance(value, str) and bool(value.strip()) and len(value) <= MAX_TEXT_LENGTH
+
+
+def _check_scalar(kind: str, value: object) -> None:
+    """Save-time input checks only (#64); evaluation still goes through _coerce_scalar unchanged."""
+    if kind == "numeric":
+        if isinstance(value, bool) or len(str(value)) > MAX_NUMERIC_LENGTH: raise ConditionError("Numeric value required")
+        if not _coerce_scalar(kind, value).is_finite(): raise ConditionError("Numeric value must be finite")
+    elif kind == "date" and not (isinstance(value, str) and DATE_ONLY.fullmatch(value)):
+        raise ConditionError("Date value required (YYYY-MM-DD)")
+
+
 def validate_condition(field: object, operator: object, value: object) -> dict:
     """Validate one (field, operator, value) triple at save time; returns the JSON-storable condition dict, or raises ConditionError (caller maps this to a 422)."""
     if not isinstance(field, str) or field not in CONDITION_FIELDS:
@@ -75,12 +95,13 @@ def validate_condition(field: object, operator: object, value: object) -> dict:
     if op in NULL_OPERATORS:
         return {"field": field, "operator": op, "value": None}
     if op == "in":
-        if not isinstance(value, list) or not value or not all(isinstance(item, str) for item in value):
-            raise ConditionError("`in` requires a non-empty list of strings")
+        if not isinstance(value, list) or not value or len(value) > MAX_IN_ITEMS or not all(_text_ok(item) for item in value):
+            raise ConditionError(f"`in` requires 1-{MAX_IN_ITEMS} non-empty strings of at most {MAX_TEXT_LENGTH} characters")
         return {"field": field, "operator": op, "value": list(value)}
     if op == "between":
         if not isinstance(value, (list, tuple)) or len(value) != 2 or value[0] is None or value[1] is None:
             raise ConditionError("`between` requires both a low and a high bound")
+        _check_scalar(kind, value[0]); _check_scalar(kind, value[1])
         low, high = _coerce_scalar(kind, value[0]), _coerce_scalar(kind, value[1])
         if low > high:
             raise ConditionError("`between` low bound must not exceed the high bound")
@@ -90,9 +111,10 @@ def validate_condition(field: object, operator: object, value: object) -> dict:
             raise ConditionError("Boolean field requires a true/false value")
         return {"field": field, "operator": op, "value": value}
     if kind == "text":
-        if not isinstance(value, str):
-            raise ConditionError("Text field requires a string value")
+        if not _text_ok(value):
+            raise ConditionError(f"Text field requires a non-empty string of at most {MAX_TEXT_LENGTH} characters")
         return {"field": field, "operator": op, "value": value}
+    _check_scalar(kind, value)
     return {"field": field, "operator": op, "value": _store_scalar(kind, _coerce_scalar(kind, value))}
 
 

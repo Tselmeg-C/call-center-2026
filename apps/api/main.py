@@ -12,13 +12,13 @@ from hashlib import sha256
 import hmac
 import os
 from time import perf_counter
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import Body, Cookie, Depends, FastAPI, Header, HTTPException, Query, Request, Response, UploadFile, File, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, StrictStr, StringConstraints, field_validator, model_validator
 from pwdlib import PasswordHash
 from .storage import mode, database_url
 from .db_auth import AuthDatabase, StorageError, utcnow
@@ -112,23 +112,50 @@ class Login(BaseModel):
     email: str = Field(min_length=3, max_length=254)
     password: str = Field(min_length=12, max_length=128)
 
+# #64: 1-120 chars (PostgreSQL submission_id String(120)) with at least one non-whitespace character.
+SubmissionId = Annotated[StrictStr, StringConstraints(min_length=1, max_length=120, pattern=r"\S")]
+DATE_ONLY = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
+
 class InteractionCreate(BaseModel):
-    outcome: str
-    note: str | None = Field(default=None, max_length=4000)
-    submissionId: str = Field(min_length=1)
+    model_config = ConfigDict(extra="forbid")
+    outcome: Literal["Attempt", "Contact"]
+    note: StrictStr | None = Field(default=None, max_length=4000)
+    submissionId: SubmissionId
 
 class NoteCreate(BaseModel):
     text: str = Field(min_length=1, max_length=4000)
     submissionId: str = Field(min_length=1)
 
 class FollowUpCreate(BaseModel):
-    type: str
-    due: str | None = None
-    note: str = Field(min_length=1, max_length=4000)
-    submissionId: str = Field(min_length=1)
+    model_config = ConfigDict(extra="forbid")
+    type: Literal["Appointment", "Reminder"]
+    due: StrictStr | None = None
+    note: Annotated[StrictStr, StringConstraints(strip_whitespace=True, min_length=1, max_length=4000)]
+    submissionId: SubmissionId
+
+    @field_validator("due")
+    @classmethod
+    def _check_due(cls, value: str | None) -> str | None:
+        """YYYY-MM-DD or an ISO-8601 datetime with an offset, between 2000-01-01 and now + 5 years (UTC). Stored as sent."""
+        if value is None: return None
+        if DATE_ONLY.fullmatch(value): parsed = datetime.combine(date.fromisoformat(value), datetime.min.time(), timezone.utc)
+        else:
+            parsed = datetime.fromisoformat(value)  # ValueError -> 422
+            if parsed.tzinfo is None: raise ValueError("due needs an offset")
+        now = datetime.now(timezone.utc)
+        try: latest = now.replace(year=now.year + 5)
+        except ValueError: latest = now.replace(year=now.year + 5, day=28)  # Feb 29
+        if not datetime(2000, 1, 1, tzinfo=timezone.utc) <= parsed <= latest: raise ValueError("due out of range")
+        return value
+
+    @model_validator(mode="after")
+    def _appointment_needs_due(self):
+        if self.type == "Appointment" and self.due is None: raise ValueError("Appointment requires due")
+        return self
 
 class FollowUpCancel(BaseModel):
-    submissionId: str = Field(min_length=1)
+    model_config = ConfigDict(extra="forbid")
+    submissionId: SubmissionId
 
 class LifecycleRequest(BaseModel):
     reasonId: str | None = None
@@ -724,7 +751,7 @@ def complete_followup(bcn: str, followup_id: str, body: InteractionCreate, user:
         try: persisted = activity_db.get_idempotent(actor_id=user.id, operation="followup-complete", submission_id=body.submissionId, payload=payload)
         except ValueError as exc: raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
         if persisted: return persisted
-    key = (f"followup:{bcn}", body.submissionId); prior = repo.submissions.get(key)
+    key = (f"followup:{user.id}:{bcn}", body.submissionId); prior = repo.submissions.get(key)
     if prior:
         if prior["payload"] != payload: raise HTTPException(status.HTTP_409_CONFLICT, "Submission already used.")
         return prior["result"]
@@ -826,15 +853,36 @@ class ClosureReasonPatch(BaseModel):
     active: bool | None = None
 
 class RuleCondition(BaseModel):
-    field: str
-    operator: str
+    model_config = ConfigDict(extra="forbid")
+    field: StrictStr = Field(max_length=64)
+    operator: StrictStr = Field(max_length=64)
     value: object = None
 
+RuleName = Annotated[StrictStr, StringConstraints(strip_whitespace=True, min_length=1, max_length=120)]
+RuleConditions = Annotated[list[RuleCondition], Field(max_length=50)]
+RuleMemberIds = Annotated[list[Annotated[StrictStr, StringConstraints(min_length=1, max_length=120)]], Field(max_length=100)]
+
 class AssignmentRuleDraft(BaseModel):
-    name: str = Field(min_length=1, max_length=120)
-    conditions: list[RuleCondition] = Field(default_factory=list)
-    memberIds: list[str] = Field(default_factory=list)
-    active: bool = True
+    model_config = ConfigDict(extra="forbid")
+    name: RuleName
+    conditions: RuleConditions = Field(default_factory=list)
+    memberIds: RuleMemberIds = Field(default_factory=list)
+    active: StrictBool = True
+
+class AssignmentRulePatch(BaseModel):
+    """Every field optional; an explicit null fails its type (defaults are not validated), and a body with no updatable field is rejected."""
+    model_config = ConfigDict(extra="forbid")
+    name: RuleName = None
+    conditions: RuleConditions = None
+    memberIds: RuleMemberIds = None
+    active: StrictBool = None
+    order: StrictInt = Field(default=None, ge=1, le=1_000_000)
+    version: StrictInt = None
+
+    @model_validator(mode="after")
+    def _has_update(self):
+        if not self.model_fields_set - {"version"}: raise ValueError("No updatable field")
+        return self
 
 class AssignmentRunRequest(BaseModel):
     scope: str = "unassigned"
@@ -1082,14 +1130,15 @@ def create_assignment_rule(body: AssignmentRuleDraft, _: Annotated[User, Depends
     return rule
 
 @app.patch("/admin/assignment-rules/{rule_id}")
-def update_assignment_rule(rule_id: str, patch: dict, _: Annotated[User, Depends(admin_user)]) -> dict:
+def update_assignment_rule(rule_id: str, body: AssignmentRulePatch, _: Annotated[User, Depends(admin_user)]) -> dict:
+    patch = body.model_dump(exclude_unset=True)
     rule = next((item for item in repo.rules if item["id"] == rule_id), None)
     if not rule: raise HTTPException(status.HTTP_404_NOT_FOUND, "Rule not found.")
     if assignment_db is None and "version" in patch and patch["version"] != repo.assignment_version: raise HTTPException(status.HTTP_409_CONFLICT, "Assignment configuration is stale.")
-    if "name" in patch and any(item["id"] != rule_id and item["name"].casefold() == str(patch["name"]).strip().casefold() for item in repo.rules): raise HTTPException(status.HTTP_409_CONFLICT, "Rule already exists.")
+    if "name" in patch and any(item["id"] != rule_id and item["name"].casefold() == patch["name"].casefold() for item in repo.rules): raise HTTPException(status.HTTP_409_CONFLICT, "Rule already exists.")
     conditions = None
     if "conditions" in patch:
-        try: conditions = assignment_rules.validate_conditions(patch["conditions"])
+        try: conditions = assignment_rules.validate_conditions(body.conditions)
         except assignment_rules.ConditionError as exc: raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
     member_ids = _validate_rule_members(patch["memberIds"]) if "memberIds" in patch else None
     if assignment_db is not None:

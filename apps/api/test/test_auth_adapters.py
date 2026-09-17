@@ -1990,3 +1990,120 @@ def test_postgres_operator_console(postgres_url, monkeypatch, capsys):
     assert output.out == "Operator request completed.\n" * 2 and output.err == ""
     assert database.engine.pool.checkedout() == 0
     database.engine.dispose()
+
+
+# #103: rules with equal order are evaluated by (order, id), id as a plain string, in every mode.
+def _rule_client(monkeypatch):
+    for name in ("auth_db", "customer_db", "assignment_db", "activity_db"): monkeypatch.setattr(main, name, None)
+    main.repo.reset()
+    secret = secrets.token_urlsafe(24)
+    admin = main.provision_user(main.Provision(name="Admin", email="admin@example.test", role="Admin", password=secret))
+    for user_id in ("sales-river", "sales-sky"):
+        main.repo.users[user_id] = {"id": user_id, "name": user_id, "email": user_id + "@example.test", "role": "Sales", "active": True, "password": ""}
+    main.repo.customers = {"000125": {"bcn": "000125", "name": "Tie", "ownerId": None, "ownerName": None, "status": "Open", "phones": [], "source": {}, "version": 0, "histories": []}}
+    client = TestClient(main.app, base_url="http://localhost")
+    assert sign_in(client, admin.email, secret).status_code == 200
+    return client
+
+
+def _create_rules(client, members):
+    for index, member in enumerate(members, 1):
+        response = client.post("/admin/assignment-rules", json={"name": f"Rule {index}", "conditions": [], "memberIds": [member]}, headers=ORIGIN)
+        assert response.status_code == 201, response.text
+
+
+def _ids(client, path="/admin/assignment-rules"):
+    return [item["id"] for item in client.get(path).json()]
+
+
+def _tie(client):
+    _create_rules(client, ["sales-river", "sales-sky"])
+    assert client.patch("/admin/assignment-rules/rule-1", json={"order": 3}, headers=ORIGIN).status_code == 200
+    return client.patch("/admin/assignment-rules/rule-1", json={"order": 2}, headers=ORIGIN)
+
+
+def test_memory_rule_order_ties_break_by_id(monkeypatch):
+    client = _rule_client(monkeypatch)
+    try:
+        patched = _tie(client)
+        assert patched.status_code == 200 and patched.json()["order"] == 2
+        assert _ids(client) == _ids(client, "/admin/assignments") == ["rule-1", "rule-2"]
+        assert [item["id"] for item in main.repo.rules] == ["rule-1", "rule-2"]
+        run = client.post("/admin/assignment-runs", json={"scope": "unassigned", "submissionId": "tie-1"}, headers=ORIGIN)
+        assert run.status_code == 200 and run.json()["assigned"] == 1
+        assert main.repo.customers["000125"]["ownerId"] == "sales-river"
+        assert client.patch("/admin/assignment-rules/rule-1", json={"active": False}, headers=ORIGIN).status_code == 200
+        run = client.post("/admin/assignment-runs", json={"scope": "all-open", "submissionId": "tie-2"}, headers=ORIGIN)
+        assert run.status_code == 200 and main.repo.customers["000125"]["ownerId"] == "sales-sky"
+    finally:
+        main.repo.reset()
+
+
+def test_memory_distinct_rule_order_beats_id(monkeypatch):
+    client = _rule_client(monkeypatch)
+    try:
+        _create_rules(client, ["sales-river", "sales-sky"])
+        assert client.patch("/admin/assignment-rules/rule-2", json={"order": 1}, headers=ORIGIN).status_code == 200
+        assert client.patch("/admin/assignment-rules/rule-1", json={"order": 2}, headers=ORIGIN).status_code == 200
+        assert _ids(client) == ["rule-2", "rule-1"]
+        assert client.post("/admin/assignment-runs", json={"scope": "unassigned", "submissionId": "order"}, headers=ORIGIN).status_code == 200
+        assert main.repo.customers["000125"]["ownerId"] == "sales-sky"
+    finally:
+        main.repo.reset()
+
+
+def test_memory_created_rule_is_listed_in_sorted_position(monkeypatch):
+    client = _rule_client(monkeypatch)
+    try:
+        _create_rules(client, ["sales-river"])
+        assert client.patch("/admin/assignment-rules/rule-1", json={"order": 5}, headers=ORIGIN).status_code == 200
+        response = client.post("/admin/assignment-rules", json={"name": "Second", "conditions": [], "memberIds": ["sales-sky"]}, headers=ORIGIN)
+        assert response.status_code == 201 and response.json()["order"] == 2
+        assert _ids(client) == ["rule-2", "rule-1"]
+    finally:
+        main.repo.reset()
+
+
+def test_memory_rule_ties_use_plain_string_id_order(monkeypatch):
+    client = _rule_client(monkeypatch)
+    try:
+        _create_rules(client, ["sales-river"] * 10)
+        assert client.patch("/admin/assignment-rules/rule-10", json={"order": 2}, headers=ORIGIN).status_code == 200
+        assert _ids(client) == ["rule-1", "rule-10"] + [f"rule-{n}" for n in range(2, 10)]
+    finally:
+        main.repo.reset()
+
+
+@pytest.mark.parametrize("backend", ["sqlite", "postgres"])
+def test_database_rule_order_ties_break_by_id(backend, request, tmp_path, monkeypatch):
+    from ..db_assignment import AssignmentDatabase
+    from ..db_customers import CustomerDatabase
+
+    url = request.getfixturevalue("postgres_url") if backend == "postgres" else f"sqlite+pysqlite:///{tmp_path / 'tie.db'}"
+    if backend == "postgres": migrate()
+    monkeypatch.setenv("CALL_CENTER_STORAGE", "postgres")
+    auth = AuthDatabase(url, create_schema=backend == "sqlite")
+    customers = CustomerDatabase(url, create_schema=backend == "sqlite")
+    assignments = AssignmentDatabase(url, create_schema=backend == "sqlite")
+    monkeypatch.setattr(main, "auth_db", auth)
+    monkeypatch.setattr(main, "customer_db", customers)
+    monkeypatch.setattr(main, "assignment_db", assignments)
+    monkeypatch.setattr(main, "activity_db", None)
+    main.repo.reset()
+    try:
+        secret = secrets.token_urlsafe(24)
+        auth.create_user(user_id="admin", name="Admin", email="admin@example.test", role="Admin", password_hash=main.password_hash.hash(secret))
+        for user_id in ("sales-river", "sales-sky"):
+            auth.create_user(user_id=user_id, name=user_id, email=user_id + "@example.test", role="Sales", password_hash=main.password_hash.hash(secrets.token_urlsafe(24)))
+        customers.upsert_source(bcn="000125", name="Tie", source={})
+        client = TestClient(main.app, base_url="http://localhost")
+        assert sign_in(client, "admin@example.test", secret).status_code == 200
+        patched = _tie(client)
+        assert patched.status_code == 200, patched.text
+        assert _ids(client) == ["rule-1", "rule-2"]
+        run = client.post("/admin/assignment-runs", json={"scope": "unassigned", "submissionId": "tie"}, headers=ORIGIN)
+        assert run.status_code == 200 and run.json()["assigned"] == 1
+        assert customers.get("000125").owner_id == "sales-river"
+    finally:
+        for database in (auth, customers, assignments): database.engine.dispose()
+        main.repo.reset()

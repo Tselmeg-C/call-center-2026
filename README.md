@@ -179,7 +179,7 @@ Health: `GET /health/live` (process up), `GET /health/ready` (database reachable
 
 ## Grafana Cloud observability
 
-The API exports traces, metrics and logs over OTLP ([`observability/otel_setup.py`](observability/otel_setup.py)). It's configured only by environment variables; with `OTEL_EXPORTER_OTLP_ENDPOINT` unset, OTel is fully disabled (local dev and CI). Only an allowlist of attributes (route, method, status, DB operation, request id) is ever exported — no cookies, credentials, notes or workbook content.
+The API exports traces, metrics and logs over OTLP/HTTP (protobuf) ([`observability/otel_setup.py`](observability/otel_setup.py)); the exporters append `/v1/traces`, `/v1/metrics` and `/v1/logs` to `OTEL_EXPORTER_OTLP_ENDPOINT`. Grafana Cloud's `/otlp` gateway doesn't speak gRPC, so `OTEL_EXPORTER_OTLP_PROTOCOL` is not used. It's configured only by environment variables; with `OTEL_EXPORTER_OTLP_ENDPOINT` unset, OTel is fully disabled (local dev and CI). Only an allowlist of attributes (route, method, status, DB operation, request id) is ever exported — no cookies, credentials, notes or workbook content.
 
 ### Setup
 
@@ -199,9 +199,12 @@ The API exports traces, metrics and logs over OTLP ([`observability/otel_setup.p
 
 ### Dashboard
 
-Import [`observability/grafana-dashboard.json`](observability/grafana-dashboard.json) via **Dashboards → New → Import** (request rate, error rate and latency for `/customers`, `/sales/workload`, `/admin/reports`, plus log volume, split by environment). Regenerate it with `python3 -m observability._gen_grafana_dashboard > observability/grafana-dashboard.json`. Importing via the Grafana HTTP API needs a Grafana **service account token** (Editor), not the OTLP ingest token.
+Import [`observability/grafana-dashboard.json`](observability/grafana-dashboard.json) via **Dashboards → New → Import** or `POST /api/dashboards/db` (request rate, 5xx rate and p95 latency for `/customers`, `/workload`, `/sales/workload`, `/admin/reports`, plus log volume and recent log lines, per environment). Regenerate it with `python3 -m observability._gen_grafana_dashboard > observability/grafana-dashboard.json`. Importing via the Grafana HTTP API needs a Grafana **service account token** (Editor), not the OTLP ingest token. It's live at `/d/call-center-api/call-center-api-request-telemetry` on the stack.
 
-OTel names show up in Grafana with underscores: `http.route` → `http_route`, `deployment.environment` → `deployment_environment`, `http.server.request.duration` → `http_server_request_duration_seconds`. Checking that data actually reaches Grafana from the deployed environment is tracked in #44.
+- **Datasources:** panels use the `$metrics` / `$logs` datasource variables, preselected by regex to the stack's `grafanacloud-*-prom` / `grafanacloud-*-logs`, so no panel needs editing after import.
+- **Environment filter:** `deployment.environment` is a resource attribute, so metric panels join it from `target_info`: `... * on (job, instance) group_left(deployment_environment) max by (job, instance, deployment_environment) (target_info{job="call-center-api", deployment_environment="$environment"})`. The `max by` keeps the join one-to-one when a `(job, instance)` has several `target_info` series. The `Environment` dropdown reads `label_values(target_info{job="call-center-api"}, deployment_environment)`. Loki panels filter the `service_name` / `deployment_environment` stream labels directly.
+
+OTel names show up in Grafana with underscores: `http.route` → `http_route`, `deployment.environment` → `deployment_environment`, `http.server.request.duration` → `http_server_request_duration_seconds`. Metrics carry `job="call-center-api"` (from `service.name`).
 
 ## Containers
 

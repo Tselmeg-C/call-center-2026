@@ -12,7 +12,7 @@ Grafana Cloud's OTLP ingest promotes to Prometheus/Loki naming:
   - http.server.request.duration (histogram, seconds) -> http_server_request_duration_seconds
   - allowlisted attributes http.route / http.request.method / http.response.status_code
     -> labels http_route / http_request_method / http_response_status_code
-  - the deployment.environment resource attribute -> label deployment_environment
+  - the deployment.environment resource attribute -> label deployment_environment on target_info
   - the origin_guard request log line ("request id=... method=... route=... status=...
     duration_ms=... error=...") is logfmt-shaped, so Loki panels parse it with `| logfmt`.
 """
@@ -132,8 +132,10 @@ dashboard = Dashboard(
     ],
     templating=Templating(
         list=[
-            Template(name="metrics", type="datasource", query="prometheus", label="Metrics datasource"),
-            Template(name="logs", type="datasource", query="loki", label="Logs datasource"),
+            # The stack also has -usage (prometheus) and -history/-insights (loki) datasources;
+            # the regex preselects the ones OTLP ingest actually writes to.
+            Template(name="metrics", type="datasource", query="prometheus", regex="/grafanacloud-.*-prom$/", label="Metrics datasource"),
+            Template(name="logs", type="datasource", query="loki", regex="/grafanacloud-.*-logs$/", label="Logs datasource"),
             Template(
                 name="environment",
                 query=f'label_values(target_info{{job="{JOB}"}}, {ENV_LABEL})',

@@ -108,6 +108,8 @@ def test_dashboard_uses_datasource_variables_not_hardcoded_names():
     variables = {t["name"]: t for t in dashboard["templating"]["list"]}
     assert (variables["metrics"]["type"], variables["metrics"]["query"]) == ("datasource", "prometheus")
     assert (variables["logs"]["type"], variables["logs"]["query"]) == ("datasource", "loki")
+    assert variables["metrics"]["regex"] == "/grafanacloud-.*-prom$/"
+    assert variables["logs"]["regex"] == "/grafanacloud-.*-logs$/"
     for panel in _dashboard_panels():
         assert panel["datasource"] in ({"type": "prometheus", "uid": "${metrics}"}, {"type": "loki", "uid": "${logs}"})
     assert variables["environment"]["datasource"] == {"type": "prometheus", "uid": "${metrics}"}

@@ -2,12 +2,12 @@
   "valid": {
     "login": {"email": "river@example.test", "password": "synthetic-only"},
     "interaction": {"submissionId": "fixture-1", "outcome": "Contact", "note": "Answered"},
-    "followUp": {"submissionId": "fixture-2", "type": "Reminder", "dueKind": "date", "due": "2026-09-12", "note": null},
+    "followUp": {"submissionId": "fixture-2", "type": "Reminder", "due": "2026-09-12", "note": "Call back"},
     "leadingZeroCustomer": {"bcn": "000123", "status": "Open", "ownerId": "sales-river"}
   },
   "errors": {
     "missingOutcome": {"submissionId": "fixture-3", "note": "invalid"},
     "staleFollowUp": {"submissionId": "fixture-4", "expectedUpdatedAt": "stale", "type": "Reminder"},
-    "forbidden": {"code": "forbidden", "message": "You do not have access.", "requestId": "req-fixture"}
+    "forbidden": {"detail": "Customer access denied."}
   }
 }

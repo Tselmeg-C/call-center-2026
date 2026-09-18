@@ -189,6 +189,75 @@ export function describeCondition(condition: RuleCondition): string {
   return `${label} ${opLabel} ${condition.value}`;
 }
 
+// -- Overlap detection (#71) --------------------------------------------------------------------
+// UI warning only: matching stays first-match-wins by position (apps/api/assignment_rules.py).
+// Two rules "may overlap" unless some pair of their conditions on the same field provably can never
+// both match one value, using evaluate_condition's semantics. Anything not provably disjoint
+// (e.g. two `contains`, two `!=`) counts as a possible overlap, so the warning errs on the side of
+// showing.
+// ponytail: ignores contradictions inside a single rule (e.g. `score < 1 AND score > 5`), so such a
+// rule can still be reported as overlapping; add intra-rule range merging if that proves noisy.
+type Range = { lo: number; loInc: boolean; hi: number; hiInc: boolean };
+
+function toRange(condition: RuleCondition): Range | null {
+  const kind = fieldKind(condition.field);
+  const num = (v: unknown) => (kind === "date" ? Date.parse(String(v)) : Number(v));
+  const v = condition.value;
+  switch (condition.operator) {
+    case "=": return { lo: num(v), loInc: true, hi: num(v), hiInc: true };
+    case "<": return { lo: -Infinity, loInc: true, hi: num(v), hiInc: false };
+    case "<=": return { lo: -Infinity, loInc: true, hi: num(v), hiInc: true };
+    case ">": return { lo: num(v), loInc: false, hi: Infinity, hiInc: true };
+    case ">=": return { lo: num(v), loInc: true, hi: Infinity, hiInc: true };
+    case "between": return Array.isArray(v) ? { lo: num(v[0]), loInc: true, hi: num(v[1]), hiInc: true } : null;
+    default: return null;
+  }
+}
+
+const rangesDisjoint = (a: Range, b: Range) =>
+  a.hi < b.lo || b.hi < a.lo || (a.hi === b.lo && !(a.hiInc && b.loInc)) || (b.hi === a.lo && !(b.hiInc && a.loInc));
+
+/** True when no single customer value can satisfy both conditions (same field assumed). */
+export function conditionsDisjoint(a: RuleCondition, b: RuleCondition): boolean {
+  const aNull = a.operator === "is-null";
+  const bNull = b.operator === "is-null";
+  if (aNull || bNull) return aNull !== bNull; // only is-null matches null; every other operator needs a value
+  if (a.operator === "is-not-null" || b.operator === "is-not-null") return false;
+
+  const kind = fieldKind(a.field);
+  if (kind === "boolean") {
+    const target = (c: RuleCondition) => (c.operator === "=" ? c.value === true : c.value !== true);
+    return target(a) !== target(b);
+  }
+  if (kind === "text") {
+    const set = (c: RuleCondition) => (c.operator === "=" ? [String(c.value)] : c.operator === "in" && Array.isArray(c.value) ? c.value.map(String) : null);
+    const [setA, setB] = [set(a), set(b)];
+    if (setA && setB) return !setA.some((item) => setB.includes(item));
+    const [values, other] = setA ? [setA, b] : setB ? [setB, a] : [null, null];
+    if (!values || !other) return false; // contains/!= against contains/!= -- can't prove disjoint
+    if (other.operator === "!=") return values.every((item) => item === other.value);
+    if (other.operator === "contains") return values.every((item) => !item.toLowerCase().includes(String(other.value).toLowerCase()));
+    return false;
+  }
+  // numeric / date
+  const [rangeA, rangeB] = [toRange(a), toRange(b)];
+  if (rangeA && rangeB) return rangesDisjoint(rangeA, rangeB);
+  const [point, other] = a.operator === "!=" ? [rangeB, a] : b.operator === "!=" ? [rangeA, b] : [null, null];
+  if (!point || !other) return false; // != against !=
+  const excluded = toRange({ ...other, operator: "=" })!;
+  return point.loInc && point.hiInc && point.lo === point.hi && point.lo === excluded.lo;
+}
+
+/** True unless some same-field condition pair makes the two rules mutually exclusive. */
+export function rulesMayOverlap(a: RuleCondition[], b: RuleCondition[]): boolean {
+  return !a.some((ca) => b.some((cb) => ca.field === cb.field && conditionsDisjoint(ca, cb)));
+}
+
+/** Priority order, same as PostgreSQL ordered_rules(): `order`, then `id` for rules sharing one. */
+export function sortByPriority<T extends Pick<AssignmentRule, "id" | "order">>(rules: readonly T[]): T[] {
+  return rules.slice().sort((a, b) => a.order - b.order || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+}
+
 // A 409 from POST/PATCH /admin/assignment-rules is either a duplicate name or a stale `version`
 // (see apps/api/main.py's create_assignment_rule/update_assignment_rule); services/http.ts and
 // services/mock.ts both surface the backend's own detail text as the error message, so branching
@@ -214,7 +283,7 @@ function AdminAssignment() {
   const unassigned = customers.filter((c) => !c.ownerId && c.status !== "closed");
   const salesUsers = users.filter((u) => u.role === "sales" && u.active);
   const userName = (id: string | null) => (id ? (users.find((u) => u.id === id)?.name ?? id) : "Unassigned");
-  const sortedRules = assignmentRules.slice().sort((a, b) => a.order - b.order);
+  const sortedRules = sortByPriority(assignmentRules);
 
   const closeForm = () => setEditing(null);
 
@@ -291,6 +360,15 @@ function AdminAssignment() {
                             {rule.conditions.map(describeCondition).join(" AND ")}
                           </p>
                         )}
+                        {rule.active && (() => {
+                          const shadowedBy = sortedRules.slice(0, index).filter((other) => other.active && rulesMayOverlap(other.conditions, rule.conditions));
+                          return shadowedBy.length > 0 ? (
+                            <p className="mt-1 flex items-center gap-1 text-xs text-warning">
+                              <AlertTriangle className="size-3.5 shrink-0" /> May overlap with higher-priority{" "}
+                              {shadowedBy.map((other) => `#${other.order} ${other.name}`).join(", ")}; customers matching both go to the earlier rule.
+                            </p>
+                          ) : null;
+                        })()}
                         <p className="mt-1 text-xs text-muted-foreground">
                           Eligible: {rule.memberIds.length ? rule.memberIds.map((id) => userName(id)).join(", ") : "None"}
                         </p>
@@ -463,7 +541,7 @@ function RuleForm({
   onCancel: () => void;
   onSaved: () => void;
 }) {
-  const { createAssignmentRule, updateAssignmentRule, refreshAssignmentRules } = useStore();
+  const { assignmentRules, createAssignmentRule, updateAssignmentRule, refreshAssignmentRules } = useStore();
   const [name, setName] = useState(rule?.name ?? "");
   const [conditions, setConditions] = useState<ConditionDraft[]>(() => initialConditionDrafts(rule));
   const [memberIds, setMemberIds] = useState<string[]>(rule?.memberIds ?? []);
@@ -480,6 +558,15 @@ function RuleForm({
   // removed from storage" -- so an unrelated edit (e.g. renaming the rule) must not quietly drop
   // them from the picker. Show them too, flagged, instead of silently losing that membership.
   const noActiveSalesUsers = salesUsers.length === 0;
+
+  // Live overlap warning (#71): only once every condition row is complete and valid (zero rows is a
+  // valid catch-all), so a half-filled form doesn't warn against every active rule.
+  const draftResults = conditions.map(draftToCondition);
+  const draftConditions = draftResults.flatMap((result) => ("condition" in result ? [result.condition] : []));
+  const overlapping =
+    active && draftConditions.length === draftResults.length
+      ? sortByPriority(assignmentRules).filter((other) => other.active && other.id !== rule?.id && rulesMayOverlap(other.conditions, draftConditions))
+      : [];
   const pickableUsers = [...salesUsers, ...allUsers.filter((u) => memberIds.includes(u.id) && !salesUsers.some((s) => s.id === u.id))];
 
   const submit = async () => {
@@ -652,6 +739,18 @@ function RuleForm({
             </p>
           )}
         </div>
+
+        {overlapping.length > 0 && (
+          <Alert>
+            <AlertTriangle className="size-4" />
+            <AlertTitle>May overlap with other active rules</AlertTitle>
+            <AlertDescription>
+              A customer could match both this rule and{" "}
+              {overlapping.map((other) => `#${other.order} ${other.name}`).join(", ")}
+              . Only the rule earliest in priority order assigns them.
+            </AlertDescription>
+          </Alert>
+        )}
 
         <div className="flex items-center gap-2">
           <Switch id="rule-active" checked={active} onCheckedChange={setActive} />

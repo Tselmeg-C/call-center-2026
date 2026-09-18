@@ -3,12 +3,15 @@ import {
   CONDITION_FIELDS,
   blankConditionDraft,
   conditionToDraft,
+  conditionsDisjoint,
   describeCondition,
   draftToCondition,
   fieldKind,
   initialConditionDrafts,
   isDuplicateNameConflict,
   isStaleVersionConflict,
+  rulesMayOverlap,
+  sortByPriority,
 } from "@/routes/admin.assignment";
 import type { RuleCondition } from "@/services/types";
 
@@ -135,5 +138,79 @@ describe("admin assignment: initialConditionDrafts", () => {
   it("starts editing a rule with exactly its saved conditions", () => {
     const drafts = initialConditionDrafts({ ...rule, conditions: [{ field: "propensity_tier", operator: "=", value: "A" }] });
     expect(drafts.map(draftToCondition)).toEqual([{ condition: { field: "propensity_tier", operator: "=", value: "A" } }]);
+  });
+});
+
+describe("admin assignment: overlap detection (#71)", () => {
+  const c = (field: string, operator: RuleCondition["operator"], value: RuleCondition["value"] = null): RuleCondition => ({ field, operator, value });
+
+  it("treats a rule with no conditions as overlapping everything", () => {
+    expect(rulesMayOverlap([], [c("propensity_tier", "=", "A")])).toBe(true);
+    expect(rulesMayOverlap([c("propensity_tier", "=", "A")], [])).toBe(true);
+  });
+
+  it("does not overlap when the same text field requires different values", () => {
+    expect(rulesMayOverlap([c("propensity_tier", "=", "A")], [c("propensity_tier", "=", "B")])).toBe(false);
+    expect(rulesMayOverlap([c("propensity_tier", "in", ["A", "B"])], [c("propensity_tier", "in", ["C"])])).toBe(false);
+    expect(rulesMayOverlap([c("propensity_tier", "in", ["A", "B"])], [c("propensity_tier", "=", "B")])).toBe(true);
+  });
+
+  it("is case-sensitive for = (like the backend) but case-folded for contains", () => {
+    expect(conditionsDisjoint(c("name", "=", "Acme"), c("name", "=", "acme"))).toBe(true);
+    expect(conditionsDisjoint(c("name", "=", "Big Acme"), c("name", "contains", "acme"))).toBe(false);
+    expect(conditionsDisjoint(c("name", "in", ["Beta", "Gamma"]), c("name", "contains", "acme"))).toBe(true);
+  });
+
+  it("handles != against = and against another != / contains", () => {
+    expect(conditionsDisjoint(c("branch_code", "=", "X1"), c("branch_code", "!=", "X1"))).toBe(true);
+    expect(conditionsDisjoint(c("branch_code", "=", "X2"), c("branch_code", "!=", "X1"))).toBe(false);
+    expect(conditionsDisjoint(c("branch_code", "!=", "X1"), c("branch_code", "!=", "X2"))).toBe(false);
+    expect(conditionsDisjoint(c("branch_code", "contains", "a"), c("branch_code", "contains", "b"))).toBe(false);
+    expect(conditionsDisjoint(c("propensity_score", "=", "5"), c("propensity_score", "!=", "5.0"))).toBe(true);
+    expect(conditionsDisjoint(c("propensity_score", ">", "5"), c("propensity_score", "!=", "5"))).toBe(false);
+  });
+
+  it("compares numeric ranges with inclusive/exclusive bounds", () => {
+    expect(conditionsDisjoint(c("propensity_score", "<", "50"), c("propensity_score", ">=", "50"))).toBe(true);
+    expect(conditionsDisjoint(c("propensity_score", "<=", "50"), c("propensity_score", ">=", "50"))).toBe(false);
+    expect(conditionsDisjoint(c("propensity_score", "between", ["0", "10"]), c("propensity_score", "between", ["10", "20"]))).toBe(false);
+    expect(conditionsDisjoint(c("propensity_score", "between", ["0", "9"]), c("propensity_score", ">", "9"))).toBe(true);
+    expect(conditionsDisjoint(c("revenue_amount_2025", "=", "100"), c("revenue_amount_2025", "between", ["50", "150"]))).toBe(false);
+  });
+
+  it("compares date ranges", () => {
+    expect(conditionsDisjoint(c("last_purchase_date", "<", "2025-01-01"), c("last_purchase_date", ">=", "2025-01-01"))).toBe(true);
+    expect(conditionsDisjoint(c("last_purchase_date", "between", ["2024-01-01", "2024-12-31"]), c("last_purchase_date", ">", "2024-06-30"))).toBe(false);
+  });
+
+  it("handles booleans, where != true means = false", () => {
+    expect(conditionsDisjoint(c("recent", "=", true), c("recent", "=", false))).toBe(true);
+    expect(conditionsDisjoint(c("recent", "!=", true), c("recent", "=", false))).toBe(false);
+    expect(conditionsDisjoint(c("recent", "!=", false), c("recent", "=", true))).toBe(false);
+  });
+
+  it("treats is-null as disjoint from every value operator, since only is-null matches null", () => {
+    expect(conditionsDisjoint(c("rsm_name", "is-null"), c("rsm_name", "!=", "Kim"))).toBe(true);
+    expect(conditionsDisjoint(c("rsm_name", "is-null"), c("rsm_name", "is-not-null"))).toBe(true);
+    expect(conditionsDisjoint(c("rsm_name", "is-null"), c("rsm_name", "is-null"))).toBe(false);
+    expect(conditionsDisjoint(c("rsm_name", "is-not-null"), c("rsm_name", "=", "Kim"))).toBe(false);
+  });
+
+  it("needs only one disjoint same-field pair; conditions on different fields can always overlap", () => {
+    const a = [c("propensity_tier", "=", "A"), c("recent", "=", true)];
+    expect(rulesMayOverlap(a, [c("branch_code", "=", "X1")])).toBe(true);
+    expect(rulesMayOverlap(a, [c("branch_code", "=", "X1"), c("recent", "=", false)])).toBe(false);
+  });
+});
+
+describe("admin assignment: sortByPriority", () => {
+  it("sorts by order, then by id for rules sharing an order (like ordered_rules())", () => {
+    const rules = [
+      { id: "rule-b", order: 2 },
+      { id: "rule-z", order: 1 },
+      { id: "rule-a", order: 2 },
+    ];
+    expect(sortByPriority(rules).map((r) => r.id)).toEqual(["rule-z", "rule-a", "rule-b"]);
+    expect(rules.map((r) => r.id)).toEqual(["rule-b", "rule-z", "rule-a"]); // input untouched
   });
 });

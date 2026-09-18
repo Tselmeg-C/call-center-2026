@@ -234,6 +234,33 @@ def test_version_is_visible_without_shell_access(monkeypatch) -> None:
     assert ready.json()["version"] == "abc1234"
     assert "DATABASE_URL" not in str(ready.json()) and "password" not in str(ready.json()).lower()
 
+def test_security_headers_on_every_response() -> None:
+    # #72: same values as the frontend nginx (#61), on success, guard, framework-error and unhandled-500 responses alike.
+    from ..main import current_user
+    expected = {"strict-transport-security": "max-age=31536000", "x-content-type-options": "nosniff", "referrer-policy": "strict-origin-when-cross-origin"}
+    repo.reset(); client = TestClient(app, base_url="http://localhost")
+    responses = {
+        200: [client.get("/health/live"), client.get("/health/ready"), client.options("/health/live", headers={"origin": "http://localhost:3000", "access-control-request-method": "GET"})],
+        401: [client.get("/session/me")],
+        403: [client.post("/session/logout")],
+        404: [client.get("/does-not-exist")],
+        413: [client.post("/admin/imports?submission_id=large", headers={"origin": "http://localhost:3000", "content-length": str(11 * 1024 * 1024 + 1)})],
+        422: [client.post("/session/login", json={"email": 1})],
+    }
+    for _ in range(6): throttled = client.post("/session/login", json={"email": "unknown@example.test", "password": "wrong password"})
+    responses[429] = [throttled]
+    def boom() -> None: raise RuntimeError("boom")
+    app.dependency_overrides[current_user] = boom
+    try: responses[500] = [TestClient(app, base_url="http://localhost", raise_server_exceptions=False).get("/session/me")]
+    finally: app.dependency_overrides.pop(current_user)
+    for code, items in responses.items():
+        for response in items:
+            assert response.status_code == code
+            assert {name: response.headers.get(name) for name in expected} == expected
+            assert len(response.headers.get_list("x-content-type-options")) == 1
+    assert responses[500][0].text == "Internal Server Error"
+    assert responses[200][0].json() == {"status": "ok"} and responses[200][0].headers.get("x-request-id") and responses[200][0].headers.get("x-app-version")
+
 def test_postgres_readiness_rejects_stale_migration(monkeypatch) -> None:
     from ..main import health_ready
     database = AuthDatabase("sqlite+pysqlite:///:memory:")

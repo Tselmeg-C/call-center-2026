@@ -971,7 +971,7 @@ def test_postgres_activity_lifecycle_http_journey(postgres_url, monkeypatch):
             first_followup = owner_client.post("/customers/000860/follow-ups", json={"type": "Reminder", "due": None, "note": "Call back", "submissionId": "journey-followup-1"}, headers=ORIGIN)
             assert first_followup.status_code == 200
             first_id = first_followup.json()["id"]
-            second_followup = owner_client.post("/customers/000860/follow-ups", json={"type": "Appointment", "due": "2026-09-20", "note": "Site visit", "submissionId": "journey-followup-2"}, headers=ORIGIN)
+            second_followup = owner_client.post("/customers/000860/follow-ups", json={"type": "Appointment", "due": (datetime.now(timezone.utc) + timedelta(days=3)).date().isoformat(), "note": "Site visit", "submissionId": "journey-followup-2"}, headers=ORIGIN)
             assert second_followup.status_code == 200
             second_id = second_followup.json()["id"]
 

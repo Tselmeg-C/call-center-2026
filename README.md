@@ -70,11 +70,11 @@ Two automated real-HTTP journeys (Sales and Admin) exercise `apps/frontend/src/s
 npm run test:journey
 ```
 
-They're kept separate from `npm test` (a different Vitest config, `apps/frontend/vitest.journey.config.ts`) so the default fast lane never needs Python.
+They're kept separate from `npm test` (a different Vitest config, `apps/frontend/vitest.journey.config.ts`) so the default fast lane never needs Python. The operator secret they need to provision the first Admin (`x-operator-secret`) is generated randomly for each run and passed only to the spawned backend, so no setup is needed: no `.env` entry and no exported variable.
 
 ## CI/CD
 
-`.github/workflows/ci.yml` runs `check` (install, contract check, lint, typecheck, unit tests, build, backend auth tests, PostgreSQL migration + HTTP smoke, benchmark smoke), then publishes and deploys:
+`.github/workflows/ci.yml` runs `check` (install, contract check, lint, typecheck, unit tests, build, backend auth tests, real-HTTP journeys, PostgreSQL migration + HTTP smoke, benchmark smoke), then publishes and deploys:
 
 | Event | Tests | Docker build | Push image | Deploy |
 | --- | --- | --- | --- | --- |

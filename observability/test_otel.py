@@ -101,6 +101,12 @@ def test_dashboard_metric_panels_join_environment_from_target_info():
     assert environment["query"] == 'label_values(target_info{job="call-center-api"}, deployment_environment)'
 
 
+def test_dashboard_environment_defaults_to_development():
+    dashboard = json.loads(DASHBOARD_PATH.read_text())
+    environment = next(t for t in dashboard["templating"]["list"] if t["name"] == "environment")
+    assert environment["current"]["text"] == environment["current"]["value"] == "development"
+
+
 def test_dashboard_uses_datasource_variables_not_hardcoded_names():
     dashboard = json.loads(DASHBOARD_PATH.read_text())
     text = json.dumps(dashboard)

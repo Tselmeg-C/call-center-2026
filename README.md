@@ -192,7 +192,7 @@ The API exports traces, metrics and logs over OTLP/HTTP (protobuf) ([`observabil
    | `OTEL_EXPORTER_OTLP_ENDPOINT` | `https://otlp-gateway-<region>.grafana.net/otlp` |
    | `OTEL_EXPORTER_OTLP_HEADERS` | `Authorization=Basic <from step 2>` |
    | `OTEL_SERVICE_NAME` | `call-center-api` |
-   | `OTEL_RESOURCE_ATTRIBUTES` | `deployment.environment=dev` (or `prod`) |
+   | `OTEL_RESOURCE_ATTRIBUTES` | `deployment.environment=development` for dev (matches the Railway environment name), or `prod` |
 
    Dev and prod share one Grafana Cloud stack; `deployment.environment` tells them apart.
 4. Redeploy `api`, send a few requests, then check **Explore** (Tempo for traces, Loki for logs, Prometheus for `http_server_request_duration_seconds_*`).

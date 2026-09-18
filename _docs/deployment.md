@@ -20,7 +20,7 @@ never a hardcoded endpoint or credential:
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | OTLP/HTTP base endpoint (Grafana Cloud's OTLP gateway). The exporters append `/v1/traces`, `/v1/metrics`, `/v1/logs`; they are always HTTP/protobuf (the gateway doesn't accept gRPC -- issue #44), so `OTEL_EXPORTER_OTLP_PROTOCOL` is not used. **Unset means OTel is fully disabled**: no exporter is constructed, no background export thread starts, no network call is ever attempted. | `https://otlp-gateway-<region>.grafana.net/otlp` |
 | `OTEL_EXPORTER_OTLP_HEADERS` | Auth for that endpoint (Grafana Cloud instance ID + API key, as `Authorization=Basic <base64>` or `key=value` pairs). | `Authorization=Basic <redacted>` |
 | `OTEL_SERVICE_NAME` | Service name attached to every span/log/metric. Defaults to `call-center-api` if unset. | `call-center-api` |
-| `OTEL_RESOURCE_ATTRIBUTES` | Extra resource attributes, most importantly `deployment.environment` (`dev` or `prod`) -- this is how environments are told apart in Grafana, not separate Grafana Cloud accounts. | `deployment.environment=prod` |
+| `OTEL_RESOURCE_ATTRIBUTES` | Extra resource attributes, most importantly `deployment.environment`: `development` on dev (matches the Railway environment name); production is set in #28 -- this is how environments are told apart in Grafana, not separate Grafana Cloud accounts. | `deployment.environment=prod` |
 
 Real Grafana Cloud values (the actual OTLP endpoint URL, instance ID, and API key) are never
 committed to this repository. They exist only as Railway environment variables (set on the
@@ -198,7 +198,7 @@ it contradicts that help text.)
 | `api` | `WEB_CONCURRENCY` | literal `1` (required -- see login throttle below) |
 | `api` | `FRONTEND_ORIGIN` | Railway reference `${{frontend.RAILWAY_PUBLIC_DOMAIN}}` (as `https://...`) -- **not yet set, see Known gaps** |
 | `api` | `OPERATOR_PROVISION_SECRET` | operator-only bootstrap secret, required by `POST /operator/provision` -- see Bootstrapping below (value not recorded here, see Credentials) |
-| `api` | `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_HEADERS`, `OTEL_SERVICE_NAME`, `OTEL_RESOURCE_ATTRIBUTES` | set on `development` (endpoint `https://otlp-gateway-<region>.grafana.net/otlp`, header `Authorization=Basic <base64(instanceID:token)>`, `call-center-api`, `deployment.environment=dev`) -- see OpenTelemetry above |
+| `api` | `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_HEADERS`, `OTEL_SERVICE_NAME`, `OTEL_RESOURCE_ATTRIBUTES` | set on `development` (endpoint `https://otlp-gateway-<region>.grafana.net/otlp`, header `Authorization=Basic <base64(instanceID:token)>`, `call-center-api`, `deployment.environment=development`, matching the Railway environment name) -- see OpenTelemetry above |
 | `frontend` | `PORT` | literal `8080` (image default) |
 | `frontend` | `API_UPSTREAM` | Railway reference `${{api.RAILWAY_PRIVATE_DOMAIN}}:8000` |
 

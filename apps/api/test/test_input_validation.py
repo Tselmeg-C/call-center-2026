@@ -3,6 +3,7 @@ identically in memory mode and PostgreSQL mode (PostgreSQL runs need TEST_DATABA
 
 Use --tb=no so even unexpected assertion failures cannot print credentials."""
 import secrets
+from hashlib import sha256
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from io import BytesIO
@@ -13,6 +14,7 @@ from zipfile import ZIP_DEFLATED, ZipFile
 import pytest
 from fastapi.testclient import TestClient
 from openpyxl import Workbook
+from pydantic import ValidationError
 from sqlalchemy import inspect
 
 from .. import assignment_rules, main
@@ -554,3 +556,163 @@ def test_import_limits_unchanged(env):
     assert upload(env, uid(), bomb.getvalue()).status_code == 413
     too_many = upload(env, uid(), workbook(*([f"{index}", "Row"] for index in range(1, 10_002))))
     assert too_many.status_code == 413 and too_many.json() == {"detail": "Workbook has too many rows."}
+
+
+# ---- #91: login, users, operator ---------------------------------------------------------------
+
+def identity_state(env):
+    """Digest (never the raw values: stored hashes, session tokens) of every user, session and login failure,
+    in memory and PostgreSQL, plus stored_state (customer ownership, audit and every table's row count)."""
+    stored = stored_state(env)  # first: its authenticated GET refreshes repo.users from PostgreSQL
+    repo = main.repo
+    rows = None
+    if main.auth_db is not None:
+        with main.auth_db.engine.connect() as connection:
+            rows = [connection.exec_driver_sql(f'SELECT * FROM "{name}" ORDER BY 1').all() for name in ("users", "sessions", "audit_events")]
+    raw = repr((sorted(repo.users.items()), sorted(repo.sessions.items()), sorted(repo.login_failures.items()), sorted(repo.login_failures_by_ip.items()), rows))
+    return sha256(raw.encode()).hexdigest(), stored
+
+
+def reject_identity(env, send, bodies):
+    before = identity_state(env)
+    for index, body in enumerate(bodies):
+        response = send(body)
+        assert response.status_code == 422 and response.json() == INVALID, (index, response.status_code)  # never echo the body (passwords)
+    assert identity_state(env) == before
+
+
+PASSWORD = "correct horse battery"  # synthetic, 21 chars
+BAD_NAMES = ["", "   ", "\n\t", "n" * 121, " " + "n" * 121, None, 5, True, ["x"]]
+BAD_NEW_EMAILS = ["", "ab", "     ", "no-at.example.test", "two@@example.test", "a@b@example.test", "@example.test", "user@",
+                  "us er@example.test", "user@exa\tmple.test", "müller@example.test", "user@exämple.test", "a" * 250 + "@x.de", None, 5, True, ["a@b.c"]]
+BAD_PASSWORDS = ["x" * 11, "x" * 129, None, 123456789012, True, ["x" * 12]]
+BAD_ROLES = ["Owner", "admin", "SALES", "", None, 1, True]
+
+
+def draft(**overrides):
+    return {"name": "New Person", "email": f"new-{secrets.token_hex(4)}@example.test", "role": "Sales", "password": PASSWORD} | overrides
+
+
+def test_admin_user_create_rejects_bad_input_without_writing(env):
+    send = lambda body: env.admin.post("/admin/users", json=body, headers=ORIGIN)
+    base = draft()
+    bad = [*(base | {"name": value} for value in BAD_NAMES), *(base | {"email": value} for value in BAD_NEW_EMAILS),
+           *(base | {"password": value} for value in BAD_PASSWORDS), *(base | {"role": value} for value in BAD_ROLES),
+           *({key: value for key, value in base.items() if key != missing} for missing in ("name", "email", "password")),
+           base | {"active": False}, base | {"id": "user-x"}, {}, None, [base]]
+    reject_identity(env, send, bad)
+    created = send(base)  # the same email was never stored
+    assert created.status_code == 201 and created.json()["role"] == "Sales"
+
+
+def test_admin_user_create_normalizes_and_keeps_defaults(env):
+    send = lambda body: env.admin.post("/admin/users", json=body, headers=ORIGIN)
+    body = draft(name="  Padded Name \n", email="  Straße.Person@Example.TEST ")
+    del body["role"]
+    created = send(body)
+    assert created.status_code == 201, created.status_code
+    assert created.json() | {"id": None} == {"id": None, "name": "Padded Name", "email": "strasse.person@example.test", "role": "Sales", "active": True}
+    assert send(draft(email="STRASSE.person@example.test ")).status_code == 409
+    exact = send(draft(name=" " + "n" * 120 + " ", email="a" * 241 + "@example.test", password="p" * 128))
+    assert exact.status_code == 201 and exact.json()["name"] == "n" * 120 and len(exact.json()["email"]) == 254
+    assert send(draft(email="a@b", password="p" * 12)).status_code == 201
+
+
+def test_login_rejects_malformed_bodies_without_throttle_or_account_hint(env):
+    client = TestClient(main.app, base_url="http://localhost")
+    try:
+        known, unknown = "admin64@example.test", "nobody@example.test"
+        bad = []
+        for email in (known, unknown):
+            bad += [{"email": email}, {"password": PASSWORD}, {"email": email, "password": PASSWORD, "remember": True},
+                    *({"email": email, "password": value} for value in BAD_PASSWORDS),
+                    *({"email": value, "password": PASSWORD} for value in ("ab", "x" * 255, None, 5, True, ["a@b.c"]))]
+        reject_identity(env, lambda body: client.post("/session/login", json=body), bad * 2 + [{}, None, []])
+        assert not main.repo.login_failures and not main.repo.login_failures_by_ip
+        for _ in range(5):
+            assert client.post("/session/login", json={"email": known, "password": "wrong password here"}).status_code == 401
+        assert client.post("/session/login", json={"email": known, "password": "wrong password here"}).status_code == 429
+        assert client.post("/session/login", json={"email": known, "password": "x" * 11}).status_code == 422  # still Invalid request., not 429
+    finally:
+        client.close()
+
+
+def test_login_keeps_working_for_existing_accounts(env):
+    padded = "  " + PASSWORD + " "
+    created = env.admin.post("/admin/users", json=draft(email="admin@example.test", role="Admin", password=padded), headers=ORIGIN)
+    assert created.status_code == 201
+    client = TestClient(main.app, base_url="http://localhost")
+    try:
+        typed = "  Admin@Example.TEST "
+        signed_in = client.post("/session/login", json={"email": typed.strip(), "password": padded})  # services.login(email.trim(), password)
+        assert signed_in.status_code == 200 and signed_in.json()["email"] == "admin@example.test"
+        assert client.post("/session/login", json={"email": typed, "password": padded}).status_code == 200
+        assert client.post("/session/login", json={"email": typed, "password": PASSWORD}).status_code == 401  # never trimmed
+    finally:
+        client.close()
+    legacy = {"id": "legacy", "name": "Legacy", "email": "legacy@@local", "role": "Sales", "active": True}  # stored before #91; the create rule now rejects it
+    if main.auth_db is not None:
+        main.auth_db.create_user(user_id=legacy["id"], name=legacy["name"], email=legacy["email"], role=legacy["role"], password_hash=main.password_hash.hash(PASSWORD))
+    else:
+        main.repo.users["legacy"] = legacy | {"password": main.password_hash.hash(PASSWORD)}
+    assert env.admin.post("/admin/users", json=draft(email=legacy["email"]), headers=ORIGIN).status_code == 422
+    with TestClient(main.app, base_url="http://localhost") as client:
+        assert client.post("/session/login", json={"email": " Legacy@@Local", "password": PASSWORD}).status_code == 200
+
+
+def test_admin_user_patch_rejects_bad_input_without_writing(env):
+    send = lambda body: env.admin.patch(f"/admin/users/{env.sales_id}", json=body, headers=ORIGIN)
+    bad = [{}, None, [], {"name": None}, {"role": None}, {"active": None}, {"active": False, "role": None},
+           *({"name": value} for value in BAD_NAMES if value is not None), *({"role": value} for value in BAD_ROLES if value is not None),
+           *({"active": value} for value in ("false", 0, 1, "true")), {"email": "sales@example.test"}, {"active": False, "email": "x@y.z"},
+           {"password": PASSWORD}, {"id": "other"}]
+    reject_identity(env, send, bad)
+    assert env.sales.get("/session/me").status_code == 200  # session not revoked
+    admin_id = env.admin.get("/session/me").json()["id"]
+    for body in ({"active": False}, {"role": "Sales"}):
+        blocked = env.admin.patch(f"/admin/users/{admin_id}", json=body, headers=ORIGIN)
+        assert blocked.status_code == 422 and blocked.json() == {"detail": "Cannot disable or demote yourself."}
+    renamed = send({"name": "  Renamed Sales  "})
+    assert renamed.status_code == 200 and renamed.json()["name"] == "Renamed Sales"
+    disabled = send({"active": False})  # updateUser(id, { active })
+    assert disabled.status_code == 200 and disabled.json()["active"] is False
+    assert env.admin.get(f"/customers/{BCN}").json()["ownerId"] is None
+    assert send({"active": True}).status_code == 200
+
+
+def test_operator_provision_rejects_bad_input_before_secret_and_state(env, monkeypatch):
+    secret = secrets.token_urlsafe(24)
+    monkeypatch.setenv("OPERATOR_PROVISION_SECRET", secret)
+    client = TestClient(main.app, base_url="http://localhost")
+    try:
+        base = {"name": "Initial Admin", "email": "first@example.test", "password": PASSWORD}
+        bad = [*(base | {"name": value} for value in BAD_NAMES), *(base | {"email": value} for value in BAD_NEW_EMAILS),
+               *(base | {"password": value} for value in BAD_PASSWORDS), *(base | {"role": value} for value in BAD_ROLES),
+               base | {"active": True}, {}, None]
+        for headers in ({}, {"x-operator-secret": "wrong"}, {"x-operator-secret": secret}):  # identical before and after an Admin exists
+            reject_identity(env, lambda body: client.post("/operator/provision", json=body, headers=ORIGIN | headers), bad)
+        assert client.post("/operator/provision", json=base, headers=ORIGIN).status_code == 401
+        assert client.post("/operator/provision", json=base, headers=ORIGIN | {"x-operator-secret": "wrong"}).status_code == 401
+        assert client.post("/operator/provision", json=base, headers=ORIGIN | {"x-operator-secret": secret}).status_code == 409
+    finally:
+        client.close()
+
+
+def test_provision_model_defaults_to_admin_and_validates():
+    assert main.Provision(name=" Op ", email=" Op@Example.TEST", password=PASSWORD).model_dump(exclude={"password"}) == {"name": "Op", "email": "op@example.test", "role": "Admin"}
+    for bad in ({"role": "Owner"}, {"email": "op example"}, {"name": "  "}, {"extra": 1}):
+        with pytest.raises(ValidationError):
+            main.Provision(**({"name": "Op", "email": "op@example.test", "password": PASSWORD} | bad))
+
+
+def test_operator_reset_password_rejects_bad_input_without_writing(env):
+    client = TestClient(main.app, base_url="http://localhost")
+    try:
+        send = lambda body: client.post(f"/operator/reset-password/{env.sales_id}", json=body, headers=ORIGIN)
+        reject_identity(env, send, [*({"password": value} for value in BAD_PASSWORDS), {}, None, {"password": PASSWORD, "email": "x@y.z"}])
+        assert env.sales.get("/session/me").status_code == 200
+        reset = send({"password": " " + PASSWORD})
+        assert reset.status_code == 200
+        assert client.post("/session/login", json={"email": "sales64@example.test", "password": " " + PASSWORD}).status_code == 200
+    finally:
+        client.close()

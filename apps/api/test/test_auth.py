@@ -219,7 +219,7 @@ def test_health_endpoints_are_minimal_and_safe() -> None:
     assert live.status_code == 200 and live.json() == {"status": "ok"}
     assert ready.status_code == 200 and ready.json()["storage"] == "memory"
     from ..main import ALEMBIC_HEAD
-    assert ALEMBIC_HEAD == "029_assignment_conditions"
+    assert ALEMBIC_HEAD == "030_login_failure_events"
 
 def test_version_is_visible_without_shell_access(monkeypatch) -> None:
     # #27: the deployed commit must be identifiable from an HTTP response alone. GIT_SHA is

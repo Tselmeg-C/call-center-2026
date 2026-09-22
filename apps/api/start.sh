@@ -6,8 +6,8 @@ if [ "${CALL_CENTER_STORAGE:-memory}" = "postgres" ]; then
   alembic -c apps/api/alembic.ini upgrade head
 fi
 
-if [ "${WEB_CONCURRENCY:-1}" != "1" ]; then
-  echo "WEB_CONCURRENCY must be 1 while login throttling is process-local." >&2
+if [ "${CALL_CENTER_STORAGE:-memory}" != "postgres" ] && [ "${WEB_CONCURRENCY:-1}" != "1" ]; then
+  echo "WEB_CONCURRENCY must be 1 while login throttling is process-local (CALL_CENTER_STORAGE=memory)." >&2
   exit 78
 fi
 

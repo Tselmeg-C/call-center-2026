@@ -79,16 +79,25 @@ export type RuleSwapOutcome =
 /** Swaps two rules' order. The backend compare-and-swaps the shared assignment version on every
  *  PATCH (+1 per success), so the two PATCHes must run sequentially, each with the version the
  *  previous one produced -- concurrent ones race and 409. On any failure (a half-applied swap
- *  included) the rules and version are refetched so the caller can match server state. */
+ *  included) the rules and version are refetched so the caller can match server state.
+ *
+ *  #116: when current and neighbor already share the same `order` (post-#103, ties break by id),
+ *  swapping the two equal values back is a no-op -- Move up/down would appear to do nothing. In
+ *  that case, bump whichever one should end up further down so the pair gets distinct orders and
+ *  actually changes position; a distinct-order pair still gets the plain swap as before. */
 export async function swapRuleOrder(
   services: Pick<Services, "updateAssignmentRule" | "listAssignmentRules" | "getAssignmentVersion">,
   current: AssignmentRule,
   neighbor: AssignmentRule,
   version: number,
+  direction: "up" | "down",
 ): Promise<RuleSwapOutcome> {
-  const first = await services.updateAssignmentRule(current.id, { order: neighbor.order, version });
+  const tied = current.order === neighbor.order;
+  const currentOrder = tied ? (direction === "down" ? current.order + 1 : current.order) : neighbor.order;
+  const neighborOrder = tied ? (direction === "up" ? neighbor.order + 1 : neighbor.order) : current.order;
+  const first = await services.updateAssignmentRule(current.id, { order: currentOrder, version });
   if (first.ok) {
-    const second = await services.updateAssignmentRule(neighbor.id, { order: current.order, version: version + 1 });
+    const second = await services.updateAssignmentRule(neighbor.id, { order: neighborOrder, version: version + 1 });
     if (second.ok) return { ok: true, updated: [first.data, second.data], version: version + 2 };
     return resync(services, second.error.message);
   }
@@ -304,7 +313,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     if (index < 0 || swapIndex < 0 || swapIndex >= sorted.length) return false;
     const current = sorted[index]!;
     const neighbor = sorted[swapIndex]!;
-    const outcome = await swapRuleOrder(services, current, neighbor, assignmentVersion.current);
+    const outcome = await swapRuleOrder(services, current, neighbor, assignmentVersion.current, direction);
     if (!outcome.ok) {
       reportError(outcome.message);
       if (outcome.rules) setRules(outcome.rules);

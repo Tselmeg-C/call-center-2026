@@ -85,6 +85,24 @@ def test_request_id_injection_cannot_add_log_lines(caplog) -> None:
     assert "\n" not in request_records[0].message
     assert "fake" not in request_records[0].message
 
+def test_request_log_records_the_route_template_not_the_concrete_path(caplog) -> None:
+    # #27 QA (fourth pass): `route=` was read at middleware entry, before `call_next` populates
+    # `scope["route"]`, so it always fell back to the concrete path -- putting customer BCNs in the
+    # logs and giving route-level aggregation unbounded cardinality. The template must win wherever
+    # a route matched, including the origin guard's early 403, which answers before routing runs.
+    repo.reset(); client = TestClient(app, base_url="http://localhost")
+    with caplog.at_level("INFO", logger="call-center.api"):
+        assert client.get("/customers/12345678").status_code == 401
+        rejected = client.post("/customers/12345678/interactions", json={"outcome": "Contact"}, headers={"origin": "https://evil.example.test"})
+        assert rejected.status_code == 403
+        assert client.get("/no-such-route-12345678").status_code == 404
+    lines = [record.getMessage() for record in caplog.records if record.getMessage().startswith("request id=")]
+    assert len(lines) == 3
+    assert "route=/customers/{bcn} " in lines[0] and "12345678" not in lines[0]
+    assert "route=/customers/{bcn}/interactions " in lines[1] and "12345678" not in lines[1]
+    # Nothing matched, so the raw path is all there is to log -- the fallback stays.
+    assert "route=/no-such-route-12345678 " in lines[2]
+
 def test_login_never_logs_credentials_or_cookie(caplog) -> None:
     repo.reset()
     provision_user(type("P", (), {"name": "Admin", "email": "creds@example.test", "role": "Admin", "password": "correct horse battery staple"})())

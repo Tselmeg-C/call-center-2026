@@ -983,6 +983,75 @@ def test_operator_provision_secret_gates_every_storage_mode_and_request_shape(mo
     assert conflict.status_code == 409
 
 
+def test_operator_recover_succeeds_with_valid_token_and_revokes_sessions(monkeypatch) -> None:
+    # #73: the HTTP-reachable recovery path for a spent /operator/provision bootstrap slot -- works
+    # even though an Admin already exists (operator_provision would 409 here), gated by a
+    # time-boxed, email-scoped token instead of a bare user id.
+    from ..main import recovery_token
+    repo.reset(); client = TestClient(app, base_url="http://localhost"); headers = {"origin": "http://localhost:3000"}
+    provision_user(type("P", (), {"name": "Admin", "email": "locked@example.test", "role": "Admin", "password": "correct horse battery staple"})())
+    monkeypatch.setenv("OPERATOR_RECOVERY_SECRET", "recovery-secret-value")
+    login = client.post("/session/login", json={"email": "locked@example.test", "password": "correct horse battery staple"})
+    assert login.status_code == 200 and client.get("/session/me").status_code == 200
+
+    token = recovery_token("locked@example.test", 60)
+    recovered = client.post("/operator/recover", json={"email": "locked@example.test", "password": "new correct horse battery staple"}, headers={**headers, "x-operator-recovery-token": token})
+    assert recovered.status_code == 200 and "password" not in recovered.json()
+
+    assert client.get("/session/me").status_code == 401  # old session revoked by the reset
+    assert client.post("/session/login", json={"email": "locked@example.test", "password": "correct horse battery staple"}).status_code == 401
+    assert client.post("/session/login", json={"email": "locked@example.test", "password": "new correct horse battery staple"}).status_code == 200
+
+
+def test_operator_recover_fails_closed_without_leaking_account_existence(monkeypatch, caplog) -> None:
+    # #73 acceptance criteria: missing/wrong/expired/mis-scoped token all fail closed with the
+    # identical response, whether or not the target account exists -- an unauthenticated caller
+    # can't use status/body to learn deployment state -- and the secret/token never appear in logs
+    # or any response body.
+    from ..main import recovery_token
+    repo.reset(); client = TestClient(app, base_url="http://localhost"); headers = {"origin": "http://localhost:3000"}
+    provision_user(type("P", (), {"name": "Admin", "email": "locked@example.test", "role": "Admin", "password": "correct horse battery staple"})())
+    secret = "recovery-secret-value"
+    new_password = "another correct horse staple"
+
+    with caplog.at_level("INFO"):
+        # No OPERATOR_RECOVERY_SECRET configured at all -> fails closed even with a well-formed token.
+        monkeypatch.delenv("OPERATOR_RECOVERY_SECRET", raising=False)
+        unset = client.post("/operator/recover", json={"email": "locked@example.test", "password": new_password}, headers={**headers, "x-operator-recovery-token": "9999999999.deadbeef"})
+        assert unset.status_code == 401 and secret not in unset.text
+
+        monkeypatch.setenv("OPERATOR_RECOVERY_SECRET", secret)
+        existing = {"email": "locked@example.test", "password": new_password}
+        missing_account = {"email": "nobody@example.test", "password": new_password}
+
+        no_header_existing = client.post("/operator/recover", json=existing, headers=headers)
+        no_header_missing = client.post("/operator/recover", json=missing_account, headers=headers)
+        assert no_header_existing.status_code == no_header_missing.status_code == 401
+        assert no_header_existing.json() == no_header_missing.json()
+
+        wrong_token = {"x-operator-recovery-token": "9999999999.notthemac"}
+        wrong_existing = client.post("/operator/recover", json=existing, headers={**headers, **wrong_token})
+        wrong_missing = client.post("/operator/recover", json=missing_account, headers={**headers, **wrong_token})
+        assert wrong_existing.status_code == wrong_missing.status_code == 401
+        assert wrong_existing.json() == wrong_missing.json() == no_header_existing.json()
+
+        malformed = client.post("/operator/recover", json=existing, headers={**headers, "x-operator-recovery-token": "not-a-token"})
+        assert malformed.status_code == 401 and malformed.json() == no_header_existing.json()
+
+        expired = recovery_token("locked@example.test", -10)
+        expired_response = client.post("/operator/recover", json=existing, headers={**headers, "x-operator-recovery-token": expired})
+        assert expired_response.status_code == 401 and expired_response.json() == no_header_existing.json()
+
+        mis_scoped = recovery_token("someone-else@example.test", 60)  # valid token, wrong email
+        scoped_response = client.post("/operator/recover", json=existing, headers={**headers, "x-operator-recovery-token": mis_scoped})
+        assert scoped_response.status_code == 401 and scoped_response.json() == no_header_existing.json()
+
+    # Nothing above ever succeeded, so the password never changed.
+    assert client.post("/session/login", json={"email": "locked@example.test", "password": "correct horse battery staple"}).status_code == 200
+    for value in (secret, "9999999999.deadbeef", "notthemac", expired, mis_scoped, new_password):
+        assert value not in caplog.text
+
+
 def test_operator_reset_password_route_requires_explicit_flag() -> None:
     # #60: memory mode alone must not be enough to expose this route -- pattern-matches the
     # postgres-mode 404 check in test_auth_adapters.py's test_postgres_process_restart, but proves

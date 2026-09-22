@@ -11,7 +11,7 @@ import logging
 from hashlib import sha256
 import hmac
 import os
-from time import perf_counter
+from time import perf_counter, time
 from typing import Annotated, Literal
 
 from fastapi import Body, Cookie, Depends, FastAPI, Header, HTTPException, Query, Request, Response, UploadFile, File, status
@@ -1472,6 +1472,66 @@ def operator_reset_password(user_id: str, data: ResetPassword) -> User:
     return User.model_validate(record)
 
 
+def _recovery_token_mac(secret: str, email: str, expires: int) -> str:
+    return hmac.new(secret.encode(), f"{email}.{expires}".encode(), sha256).hexdigest()
+
+
+def recovery_token(email: str, ttl_seconds: int = 900) -> str:
+    """Build an `X-Operator-Recovery-Token` value for POST /operator/recover, valid for
+    `ttl_seconds` from now. Pure crypto over OPERATOR_RECOVERY_SECRET -- no DB access needed, so
+    it can be run from anywhere that env var is set (see apps/api/operator.py's `recovery-token`
+    action and _docs/deployment.md), including an environment with no DB/shell access to the
+    target deployment (#73)."""
+    secret = os.environ.get("OPERATOR_RECOVERY_SECRET")
+    if not secret: raise RuntimeError("OPERATOR_RECOVERY_SECRET is not set.")
+    expires = int(time()) + ttl_seconds
+    return f"{expires}.{_recovery_token_mac(secret, email, expires)}"
+
+
+class RecoverPassword(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    email: NewEmail
+    password: Password
+
+
+def operator_recover_password(data: RecoverPassword, x_operator_recovery_token: Annotated[str | None, Header()] = None) -> User:
+    # #73: the HTTP-reachable recovery path for a spent /operator/provision bootstrap slot --
+    # unlike operator_reset_password above (memory-only, id-only, no proof of authorization, #60),
+    # this works in every storage mode even once an Admin already exists, and is gated by a
+    # time-boxed HMAC token (see recovery_token) rather than a static secret: a leaked token grants
+    # access only until its own embedded expiry, never standing access, satisfying the "single-use
+    # or time-boxed" requirement without any new persistent/DB state. The token is scoped to one
+    # email, so it can't be replayed against a different account even before it expires.
+    #
+    # Every rejection reason (no OPERATOR_RECOVERY_SECRET configured, missing/malformed/wrong/
+    # expired token) takes this same branch and returns the same 401 before any DB lookup runs --
+    # matching operator_provision's ordering -- so an unauthenticated caller can't use status/shape
+    # to learn whether the target account exists.
+    master_secret = os.environ.get("OPERATOR_RECOVERY_SECRET")
+    valid = False
+    if master_secret and x_operator_recovery_token:
+        expires_raw, sep, mac = x_operator_recovery_token.partition(".")
+        if sep and expires_raw.isdigit() and mac:
+            expires = int(expires_raw)
+            valid = time() < expires and hmac.compare_digest(mac, _recovery_token_mac(master_secret, data.email, expires))
+    if not valid:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid or expired operator recovery token.")
+    if auth_db is not None:
+        row = auth_db.user_by_email(data.email)
+        if not row: raise HTTPException(status.HTTP_404_NOT_FOUND, "User not found.")
+        row = auth_db.reset_password(row.id, password_hash.hash(data.password))
+        result = User(id=row.id, name=row.name, email=row.email, role=row.role, active=row.active)
+    else:
+        record = next((item for item in repo.users.values() if item["email"] == data.email), None)
+        if not record: raise HTTPException(status.HTTP_404_NOT_FOUND, "User not found.")
+        record["password"] = password_hash.hash(data.password)
+        for token, (owner, _) in list(repo.sessions.items()):
+            if owner == record["id"]: repo.sessions.pop(token, None)
+        result = User.model_validate(record)
+    append_audit(None, "Operator recovery", result.id, {})  # never include the token or password, plain or hashed
+    return result
+
+
 # /operator/provision is safe in every storage mode: operator_provision above already refuses
 # (409) once any user exists, in-memory or Postgres, so it can only ever bootstrap the very first
 # Admin on a fresh deployment -- exactly the smoke-journey/regression-check bootstrap #27 needs
@@ -1485,3 +1545,10 @@ app.post("/operator/provision", response_model=User, include_in_schema=False)(op
 _operator_reset_enabled = os.getenv("CALL_CENTER_ENABLE_OPERATOR_RESET", "").casefold() in {"1", "true", "yes"}
 if storage_mode == "memory" and _operator_reset_enabled:
     app.post("/operator/reset-password/{user_id}", response_model=User, include_in_schema=False)(operator_reset_password)
+# /operator/recover is registered unconditionally, in every storage mode, no opt-in flag: unlike
+# /operator/reset-password it requires proof of authorization (a valid, unexpired, email-scoped
+# OPERATOR_RECOVERY_SECRET-derived token) on every call, so it's safe to expose against a real
+# deployment by default -- that's the whole point of #73 (recovery once an Admin already exists
+# and /operator/provision's one-time slot is spent). No token configured/presented simply means
+# every call 401s.
+app.post("/operator/recover", response_model=User, include_in_schema=False)(operator_recover_password)

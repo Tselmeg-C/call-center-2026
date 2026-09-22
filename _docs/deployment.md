@@ -220,6 +220,7 @@ it contradicts that help text.)
 | `api` | `WEB_CONCURRENCY` | literal `1` (not required for throttle correctness under `CALL_CENTER_STORAGE=postgres` -- see login throttle below; the guard in `apps/api/start.sh` only enforces this in memory mode) |
 | `api` | `FRONTEND_ORIGIN` | Railway reference `${{frontend.RAILWAY_PUBLIC_DOMAIN}}` (as `https://...`) -- set; exact-origin CORS against the frontend domain is confirmed live |
 | `api` | `OPERATOR_PROVISION_SECRET` | operator-only bootstrap secret, required by `POST /operator/provision` -- see Bootstrapping below (value not recorded here, see Credentials) |
+| `api` | `OPERATOR_RECOVERY_SECRET` | operator-only account-recovery master secret, required by `POST /operator/recover` -- see Recovering admin access below (value not recorded here, see Credentials); only set while a recovery is anticipated |
 | `api` | `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_HEADERS`, `OTEL_SERVICE_NAME`, `OTEL_RESOURCE_ATTRIBUTES` | set on `development` (endpoint `https://otlp-gateway-<region>.grafana.net/otlp`, header `Authorization=Basic <base64(instanceID:token)>`, `call-center-api`, `deployment.environment=development`, matching the Railway environment name) -- see OpenTelemetry above |
 | `frontend` | `PORT` | literal `8080` (image default) |
 | `frontend` | `API_UPSTREAM` | Railway reference `${{api.RAILWAY_PRIVATE_DOMAIN}}:8000` |
@@ -385,6 +386,71 @@ Verified locally against a real `CALL_CENTER_STORAGE=postgres` container (API bu
 when `storage_mode == "memory"`, so it 404'd against any Postgres-backed deployment -- there was no
 HTTP-reachable way to create the first account without direct DB/SSH access, which blocked #27's
 synthetic smoke journey and most of its RBAC/session regression checks.
+
+### Recovering admin access after the bootstrap slot is already spent (#73)
+
+`/operator/provision` above only ever works once per deployment (it `409`s the instant any user
+exists), and `/operator/reset-password/{user_id}` stays memory-only/flag-gated (#60: it takes only
+an unauthenticated user id, so exposing it against a real deployment would be an account-takeover
+endpoint). That left no HTTP-reachable way to recover once the one bootstrap slot was spent and no
+working session/password survived -- found three times during #27's QA passes, and hit for real on
+`development` (one `QA Admin` row, password unknown, bootstrap slot spent). `apps/api/operator.py`'s
+console needs a live DB connection for its `provision`/`reset` actions, which an agent working in
+this repo's sandbox does not have against a real deployment's Postgres.
+
+`POST /operator/recover` (also `include_in_schema=False`) fixes this: it resets an existing user's
+password by email, in every storage mode, even once an Admin already exists -- but only for a
+caller holding a valid `X-Operator-Recovery-Token` header, checked before any DB lookup runs (same
+ordering as `/operator/provision`'s secret check, so a missing/wrong/expired token gets the
+identical `401` whether or not the target account exists -- no existence leak to an unauthenticated
+caller). Unlike `OPERATOR_PROVISION_SECRET`, the token isn't the long-lived secret itself: it's a
+short-lived HMAC of `email + expiry`, keyed by the `OPERATOR_RECOVERY_SECRET` env var
+(`apps/api/main.py`'s `recovery_token`/`_recovery_token_mac`), so it's both **time-boxed** (expires
+on its own, default 15 minutes) and **scoped to one email** (can't be replayed against a different
+account) -- a leaked token grants no standing access. `OPERATOR_RECOVERY_SECRET` is never logged,
+returned, or included in any error body, and neither is the derived token or the new password.
+
+**Generating a token** -- pure HMAC over `OPERATOR_RECOVERY_SECRET`, no DB access needed, so this
+runs from any shell that has the env var set (does not need to reach the target deployment's
+database, only its HTTP port):
+
+```sh
+OPERATOR_RECOVERY_SECRET=<value> python -m apps.api.operator
+# operator action [provision/reset/recovery-token]: recovery-token
+# account email to recover: qa.admin@example.test
+# token lifetime in seconds [900]:
+# Paste into X-Operator-Recovery-Token (expires in 900s):
+# 1758561234.9f...  (printed to this terminal only -- never logged, never sent anywhere else)
+```
+
+Then, within the token's lifetime:
+
+```sh
+curl -X POST https://api-development-2a42.up.railway.app/operator/recover \
+  -H 'Content-Type: application/json' \
+  -H 'x-operator-recovery-token: <token printed above>' \
+  -d '{"email":"qa.admin@example.test","password":"<new password>"}'
+```
+
+Returns `200` with the updated user (no password echoed) and revokes that user's existing
+sessions; `401` for any missing/malformed/wrong/expired/mis-scoped token, before touching the
+database.
+
+**Generating and rotating `OPERATOR_RECOVERY_SECRET`:** generate the same way as
+`OPERATOR_PROVISION_SECRET` (e.g. `openssl rand -hex 32`), set it as the `api` service's Railway
+env var (name only, per Credentials below), and redeploy. Because every *token* self-expires,
+routine use doesn't require rotating the master secret -- but rotate it (generate a new value,
+update the Railway env var, redeploy) whenever it may have been exposed, the same way any other
+operator-only secret would be. Unset it entirely (or leave it out of the environment) when no
+recovery is anticipated: every `/operator/recover` call fails closed with no configured secret,
+identical to `/operator/provision` with `OPERATOR_PROVISION_SECRET` unset.
+
+Verified locally only: memory-mode and a real `CALL_CENTER_STORAGE=postgres` container (via
+`infra/docker-compose.test.yml`) both exercised in
+`apps/api/test/test_auth.py`/`apps/api/test/test_auth_adapters.py`. Not verified against an
+already-locked real Railway deployment (no live Postgres-backed deployment available to this
+agent) -- the owner should confirm the `curl` flow above against `development` once
+`OPERATOR_RECOVERY_SECRET` is set there.
 
 ### Failure drill (run locally against real containers + Postgres while implementing #27)
 

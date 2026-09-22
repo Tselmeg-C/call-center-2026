@@ -15,6 +15,7 @@ import { Route as LoginRouteImport } from './routes/login'
 import { Route as MyCustomersRouteImport } from './routes/my-customers'
 import { Route as AdminAssignmentRouteImport } from './routes/admin.assignment'
 import { Route as AdminAuditRouteImport } from './routes/admin.audit'
+import { Route as AdminClosureReasonsRouteImport } from './routes/admin.closure-reasons'
 import { Route as AdminImportRouteImport } from './routes/admin.import'
 import { Route as AdminReportsRouteImport } from './routes/admin.reports'
 import { Route as AdminUsersRouteImport } from './routes/admin.users'
@@ -50,6 +51,11 @@ const AdminAuditRoute = AdminAuditRouteImport.update({
   path: '/admin/audit',
   getParentRoute: () => rootRouteImport,
 } as any)
+const AdminClosureReasonsRoute = AdminClosureReasonsRouteImport.update({
+  id: '/admin/closure-reasons',
+  path: '/admin/closure-reasons',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const AdminImportRoute = AdminImportRouteImport.update({
   id: '/admin/import',
   path: '/admin/import',
@@ -78,6 +84,7 @@ export interface FileRoutesByFullPath {
   '/my-customers': typeof MyCustomersRoute
   '/admin/assignment': typeof AdminAssignmentRoute
   '/admin/audit': typeof AdminAuditRoute
+  '/admin/closure-reasons': typeof AdminClosureReasonsRoute
   '/admin/import': typeof AdminImportRoute
   '/admin/reports': typeof AdminReportsRoute
   '/admin/users': typeof AdminUsersRoute
@@ -90,6 +97,7 @@ export interface FileRoutesByTo {
   '/my-customers': typeof MyCustomersRoute
   '/admin/assignment': typeof AdminAssignmentRoute
   '/admin/audit': typeof AdminAuditRoute
+  '/admin/closure-reasons': typeof AdminClosureReasonsRoute
   '/admin/import': typeof AdminImportRoute
   '/admin/reports': typeof AdminReportsRoute
   '/admin/users': typeof AdminUsersRoute
@@ -103,6 +111,7 @@ export interface FileRoutesById {
   '/my-customers': typeof MyCustomersRoute
   '/admin/assignment': typeof AdminAssignmentRoute
   '/admin/audit': typeof AdminAuditRoute
+  '/admin/closure-reasons': typeof AdminClosureReasonsRoute
   '/admin/import': typeof AdminImportRoute
   '/admin/reports': typeof AdminReportsRoute
   '/admin/users': typeof AdminUsersRoute
@@ -117,6 +126,7 @@ export interface FileRouteTypes {
     | '/my-customers'
     | '/admin/assignment'
     | '/admin/audit'
+    | '/admin/closure-reasons'
     | '/admin/import'
     | '/admin/reports'
     | '/admin/users'
@@ -129,6 +139,7 @@ export interface FileRouteTypes {
     | '/my-customers'
     | '/admin/assignment'
     | '/admin/audit'
+    | '/admin/closure-reasons'
     | '/admin/import'
     | '/admin/reports'
     | '/admin/users'
@@ -141,6 +152,7 @@ export interface FileRouteTypes {
     | '/my-customers'
     | '/admin/assignment'
     | '/admin/audit'
+    | '/admin/closure-reasons'
     | '/admin/import'
     | '/admin/reports'
     | '/admin/users'
@@ -154,6 +166,7 @@ export interface RootRouteChildren {
   MyCustomersRoute: typeof MyCustomersRoute
   AdminAssignmentRoute: typeof AdminAssignmentRoute
   AdminAuditRoute: typeof AdminAuditRoute
+  AdminClosureReasonsRoute: typeof AdminClosureReasonsRoute
   AdminImportRoute: typeof AdminImportRoute
   AdminReportsRoute: typeof AdminReportsRoute
   AdminUsersRoute: typeof AdminUsersRoute
@@ -204,6 +217,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AdminAuditRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/admin/closure-reasons': {
+      id: '/admin/closure-reasons'
+      path: '/admin/closure-reasons'
+      fullPath: '/admin/closure-reasons'
+      preLoaderRoute: typeof AdminClosureReasonsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/admin/import': {
       id: '/admin/import'
       path: '/admin/import'
@@ -242,6 +262,7 @@ const rootRouteChildren: RootRouteChildren = {
   MyCustomersRoute: MyCustomersRoute,
   AdminAssignmentRoute: AdminAssignmentRoute,
   AdminAuditRoute: AdminAuditRoute,
+  AdminClosureReasonsRoute: AdminClosureReasonsRoute,
   AdminImportRoute: AdminImportRoute,
   AdminReportsRoute: AdminReportsRoute,
   AdminUsersRoute: AdminUsersRoute,

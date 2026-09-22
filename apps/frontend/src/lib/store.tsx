@@ -60,6 +60,10 @@ type Ctx = {
   /** #119: returns the raw Result (rather than toasting) so the Add user form can show a
    *  duplicate-email 409 inline instead of losing what was typed. */
   createUser: (input: UserDraft) => Promise<Result<User>>;
+  /** #120: same Result-returning shape as createUser/createAssignmentRule, so the Closure
+   *  Reasons screen can show a duplicate-label 409 inline. */
+  createClosureReason: (label: string) => Promise<Result<ClosureReason>>;
+  updateClosureReason: (id: string, patch: { label?: string; active?: boolean }) => Promise<Result<ClosureReason>>;
   toggleRule: (id: string) => Promise<boolean>;
   /** Up/down reordering via `swapRuleOrder`: two version-checked PATCHes sent one after the other.
    *  On failure it toasts and resyncs rules + assignment version from the server. */
@@ -305,6 +309,18 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     return { ok: true, data: created };
   };
 
+  const createClosureReason: Ctx["createClosureReason"] = async (label) => {
+    const result = await services.createClosureReason(label);
+    if (result.ok) setClosureReasons((prev) => [...prev, result.data]);
+    return result;
+  };
+
+  const updateClosureReason: Ctx["updateClosureReason"] = async (id, patch) => {
+    const result = await services.updateClosureReason(id, patch);
+    if (result.ok) setClosureReasons((prev) => prev.map((item) => (item.id === id ? result.data : item)));
+    return result;
+  };
+
   const toggleRule: Ctx["toggleRule"] = async (id) => {
     const target = rules.find((item) => item.id === id);
     if (!target) return false;
@@ -412,6 +428,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         toggleUserActive,
         resetUserPassword,
         createUser,
+        createClosureReason,
+        updateClosureReason,
         toggleRule,
         moveRule,
         createAssignmentRule,

@@ -74,6 +74,25 @@ describe("real-HTTP Admin journey", () => {
     expect(users.ok && users.data.filter((u) => u.email === "dup@example.test")).toHaveLength(1);
   });
 
+  // #120: closure reasons have list/create/deactivate/reactivate endpoints but (until now) no
+  // screen -- the admin.closure-reasons route calls exactly these.
+  it("lists, deactivates and reactivates closure reasons", async () => {
+    const created = await admin.createClosureReason("Wrong contact");
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+    expect(created.data.active).toBe(true);
+
+    const listed = await admin.listClosureReasons();
+    expect(listed.ok).toBe(true);
+    expect(listed.ok && listed.data.some((r) => r.id === created.data.id && r.label === "Wrong contact")).toBe(true);
+
+    const deactivated = await admin.updateClosureReason(created.data.id, { active: false });
+    expect(deactivated.ok && deactivated.data.active).toBe(false);
+
+    const reactivated = await admin.updateClosureReason(created.data.id, { active: true });
+    expect(reactivated.ok && reactivated.data.active).toBe(true);
+  });
+
   it("imports a workbook, reimports the same submission idempotently, and rejects a changed reupload", async () => {
     const xlsx = await import("./fixtures/customers-workbook");
     const file = xlsx.buildWorkbookFile("customers.xlsx", [{ bcn: "700001", customer_name: "Reef Logistics", phone: "555-0900" }]);

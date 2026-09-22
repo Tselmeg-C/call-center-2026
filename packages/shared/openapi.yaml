@@ -91,14 +91,14 @@ paths:
     parameters: [ { $ref: '#/components/parameters/Bcn' } ]
     post:
       operationId: closeCustomer
-      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/LifecycleRequest' } } } }
-      responses: { '200': { description: Closed }, '401': { $ref: '#/components/responses/Unauthenticated' }, '409': { $ref: '#/components/responses/Conflict' }, '422': { $ref: '#/components/responses/Validation' } }
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/CloseRequest' } } } }
+      responses: { '200': { description: Closed }, '401': { $ref: '#/components/responses/Unauthenticated' }, '404': { $ref: '#/components/responses/NotFound' }, '409': { $ref: '#/components/responses/Conflict' }, '422': { $ref: '#/components/responses/Validation' } }
   /customers/{bcn}/reopen:
     parameters: [ { $ref: '#/components/parameters/Bcn' } ]
     post:
       operationId: reopenCustomer
-      requestBody: { required: false, content: { application/json: { schema: { $ref: '#/components/schemas/MutationMeta' } } } }
-      responses: { '200': { description: Reopened }, '401': { $ref: '#/components/responses/Unauthenticated' }, '409': { $ref: '#/components/responses/Conflict' } }
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ReopenRequest' } } } }
+      responses: { '200': { description: Reopened }, '401': { $ref: '#/components/responses/Unauthenticated' }, '404': { $ref: '#/components/responses/NotFound' }, '409': { $ref: '#/components/responses/Conflict' }, '422': { $ref: '#/components/responses/Validation' } }
   /admin/users:
     get:
       operationId: listUsers
@@ -125,7 +125,7 @@ paths:
   /admin/closure-reasons/{id}:
     patch: { operationId: updateClosureReason, parameters: [{ name: id, in: path, required: true, schema: { type: string } }], requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ReasonUpdate' } } } }, responses: { '200': { description: Updated }, '403': { $ref: '#/components/responses/Forbidden' }, '409': { $ref: '#/components/responses/Conflict' }, '422': { $ref: '#/components/responses/Validation' } } }
   /admin/imports:
-    post: { operationId: importWorkbook, requestBody: { required: true, content: { multipart/form-data: { schema: { $ref: '#/components/schemas/WorkbookUpload' } } } }, responses: { '200': { description: Job result, content: { application/json: { schema: { $ref: '#/components/schemas/ImportResult' } } } }, '403': { $ref: '#/components/responses/Forbidden' }, '409': { $ref: '#/components/responses/Conflict' }, '413': { description: Too large }, '415': { description: Unsupported format }, '422': { $ref: '#/components/responses/Validation' } } }
+    post: { operationId: importWorkbook, parameters: [{ name: submission_id, in: query, required: true, schema: { $ref: '#/components/schemas/SubmissionId' } }], requestBody: { required: true, content: { multipart/form-data: { schema: { $ref: '#/components/schemas/WorkbookUpload' } } } }, responses: { '201': { description: Job result, content: { application/json: { schema: { $ref: '#/components/schemas/ImportResult' } } } }, '403': { $ref: '#/components/responses/Forbidden' }, '409': { $ref: '#/components/responses/Conflict' }, '413': { description: Too large }, '415': { description: Unsupported format }, '422': { $ref: '#/components/responses/Validation' } } }
   /admin/assignment-rules:
     get: { operationId: listAssignmentRules, responses: { '200': { description: Rules ordered by `order`, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/AssignmentRule' } } } } }, '401': { $ref: '#/components/responses/Unauthenticated' }, '403': { $ref: '#/components/responses/Forbidden' } } }
     post: { operationId: createAssignmentRule, description: 'Appends the rule (order = rule count + 1) and bumps the assignment version. 409 duplicate name (case-insensitive, after trimming); 422 also for an invalid condition or when memberIds is empty or names a user that is not an active Sales user.', requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/AssignmentRuleRequest' } } } }, responses: { '201': { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/AssignmentRule' } } } }, '401': { $ref: '#/components/responses/Unauthenticated' }, '403': { $ref: '#/components/responses/Forbidden' }, '409': { $ref: '#/components/responses/Conflict' }, '422': { $ref: '#/components/responses/Validation' } } }
@@ -135,10 +135,18 @@ paths:
     get: { operationId: listAssignmentRulesLegacy, deprecated: true, description: Alias of GET /admin/assignment-rules. There is no POST on this path., responses: { '200': { description: Rules, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/AssignmentRule' } } } } }, '401': { $ref: '#/components/responses/Unauthenticated' }, '403': { $ref: '#/components/responses/Forbidden' } } }
   /admin/assignments/run:
     post: { operationId: runAssignments, requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/AssignmentRunRequest' } } } }, responses: { '200': { description: Run result, content: { application/json: { schema: { $ref: '#/components/schemas/AssignmentRunResult' } } } }, '403': { $ref: '#/components/responses/Forbidden' }, '409': { $ref: '#/components/responses/Conflict' }, '422': { $ref: '#/components/responses/Validation' } } }
+  /admin/assignments/manual/{bcn}:
+    parameters: [ { $ref: '#/components/parameters/Bcn' } ]
+    post: { operationId: assignCustomer, description: 'Sets (or, with ownerId null, releases) a customer''s owner. 422 when ownerId names a user who is not an active Sales user; 409 when submissionId is reused with a different payload or expectedVersion no longer matches.', requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ManualAssignmentRequest' } } } }, responses: { '200': { description: Assigned, content: { application/json: { schema: { $ref: '#/components/schemas/Customer' } } } }, '401': { $ref: '#/components/responses/Unauthenticated' }, '403': { $ref: '#/components/responses/Forbidden' }, '404': { $ref: '#/components/responses/NotFound' }, '409': { $ref: '#/components/responses/Conflict' }, '422': { $ref: '#/components/responses/Validation' } } }
+  /admin/assignment-fallback:
+    get: { operationId: getAssignmentFallback, description: Sales user ids assigned when no rule matches., responses: { '200': { description: Fallback members, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/Id120' } } } } }, '401': { $ref: '#/components/responses/Unauthenticated' }, '403': { $ref: '#/components/responses/Forbidden' } } }
+    put: { operationId: setAssignmentFallback, description: Replaces the fallback list and bumps the assignment version. 422 when a member is not an active Sales user., requestBody: { required: true, content: { application/json: { schema: { type: array, maxItems: 100, items: { $ref: '#/components/schemas/Id120' } } } } }, responses: { '200': { description: Fallback members, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/Id120' } } } } }, '401': { $ref: '#/components/responses/Unauthenticated' }, '403': { $ref: '#/components/responses/Forbidden' }, '422': { $ref: '#/components/responses/Validation' } } }
   /admin/reports:
     get: { operationId: reports, parameters: [{ name: start, in: query, schema: { type: string, format: date } }, { name: end, in: query, schema: { type: string, format: date } }], responses: { '200': { description: Report, content: { application/json: { schema: { $ref: '#/components/schemas/ReportData' } } } }, '403': { $ref: '#/components/responses/Forbidden' }, '422': { $ref: '#/components/responses/Validation' } } }
   /admin/audit:
     get: { operationId: audit, parameters: [{ name: actor, in: query, schema: { type: string } }, { name: action, in: query, schema: { type: string } }, { name: bcn, in: query, schema: { type: string } }, { $ref: '#/components/parameters/Page' }, { $ref: '#/components/parameters/PageSize' }], responses: { '200': { description: Audit events, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/AuditEvent' } } } } }, '403': { $ref: '#/components/responses/Forbidden' } } }
+  /operator/provision:
+    post: { operationId: operatorProvision, description: 'One-time bootstrap of the initial Admin, gated by the X-Operator-Secret header (checked against OPERATOR_PROVISION_SECRET) rather than a session; hidden from FastAPI''s own /openapi.json (include_in_schema=False) but real. 401 for a missing/wrong secret; 409 once any user already exists.', security: [], parameters: [{ name: X-Operator-Secret, in: header, required: false, schema: { type: string }, description: Compared against the server''s OPERATOR_PROVISION_SECRET; a missing header always 401s. }], requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/Provision' } } } }, responses: { '200': { description: Provisioned, content: { application/json: { schema: { $ref: '#/components/schemas/User' } } } }, '401': { description: Missing or wrong operator secret, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }, '409': { $ref: '#/components/responses/Conflict' }, '422': { $ref: '#/components/responses/Validation' } } }
 components:
   securitySchemes:
     sessionCookie: { type: apiKey, in: cookie, name: call_center_session, description: Opaque HttpOnly SameSite=Lax cookie; Secure outside localhost; absolute eight-hour expiry. }
@@ -155,8 +163,12 @@ components:
     Validation: { description: 'Validation error. A body that fails schema validation returns exactly {"detail": "Invalid request."} (no field names or echoed input); checks inside a handler return their own message, e.g. {"detail": "Rule must have at least one eligible member."}.', content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
   schemas:
     User: { type: object, required: [id, name, role], properties: { id: { type: string }, name: { type: string }, email: { type: string, format: email }, role: { type: string, enum: [Admin, Sales] }, active: { type: boolean } }, additionalProperties: false }
-    LoginRequest: { type: object, required: [email, password], properties: { email: { type: string, format: email }, password: { type: string, writeOnly: true } }, additionalProperties: false }
-    MutationMeta: { type: object, required: [submissionId], properties: { submissionId: { type: string, minLength: 1 }, expectedVersion: { type: string } }, additionalProperties: false }
+    LoginRequest: { type: object, required: [email, password], properties: { email: { type: string, minLength: 3, maxLength: 254, description: 'No format rule (deliberately -- #91): any existing account must still be able to sign in.' }, password: { type: string, minLength: 12, maxLength: 128, writeOnly: true } }, additionalProperties: false }
+    # Kept for reference (expectedVersion fixed to integer per #92); every write endpoint below
+    # inlines its own flattened request schema instead of allOf-combining with this one, because
+    # additionalProperties: false on one allOf branch rejects properties declared only by a
+    # sibling branch -- the same reason #85 flattened InteractionRequest.
+    MutationMeta: { type: object, required: [submissionId], properties: { submissionId: { $ref: '#/components/schemas/SubmissionId' }, expectedVersion: { type: integer, minimum: 0, maximum: 2147483647 } }, additionalProperties: false }
     Customer: { type: object, required: [bcn, name, status], properties: { bcn: { type: string }, name: { type: string }, ownerId: { type: [string, 'null'] }, ownerName: { type: [string, 'null'] }, status: { type: string, enum: [Open, Closed] }, phones: { type: array, items: { type: string } }, source: { type: object, additionalProperties: true }, version: { type: integer }, histories: { type: array, items: { $ref: '#/components/schemas/History' } }, followUps: { type: array, items: { $ref: '#/components/schemas/FollowUp' } } }, additionalProperties: false }
     CustomerDetail: { allOf: [{ $ref: '#/components/schemas/Customer' }, { type: object, properties: { histories: { type: array, items: { $ref: '#/components/schemas/History' } } } }] }
     CustomerPage: { type: object, required: [items, page, page_size, total], properties: { items: { type: array, items: { $ref: '#/components/schemas/Customer' } }, page: { type: integer }, page_size: { type: integer }, total: { type: integer } }, additionalProperties: false }
@@ -165,16 +177,18 @@ components:
     # kind needs (e.g. Assignment carries oldOwner/newOwner instead of text).
     History: { type: object, required: [kind], properties: { id: { type: string }, kind: { type: string }, actor: { type: string }, actorId: { type: string }, timestamp: { type: string, format: date-time }, text: { type: [string, 'null'] }, outcome: { type: [string, 'null'] }, deleted: { type: boolean }, deletedBy: { type: string }, deletedAt: { type: string, format: date-time }, reasonId: { type: string }, reason: { type: string }, oldOwner: { type: [string, 'null'] }, newOwner: { type: [string, 'null'] } }, additionalProperties: true }
     InteractionRequest: { type: object, required: [outcome, submissionId], properties: { outcome: { type: string, enum: [Attempt, Contact] }, note: { type: [string, 'null'], maxLength: 4000 }, submissionId: { $ref: '#/components/schemas/SubmissionId' } }, additionalProperties: false }
-    NoteRequest: { allOf: [{ $ref: '#/components/schemas/MutationMeta' }, { type: object, required: [text], properties: { text: { type: string, minLength: 1, maxLength: 4000 } }, additionalProperties: false }] }
-    LifecycleRequest: { allOf: [{ $ref: '#/components/schemas/MutationMeta' }, { type: object, required: [reasonId], properties: { reasonId: { type: string } }, additionalProperties: false }] }
+    NoteRequest: { type: object, required: [text, submissionId], properties: { text: { type: string, minLength: 1, maxLength: 4000, description: Trimmed before validation and storage; whitespace-only is rejected. }, submissionId: { $ref: '#/components/schemas/SubmissionId' } }, additionalProperties: false }
+    CloseRequest: { type: object, required: [reasonId, submissionId], properties: { reasonId: { $ref: '#/components/schemas/Id120' }, submissionId: { $ref: '#/components/schemas/SubmissionId' } }, additionalProperties: false }
+    ReopenRequest: { type: object, required: [submissionId], properties: { submissionId: { $ref: '#/components/schemas/SubmissionId' } }, additionalProperties: false }
     SubmissionId: { type: string, minLength: 1, maxLength: 120, pattern: '\S', description: Idempotency key; at least one non-whitespace character. }
+    Id120: { type: string, minLength: 1, maxLength: 120, description: PostgreSQL String(120) id column (user, rule, closure-reason). }
     FollowUpRequest:
       type: object
       required: [type, note, submissionId]
       properties:
         type: { type: string, enum: [Appointment, Reminder] }
         due: { type: [string, 'null'], description: 'YYYY-MM-DD or an ISO-8601 date-time with an offset (Z or ±hh:mm), between 2000-01-01 and now + 5 years (UTC). Required (non-null) when type is Appointment; a Reminder with due null is the UI''s "Follow-up needed (no date)".' }
-        note: { type: string, minLength: 1, maxLength: 4000, description: Trimmed before validation and storage; whitespace-only is rejected. }
+        note: { type: string, minLength: 1, maxLength: 4000, pattern: '\S', description: Trimmed before validation and storage; whitespace-only is rejected. }
         submissionId: { $ref: '#/components/schemas/SubmissionId' }
       additionalProperties: false
       if: { properties: { type: { const: Appointment } } }
@@ -183,13 +197,17 @@ components:
     CompletionRequest: { $ref: '#/components/schemas/InteractionRequest' }
     # actor is absent on follow-ups read back from PostgreSQL; version/updatedAt appear after an edit, cancel or completion; interactionId after completion.
     FollowUp: { type: object, required: [id, bcn, type, due, note, status, actorId, createdAt], properties: { id: { type: string }, bcn: { type: string }, type: { type: string, enum: [Appointment, Reminder] }, due: { type: [string, 'null'] }, note: { type: [string, 'null'] }, status: { type: string, enum: [Open, Completed, Cancelled] }, actor: { type: string }, actorId: { type: string }, interactionId: { type: [string, 'null'] }, version: { type: integer }, createdAt: { type: string, format: date-time }, updatedAt: { type: string, format: date-time } }, additionalProperties: false }
-    AdminUserRequest: { type: object, required: [name, email, role], properties: { name: { type: string, minLength: 1, maxLength: 120 }, email: { type: string, format: email, maxLength: 254 }, role: { type: string, enum: [Admin, Sales] }, initialPassword: { type: string, writeOnly: true } }, additionalProperties: false }
-    UserUpdate: { type: object, properties: { name: { type: string }, role: { type: string, enum: [Admin, Sales] }, active: { type: boolean } }, additionalProperties: false }
+    # Trimmed, then 1-120 chars; email is casefolded/trimmed, ASCII, 3-254 chars, exactly one '@'
+    # with non-empty text on both sides (not RFC email format -- no format keyword, same reason as LoginRequest).
+    AdminUserRequest: { type: object, required: [name, email, password], properties: { name: { type: string, minLength: 1, maxLength: 120 }, email: { type: string, minLength: 3, maxLength: 254 }, role: { type: string, enum: [Admin, Sales], default: Sales }, password: { type: string, minLength: 12, maxLength: 128, writeOnly: true } }, additionalProperties: false }
+    UserUpdate: { type: object, minProperties: 1, description: Every field is optional but none may be null, and at least one field is required., properties: { name: { type: string, minLength: 1, maxLength: 120 }, role: { type: string, enum: [Admin, Sales] }, active: { type: boolean } }, additionalProperties: false }
     PasswordResetRequest: { type: object, required: [password], properties: { password: { type: string, minLength: 12, maxLength: 128, writeOnly: true } }, additionalProperties: false }
     ClosureReason: { type: object, required: [id, label, active], properties: { id: { type: string }, label: { type: string }, active: { type: boolean } }, additionalProperties: false }
     LabelRequest: { type: object, required: [label], properties: { label: { type: string, minLength: 1, maxLength: 120 } }, additionalProperties: false }
-    ReasonUpdate: { type: object, properties: { label: { type: string }, active: { type: boolean } }, additionalProperties: false }
-    WorkbookUpload: { type: object, required: [file, submissionId], properties: { file: { type: string, format: binary }, submissionId: { type: string } }, additionalProperties: false }
+    ReasonUpdate: { type: object, minProperties: 1, description: Every field is optional but none may be null, and at least one field is required., properties: { label: { type: string, minLength: 1, maxLength: 120 }, active: { type: boolean } }, additionalProperties: false }
+    WorkbookUpload: { type: object, required: [file], properties: { file: { type: string, format: binary, description: Must end in .xlsx (case-insensitive); filename at most 255 characters; workbook at most 10MB (413 if larger). } }, additionalProperties: false }
+    Provision: { type: object, required: [name, email, password], properties: { name: { type: string, minLength: 1, maxLength: 120 }, email: { type: string, minLength: 3, maxLength: 254 }, role: { type: string, enum: [Admin, Sales], default: Admin }, password: { type: string, minLength: 12, maxLength: 128, writeOnly: true } }, additionalProperties: false }
+    ManualAssignmentRequest: { type: object, required: [ownerId, submissionId], properties: { ownerId: { type: [string, 'null'], minLength: 1, maxLength: 120, description: Active Sales user id, or null to release ownership. }, submissionId: { $ref: '#/components/schemas/SubmissionId' }, expectedVersion: { type: integer, minimum: 0, maximum: 2147483647, description: 'Optimistic concurrency: a mismatch with the customer''s current version returns 409.' } }, additionalProperties: false }
     ImportResult: { type: object, required: [jobId, filename, status, processed, created, updated, errorRows], properties: { jobId: { type: string }, filename: { type: string }, status: { type: string, enum: [Completed, Partial, Rejected] }, processed: { type: integer }, created: { type: integer }, updated: { type: integer }, errorRows: { type: integer }, errors: { type: array, items: { type: object, required: [row, field, reason], properties: { row: { type: integer }, field: { type: string }, reason: { type: string } } } } }, additionalProperties: false }
     RuleCondition:
       type: object
@@ -206,7 +224,7 @@ components:
       type: object
       required: [name, memberIds]
       properties:
-        name: { type: string, minLength: 1, maxLength: 120, description: Trimmed; unique case-insensitively. }
+        name: { type: string, minLength: 1, maxLength: 120, pattern: '\S', description: Trimmed; unique case-insensitively. }
         conditions: { type: array, maxItems: 50, items: { $ref: '#/components/schemas/RuleCondition' }, default: [] }
         memberIds: { $ref: '#/components/schemas/RuleMemberIds' }
         active: { type: boolean, default: true }
@@ -216,14 +234,14 @@ components:
       minProperties: 1
       description: Every field is optional but none may be null, and at least one field other than `version` is required. Omitting `version` skips the stale check.
       properties:
-        name: { type: string, minLength: 1, maxLength: 120, description: Trimmed; unique case-insensitively. }
+        name: { type: string, minLength: 1, maxLength: 120, pattern: '\S', description: Trimmed; unique case-insensitively. }
         conditions: { type: array, maxItems: 50, items: { $ref: '#/components/schemas/RuleCondition' } }
         memberIds: { $ref: '#/components/schemas/RuleMemberIds' }
         active: { type: boolean }
         order: { type: integer, minimum: 1, maximum: 1000000 }
         version: { type: integer, description: 'Current value of GET /admin/assignment-version; a mismatch (including 0 or negative) returns 409.' }
       additionalProperties: false
-    AssignmentRunRequest: { allOf: [{ $ref: '#/components/schemas/MutationMeta' }, { type: object, required: [scope], properties: { scope: { type: string, enum: [unassigned, all, selected] }, selectedBcns: { type: array, items: { type: string } }, expectedVersion: { type: integer } } }] }
+    AssignmentRunRequest: { type: object, required: [submissionId], properties: { scope: { type: string, enum: [unassigned, all-open], default: unassigned }, submissionId: { $ref: '#/components/schemas/SubmissionId' } }, additionalProperties: false }
     AssignmentRunResult: { type: object, required: [scanned, assigned, reassigned, unchanged, skipped, results], properties: { scanned: { type: integer }, assigned: { type: integer }, reassigned: { type: integer }, unchanged: { type: integer }, skipped: { type: integer }, results: { type: array, items: { type: object } } }, additionalProperties: false }
     ReportData: { type: object, required: [owners, daily, closureReasons, followUps], properties: { owners: { type: array, items: { type: object } }, daily: { type: array, items: { type: object } }, closureReasons: { type: array, items: { type: object } }, followUps: { type: object } }, additionalProperties: false }
     AuditEvent: { type: object, required: [id, actor, actorId, action, target, timestamp, details], properties: { id: { type: string }, actor: { type: string }, actorId: { type: string }, action: { type: string }, target: { type: string }, timestamp: { type: string, format: date-time }, details: { type: object, additionalProperties: true } }, additionalProperties: false }

@@ -27,6 +27,7 @@ from .db_customers import CustomerDatabase
 from .db_assignment import AssignmentDatabase
 from . import assignment_rules
 from .db_activity import ActivityDatabase
+from .db_login_throttle import LoginThrottleStore
 from observability import otel_setup
 from sqlalchemy import inspect
 from sqlalchemy.exc import IntegrityError
@@ -51,7 +52,7 @@ app.add_middleware(CORSMiddleware, allow_origins=ALLOWED_ORIGINS, allow_credenti
 password_hash = PasswordHash.recommended()
 LOGIN_DUMMY_HASH = password_hash.hash(token_urlsafe(32))  # #63: built once at load; same Argon2 params as stored hashes
 SESSION_SECONDS = 8 * 60 * 60
-ALEMBIC_HEAD = "029_assignment_conditions"
+ALEMBIC_HEAD = "030_login_failure_events"
 # The image's commit SHA, baked in at `docker build --build-arg GIT_SHA=...` (see
 # apps/api/Dockerfile and .github/workflows/ci.yml) -- lets a deployed version be
 # identified (#27) without shell access, via the x-app-version response header on every
@@ -235,6 +236,8 @@ auth_db = AuthDatabase(_db_url, create_schema=False) if storage_mode == "postgre
 customer_db = CustomerDatabase(_db_url, create_schema=False) if storage_mode == "postgres" else None
 assignment_db = AssignmentDatabase(_db_url, create_schema=False) if storage_mode == "postgres" else None
 activity_db = ActivityDatabase(_db_url, create_schema=False) if storage_mode == "postgres" else None
+# #70: shared across replicas in postgres mode; memory mode keeps repo.login_failures* as-is.
+login_throttle_db = LoginThrottleStore(_db_url, create_schema=False) if storage_mode == "postgres" else None
 if storage_mode == "postgres":
     # Persistent mode must never let the demonstration fixture shadow database state after restart.
     repo.customers.clear(); repo.followups.clear(); repo.interactions.clear(); repo.notes.clear(); repo.imports.clear(); repo.rules.clear(); repo.assignment_runs.clear()
@@ -463,8 +466,9 @@ LOGIN_FAILURE_WINDOW = timedelta(minutes=15)
 
 
 def _prune_stale_login_failures(now: datetime) -> None:
-    """Evict every key whose failures have all aged out of the window, at write time -- not just
-    filtered when that particular key is next read. Without this, an attacker (or just distinct
+    """Memory mode only (#70: postgres mode prunes at write time in LoginThrottleStore.record_failure
+    instead). Evict every key whose failures have all aged out of the window, at write time -- not
+    just filtered when that particular key is next read. Without this, an attacker (or just distinct
     real users) touching a new key once each -- a different email, a different source IP -- would
     leave it in repo.login_failures / repo.login_failures_by_ip forever, growing both dicts
     without bound."""
@@ -499,16 +503,19 @@ def current_user(session: Annotated[str | None, Cookie(alias="call_center_sessio
 
 @app.post("/session/login", response_model=User)
 def login(body: Login, request: Request, response: Response) -> User:
-    now = utcnow(); ip = client_ip(request); key = (safe_email(body.email), ip)
-    recent = [stamp for stamp in repo.login_failures.get(key, []) if now - stamp < LOGIN_FAILURE_WINDOW]
-    ip_recent = [stamp for stamp in repo.login_failures_by_ip.get(ip, []) if now - stamp < LOGIN_FAILURE_WINDOW]
-    if len(ip_recent) >= 50 or len(recent) >= 5:
+    now = utcnow(); ip = client_ip(request); email = safe_email(body.email); key = (email, ip)
+    if login_throttle_db is not None:
+        recent_count, ip_recent_count = login_throttle_db.counts(email, ip, now, LOGIN_FAILURE_WINDOW)
+    else:
+        recent_count = len([stamp for stamp in repo.login_failures.get(key, []) if now - stamp < LOGIN_FAILURE_WINDOW])
+        ip_recent_count = len([stamp for stamp in repo.login_failures_by_ip.get(ip, []) if now - stamp < LOGIN_FAILURE_WINDOW])
+    if ip_recent_count >= 50 or recent_count >= 5:
         raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "Too many sign-in attempts.", headers={"Retry-After": "900"})
     if auth_db is not None:
-        record = auth_db.user_by_email(safe_email(body.email))
+        record = auth_db.user_by_email(email)
         active, stored = (record.active, record.password_hash) if record else (False, None)
     else:
-        record = next((u for u in repo.users.values() if u["email"] == safe_email(body.email)), None)
+        record = next((u for u in repo.users.values() if u["email"] == email), None)
         active, stored = (record["active"], record["password"]) if record else (False, None)
     # #63: every attempt past the throttle runs exactly one verify() of the same Argon2 cost, so response
     # time can't reveal whether an account exists or is active. Unknown emails and unparseable stored
@@ -516,12 +523,15 @@ def login(body: Login, request: Request, response: Response) -> User:
     if not isinstance(stored, str) or not any(hasher.identify(stored) for hasher in password_hash.hashers):
         stored, active = None, False
     if not password_hash.verify(body.password, stored or LOGIN_DUMMY_HASH) or not active:
-        _prune_stale_login_failures(now)
-        repo.login_failures[key] = recent + [now]
-        repo.login_failures_by_ip[ip] = ip_recent + [now]
+        if login_throttle_db is not None:
+            login_throttle_db.record_failure(email, ip, now, LOGIN_FAILURE_WINDOW)
+        else:
+            _prune_stale_login_failures(now)
+            repo.login_failures[key] = [stamp for stamp in repo.login_failures.get(key, []) if now - stamp < LOGIN_FAILURE_WINDOW] + [now]
+            repo.login_failures_by_ip[ip] = [stamp for stamp in repo.login_failures_by_ip.get(ip, []) if now - stamp < LOGIN_FAILURE_WINDOW] + [now]
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Unable to sign in.")
     if auth_db is not None:
-        repo.login_failures.pop(key, None)
+        (login_throttle_db.clear(email, ip) if login_throttle_db is not None else repo.login_failures.pop(key, None))
         token, expires = auth_db.issue(record.id, SESSION_SECONDS); response.set_cookie("call_center_session", token, httponly=True, samesite="lax", secure=request.url.hostname not in {"localhost", "127.0.0.1"}, path="/", max_age=SESSION_SECONDS); return User(id=record.id, name=record.name, email=record.email, role=record.role, active=record.active)
     repo.login_failures.pop(key, None)
     token = token_urlsafe(32); repo.sessions[token] = (record["id"], utcnow() + timedelta(seconds=SESSION_SECONDS))

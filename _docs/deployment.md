@@ -4,7 +4,7 @@ The API exposes `/health/live` for process liveness and `/health/ready` for read
 
 For local development, run the frontend with `npm run dev -- --port 4174` and the API with `apps/api/start.sh` on port 8000. The Vite proxy maps frontend `/api` requests to the API.
 
-The development process starts with `apps/api/start.sh`; in PostgreSQL mode it runs `alembic upgrade head` before launching `uvicorn`, and a failed migration stops startup. The script rejects `WEB_CONCURRENCY` values other than `1` while failed-login counters are process-local. `/health/live` has no database dependency, while `/health/ready` verifies connectivity and the migrated `users` table. A failed migration or readiness check must prevent traffic promotion.
+The development process starts with `apps/api/start.sh`; in PostgreSQL mode it runs `alembic upgrade head` before launching `uvicorn`, and a failed migration stops startup. In `CALL_CENTER_STORAGE=memory` mode (or unset), the script rejects `WEB_CONCURRENCY` values other than `1` while failed-login counters are process-local; `CALL_CENTER_STORAGE=postgres` mode has no such restriction, since those counters live in a shared Postgres table (see the login-throttle section below). `/health/live` has no database dependency, while `/health/ready` verifies connectivity and the migrated `users` table. A failed migration or readiness check must prevent traffic promotion.
 
 Use `npm run benchmark:api` for the safe synthetic query benchmark. Logs and smoke evidence must contain request IDs, status, timings, and safe counts only; never include cookies, connection strings, workbook contents, notes, or credentials.
 
@@ -202,7 +202,8 @@ railway add -s api --image ghcr.io/tselmeg-c/call-center-2026-api:latest
 railway add -s frontend --image ghcr.io/tselmeg-c/call-center-2026-frontend:latest
 railway service source connect --image ghcr.io/tselmeg-c/call-center-2026-api:latest --service api
 railway service source connect --image ghcr.io/tselmeg-c/call-center-2026-frontend:latest --service frontend
-railway scale ams=1 --service api   # exactly one replica -- required, see below
+railway scale ams=1 --service api   # one replica; no longer required for throttle correctness under
+                                     # CALL_CENTER_STORAGE=postgres (which `development` runs), see below
 ```
 
 (`railway scale` with no region args, as the CLI's own `--help` describes, errored on the
@@ -216,7 +217,7 @@ it contradicts that help text.)
 | `api` | `CALL_CENTER_STORAGE` | literal `postgres` |
 | `api` | `DATABASE_URL` | Railway reference `${{Postgres.DATABASE_URL}}` |
 | `api` | `PORT` | literal `8000` |
-| `api` | `WEB_CONCURRENCY` | literal `1` (required -- see login throttle below) |
+| `api` | `WEB_CONCURRENCY` | literal `1` (not required for throttle correctness under `CALL_CENTER_STORAGE=postgres` -- see login throttle below; the guard in `apps/api/start.sh` only enforces this in memory mode) |
 | `api` | `FRONTEND_ORIGIN` | Railway reference `${{frontend.RAILWAY_PUBLIC_DOMAIN}}` (as `https://...`) -- set; exact-origin CORS against the frontend domain is confirmed live |
 | `api` | `OPERATOR_PROVISION_SECRET` | operator-only bootstrap secret, required by `POST /operator/provision` -- see Bootstrapping below (value not recorded here, see Credentials) |
 | `api` | `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_HEADERS`, `OTEL_SERVICE_NAME`, `OTEL_RESOURCE_ATTRIBUTES` | set on `development` (endpoint `https://otlp-gateway-<region>.grafana.net/otlp`, header `Authorization=Basic <base64(instanceID:token)>`, `call-center-api`, `deployment.environment=development`, matching the Railway environment name) -- see OpenTelemetry above |
@@ -333,10 +334,18 @@ A missing, empty, or too-short (fewer than `TRUSTED_PROXY_HOPS` comma-separated 
 `request.client.host` (`"unknown"` if even that is unavailable) rather than raising or silently
 trusting a client-controlled value.
 
-This is pinned to exactly one API replica in one region (`railway scale ams=1`) because these
-counters are held in Python process memory (`repo.login_failures*`), not a shared store --
-`apps/api/start.sh` already refuses to boot with `WEB_CONCURRENCY != 1` for the same reason, and a
-second replica would silently halve each counter's effectiveness.
+**This single-replica/single-region pin (`railway scale ams=1`) only applies to
+`CALL_CENTER_STORAGE=memory`** (local/dev use): in that mode these counters are held in Python
+process memory (`repo.login_failures*`), not a shared store -- `apps/api/start.sh` refuses to boot
+with `WEB_CONCURRENCY != 1` in memory mode for the same reason, since a second replica would
+silently halve each counter's effectiveness.
+
+`CALL_CENTER_STORAGE=postgres` deployments -- which is what Railway's `development` environment
+already runs (see the `api` service's `CALL_CENTER_STORAGE=postgres` env var row above) -- have no
+such restriction: failed-login counters live in the shared `login_failure_events` Postgres table
+(#70), enforced via a sliding-window `COUNT(*)` query and pruned of stale rows at write time, so
+any number of replicas in any number of regions see and enforce the same 5/email+IP and 50/IP,
+15-minute limits.
 
 ### Bootstrapping the first Admin account (Postgres-backed deployments)
 

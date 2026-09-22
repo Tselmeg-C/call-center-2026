@@ -26,6 +26,7 @@ from sqlalchemy.orm import Session
 
 from .. import main, db_auth
 from ..db_auth import AuthDatabase, SessionRow, UserRow, digest, StorageError
+from ..db_login_throttle import LoginThrottleStore
 
 ORIGIN = {"origin": "http://localhost:3000"}
 
@@ -2251,3 +2252,43 @@ def test_database_rule_order_ties_break_by_id(backend, request, tmp_path, monkey
     finally:
         for database in (auth, customers, assignments): database.engine.dispose()
         main.repo.reset()
+
+
+def test_postgres_login_throttle_enforced_across_independent_store_instances(postgres_url):
+    """#70: login_failure_events is a shared Postgres table, not process memory -- two independent
+    LoginThrottleStore instances (separate engines, simulating two separate API replica processes
+    with no shared memory) must see each other's writes. Covers both limits: 5/email+IP and 50/IP,
+    each split across the two instances, plus write-time stale-row pruning (no cron job)."""
+    migrate()
+    store_a = LoginThrottleStore(postgres_url, create_schema=False)
+    store_b = LoginThrottleStore(postgres_url, create_schema=False)
+    try:
+        now = main.utcnow()
+        email, ip = "throttle-cross-process@example.test", "203.0.113.10"
+        for _ in range(3): store_a.record_failure(email, ip, now, main.LOGIN_FAILURE_WINDOW)
+        for _ in range(2): store_b.record_failure(email, ip, now, main.LOGIN_FAILURE_WINDOW)
+        email_ip_a, _ = store_a.counts(email, ip, now, main.LOGIN_FAILURE_WINDOW)
+        email_ip_b, _ = store_b.counts(email, ip, now, main.LOGIN_FAILURE_WINDOW)
+        assert email_ip_a == email_ip_b == 5  # the 5th failure, checked from either instance, hits the limit
+
+        # 50/IP limit, split across the same two instances -- distinct email per attempt so only the
+        # by-IP count (not any single email+IP count) crosses its threshold.
+        spray_ip = "203.0.113.20"
+        for n in range(30): store_a.record_failure(f"spray-{n}@example.test", spray_ip, now, main.LOGIN_FAILURE_WINDOW)
+        for n in range(30, 50): store_b.record_failure(f"spray-{n}@example.test", spray_ip, now, main.LOGIN_FAILURE_WINDOW)
+        _, ip_count_a = store_a.counts("unseen@example.test", spray_ip, now, main.LOGIN_FAILURE_WINDOW)
+        _, ip_count_b = store_b.counts("unseen@example.test", spray_ip, now, main.LOGIN_FAILURE_WINDOW)
+        assert ip_count_a == ip_count_b == 50
+
+        # Stale rows are deleted at write time (no scheduled job): a row written directly (bypassing
+        # the store) 20 minutes ago -- outside the 15-minute window -- is gone after any instance's
+        # next record_failure, even though that write is for a completely different key.
+        stale_ip = "203.0.113.99"
+        with store_a.engine.begin() as connection:
+            connection.execute(text("INSERT INTO login_failure_events (email, ip, occurred_at) VALUES (:e, :i, now() - interval '20 minutes')"), {"e": "stale@example.test", "i": stale_ip})
+        store_b.record_failure("trigger-prune@example.test", "203.0.113.30", main.utcnow(), main.LOGIN_FAILURE_WINDOW)
+        with store_a.engine.begin() as connection:
+            remaining = connection.execute(text("SELECT count(*) FROM login_failure_events WHERE ip = :i"), {"i": stale_ip}).scalar()
+        assert remaining == 0
+    finally:
+        store_a.engine.dispose(); store_b.engine.dispose()

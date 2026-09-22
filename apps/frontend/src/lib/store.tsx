@@ -9,6 +9,7 @@ import type {
   Customer as ServiceCustomer,
   Result,
   Services,
+  UserDraft,
 } from "@/services/types";
 import {
   fromFollowUpType,
@@ -56,6 +57,9 @@ type Ctx = {
   runAssignment: () => Promise<{ assigned: number }>;
   toggleUserActive: (id: string) => Promise<boolean>;
   resetUserPassword: (id: string, password: string) => Promise<boolean>;
+  /** #119: returns the raw Result (rather than toasting) so the Add user form can show a
+   *  duplicate-email 409 inline instead of losing what was typed. */
+  createUser: (input: UserDraft) => Promise<Result<User>>;
   toggleRule: (id: string) => Promise<boolean>;
   /** Up/down reordering via `swapRuleOrder`: two version-checked PATCHes sent one after the other.
    *  On failure it toasts and resyncs rules + assignment version from the server. */
@@ -293,6 +297,14 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     return true;
   };
 
+  const createUser: Ctx["createUser"] = async (input) => {
+    const result = await services.createUser(input);
+    if (!result.ok) return result;
+    const created = toUser(result.data);
+    setUsers((prev) => [...prev, created]);
+    return { ok: true, data: created };
+  };
+
   const toggleRule: Ctx["toggleRule"] = async (id) => {
     const target = rules.find((item) => item.id === id);
     if (!target) return false;
@@ -399,6 +411,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         runAssignment,
         toggleUserActive,
         resetUserPassword,
+        createUser,
         toggleRule,
         moveRule,
         createAssignmentRule,

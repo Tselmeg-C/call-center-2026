@@ -631,6 +631,35 @@ def test_shared_operator_provision_bootstraps_first_admin_only(adapter, monkeypa
         assert again.status_code == 409
 
 
+def test_shared_operator_recover_works_after_admin_already_exists(adapter, monkeypatch, caplog):
+    # #73: unlike /operator/provision (refuses once any user exists), /operator/recover must work
+    # over HTTP even after an Admin already exists and the provision bootstrap slot is spent --
+    # exactly #27's locked `development` deployment state this issue targets -- and must do so
+    # against a real Postgres-backed deployment, not just memory mode. Gated by a time-boxed,
+    # email-scoped token (main.recovery_token), not a bare user id.
+    recovery_secret = secrets.token_urlsafe(24)
+    monkeypatch.setenv("OPERATOR_RECOVERY_SECRET", recovery_secret)
+    user, old_secret = provision("locked-admin@example.test")
+    new_secret = secrets.token_urlsafe(24)
+    with TestClient(main.app, base_url="http://localhost") as client:
+        assert sign_in(client, user.email, old_secret).status_code == 200
+
+        with caplog.at_level("INFO"):
+            wrong = client.post("/operator/recover", headers={**ORIGIN, "x-operator-recovery-token": "9999999999.wrong"}, json={"email": user.email, "password": new_secret})
+            assert wrong.status_code == 401 and recovery_secret not in wrong.text
+
+            token = main.recovery_token(user.email, 60)
+            recovered = client.post("/operator/recover", headers={**ORIGIN, "x-operator-recovery-token": token}, json={"email": user.email, "password": new_secret})
+            assert recovered.status_code == 200 and "password" not in recovered.json()
+
+        assert sign_in(client, user.email, new_secret).status_code == 200
+        assert sign_in(client, user.email, old_secret).status_code == 401
+        # /operator/provision's first-bootstrap flow is unaffected: still refuses once any user exists.
+        still_refuses = client.post("/operator/provision", headers=ORIGIN, json={"name": "Second", "email": "second@example.test", "role": "Admin", "password": secrets.token_urlsafe(24)})
+        assert still_refuses.status_code == 401  # no OPERATOR_PROVISION_SECRET configured in this test
+    assert recovery_secret not in caplog.text and token not in caplog.text and new_secret not in caplog.text
+
+
 def test_shared_password_boundaries_and_transport(adapter, caplog):
     for length in (12, 128):
         secret = " " + secrets.token_hex(100)[:length - 3] + "界 "

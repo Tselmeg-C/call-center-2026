@@ -970,6 +970,18 @@ def test_operator_provision_nul_in_name_or_email_rejected_before_secret_and_stat
         client.close()
 
 
+def test_operator_reset_password_nul_in_password_rejected_and_stores_nothing(env):
+    client = TestClient(main.app, base_url="http://localhost")
+    try:
+        before = stored_state(env)
+        response = client.post(f"/operator/reset-password/{env.sales_id}", json={"password": f"{NUL}{PASSWORD}"}, headers=ORIGIN)
+        assert_nul_rejected(response)
+        assert stored_state(env) == before
+        assert env.sales.get("/session/me").status_code == 200  # session not revoked, password unchanged
+    finally:
+        client.close()
+
+
 def test_admin_user_create_nul_in_name_or_email_creates_no_user(env):
     send = lambda body: env.admin.post("/admin/users", json=body, headers=ORIGIN)
     base = draft()

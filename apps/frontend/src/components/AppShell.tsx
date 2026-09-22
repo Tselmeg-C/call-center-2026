@@ -7,6 +7,7 @@ import {
   LogOut,
   PhoneCall,
   ScrollText,
+  Tag,
   Upload,
   Users,
   Workflow,
@@ -23,6 +24,7 @@ const salesNav = [
 
 const adminNav = [
   { to: "/admin/users", label: "Users & Roles", icon: Users },
+  { to: "/admin/closure-reasons", label: "Closure Reasons", icon: Tag },
   { to: "/admin/import", label: "Excel Import", icon: Upload },
   { to: "/admin/assignment", label: "Assignment", icon: Workflow },
   { to: "/admin/reports", label: "Reporting", icon: BarChart3 },

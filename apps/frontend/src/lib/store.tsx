@@ -9,6 +9,7 @@ import type {
   Customer as ServiceCustomer,
   Result,
   Services,
+  UserDraft,
 } from "@/services/types";
 import {
   fromFollowUpType,
@@ -56,6 +57,13 @@ type Ctx = {
   runAssignment: () => Promise<{ assigned: number }>;
   toggleUserActive: (id: string) => Promise<boolean>;
   resetUserPassword: (id: string, password: string) => Promise<boolean>;
+  /** #119: returns the raw Result (rather than toasting) so the Add user form can show a
+   *  duplicate-email 409 inline instead of losing what was typed. */
+  createUser: (input: UserDraft) => Promise<Result<User>>;
+  /** #120: same Result-returning shape as createUser/createAssignmentRule, so the Closure
+   *  Reasons screen can show a duplicate-label 409 inline. */
+  createClosureReason: (label: string) => Promise<Result<ClosureReason>>;
+  updateClosureReason: (id: string, patch: { label?: string; active?: boolean }) => Promise<Result<ClosureReason>>;
   toggleRule: (id: string) => Promise<boolean>;
   /** Up/down reordering via `swapRuleOrder`: two version-checked PATCHes sent one after the other.
    *  On failure it toasts and resyncs rules + assignment version from the server. */
@@ -79,16 +87,25 @@ export type RuleSwapOutcome =
 /** Swaps two rules' order. The backend compare-and-swaps the shared assignment version on every
  *  PATCH (+1 per success), so the two PATCHes must run sequentially, each with the version the
  *  previous one produced -- concurrent ones race and 409. On any failure (a half-applied swap
- *  included) the rules and version are refetched so the caller can match server state. */
+ *  included) the rules and version are refetched so the caller can match server state.
+ *
+ *  #116: when current and neighbor already share the same `order` (post-#103, ties break by id),
+ *  swapping the two equal values back is a no-op -- Move up/down would appear to do nothing. In
+ *  that case, bump whichever one should end up further down so the pair gets distinct orders and
+ *  actually changes position; a distinct-order pair still gets the plain swap as before. */
 export async function swapRuleOrder(
   services: Pick<Services, "updateAssignmentRule" | "listAssignmentRules" | "getAssignmentVersion">,
   current: AssignmentRule,
   neighbor: AssignmentRule,
   version: number,
+  direction: "up" | "down",
 ): Promise<RuleSwapOutcome> {
-  const first = await services.updateAssignmentRule(current.id, { order: neighbor.order, version });
+  const tied = current.order === neighbor.order;
+  const currentOrder = tied ? (direction === "down" ? current.order + 1 : current.order) : neighbor.order;
+  const neighborOrder = tied ? (direction === "up" ? neighbor.order + 1 : neighbor.order) : current.order;
+  const first = await services.updateAssignmentRule(current.id, { order: currentOrder, version });
   if (first.ok) {
-    const second = await services.updateAssignmentRule(neighbor.id, { order: current.order, version: version + 1 });
+    const second = await services.updateAssignmentRule(neighbor.id, { order: neighborOrder, version: version + 1 });
     if (second.ok) return { ok: true, updated: [first.data, second.data], version: version + 2 };
     return resync(services, second.error.message);
   }
@@ -284,6 +301,26 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     return true;
   };
 
+  const createUser: Ctx["createUser"] = async (input) => {
+    const result = await services.createUser(input);
+    if (!result.ok) return result;
+    const created = toUser(result.data);
+    setUsers((prev) => [...prev, created]);
+    return { ok: true, data: created };
+  };
+
+  const createClosureReason: Ctx["createClosureReason"] = async (label) => {
+    const result = await services.createClosureReason(label);
+    if (result.ok) setClosureReasons((prev) => [...prev, result.data]);
+    return result;
+  };
+
+  const updateClosureReason: Ctx["updateClosureReason"] = async (id, patch) => {
+    const result = await services.updateClosureReason(id, patch);
+    if (result.ok) setClosureReasons((prev) => prev.map((item) => (item.id === id ? result.data : item)));
+    return result;
+  };
+
   const toggleRule: Ctx["toggleRule"] = async (id) => {
     const target = rules.find((item) => item.id === id);
     if (!target) return false;
@@ -304,7 +341,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     if (index < 0 || swapIndex < 0 || swapIndex >= sorted.length) return false;
     const current = sorted[index]!;
     const neighbor = sorted[swapIndex]!;
-    const outcome = await swapRuleOrder(services, current, neighbor, assignmentVersion.current);
+    const outcome = await swapRuleOrder(services, current, neighbor, assignmentVersion.current, direction);
     if (!outcome.ok) {
       reportError(outcome.message);
       if (outcome.rules) setRules(outcome.rules);
@@ -390,6 +427,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         runAssignment,
         toggleUserActive,
         resetUserPassword,
+        createUser,
+        createClosureReason,
+        updateClosureReason,
         toggleRule,
         moveRule,
         createAssignmentRule,

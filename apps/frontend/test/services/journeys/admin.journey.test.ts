@@ -62,6 +62,37 @@ describe("real-HTTP Admin journey", () => {
     expect(secondSales.ok).toBe(true);
   });
 
+  // #119: the Admin "Add user" form calls this same createUser path; a normalized-email collision
+  // must come back as a 409 "conflict" the form can show inline, not a generic failure.
+  it("rejects a duplicate normalized email on user creation with a conflict, and leaves the earlier user unaffected", async () => {
+    const first = await admin.createUser({ name: "Dup One", email: "dup@example.test", role: "Sales", password: "synthetic-only-dup-one" });
+    expect(first.ok).toBe(true);
+    const duplicate = await admin.createUser({ name: "Dup Two", email: "DUP@example.test", role: "Sales", password: "synthetic-only-dup-two" });
+    expect(duplicate.ok).toBe(false);
+    expect(!duplicate.ok && duplicate.error.code).toBe("conflict");
+    const users = await admin.listUsers();
+    expect(users.ok && users.data.filter((u) => u.email === "dup@example.test")).toHaveLength(1);
+  });
+
+  // #120: closure reasons have list/create/deactivate/reactivate endpoints but (until now) no
+  // screen -- the admin.closure-reasons route calls exactly these.
+  it("lists, deactivates and reactivates closure reasons", async () => {
+    const created = await admin.createClosureReason("Wrong contact");
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+    expect(created.data.active).toBe(true);
+
+    const listed = await admin.listClosureReasons();
+    expect(listed.ok).toBe(true);
+    expect(listed.ok && listed.data.some((r) => r.id === created.data.id && r.label === "Wrong contact")).toBe(true);
+
+    const deactivated = await admin.updateClosureReason(created.data.id, { active: false });
+    expect(deactivated.ok && deactivated.data.active).toBe(false);
+
+    const reactivated = await admin.updateClosureReason(created.data.id, { active: true });
+    expect(reactivated.ok && reactivated.data.active).toBe(true);
+  });
+
   it("imports a workbook, reimports the same submission idempotently, and rejects a changed reupload", async () => {
     const xlsx = await import("./fixtures/customers-workbook");
     const file = xlsx.buildWorkbookFile("customers.xlsx", [{ bcn: "700001", customer_name: "Reef Logistics", phone: "555-0900" }]);

@@ -2,9 +2,8 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
   Outlet,
   Link,
-  Navigate,
   createRootRouteWithContext,
-  useLocation,
+  useMatches,
   useRouter,
 } from "@tanstack/react-router";
 import { useEffect, type ReactNode } from "react";
@@ -115,22 +114,55 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
   errorComponent: ErrorComponent,
 });
 
+/** #121: which route, if any, a given session/location combination must be redirected to.
+ *  Pure and exported so it's directly testable without rendering -- a signed-out visitor away
+ *  from /login always goes to /login, a signed-in visitor sitting on /login is bounced to /,
+ *  everything else stays put. */
+export function authRedirectTarget(signedIn: boolean, onLoginRoute: boolean): "/login" | "/" | null {
+  if (!signedIn) return onLoginRoute ? null : "/login";
+  return onLoginRoute ? "/" : null;
+}
+
 /** Gate everything behind session state from the service layer (see _docs/authentication.md):
- *  signed out visitors only ever see /login, and a signed-in visitor is bounced away from it. */
+ *  signed out visitors only ever see /login, and a signed-in visitor is bounced away from it.
+ *
+ *  #121: this used to render a declarative `<Navigate>` for the redirect. That leaves the app on
+ *  a blank page after sign-out (and after any 401 that flips the session to null mid-tab, see
+ *  services/http.ts) -- rendering `<Navigate>` unmounts the authenticated view immediately, but
+ *  its own effect-driven navigation doesn't reliably follow through. Driving the same redirect
+ *  explicitly via `router.navigate` here -- the one place every unauthenticated state (sign-out,
+ *  session expiry, a revoked session) already funnels through -- fixes it at the root instead of
+ *  in each caller, and also means Back into a now-stale authenticated URL re-triggers this same
+ *  effect rather than re-rendering cached authenticated content.
+ *
+ *  `onLoginRoute` is read from `useMatches()` rather than `useLocation().pathname`. The router
+ *  commits a navigation's URL (what useLocation reads) and its resolved route matches (what
+ *  <Outlet/> renders) as two separate stores, so a render can observe the new pathname a tick
+ *  before <Outlet/> has swapped away from the previous, still-authenticated route match. Reading
+ *  onLoginRoute from the same matches store Outlet itself renders from keeps this decision and
+ *  Outlet's content always in lockstep, so the StoreProvider wrapper never drops out from under
+ *  a still-mounted authenticated route component (which otherwise throws "useStore must be used
+ *  inside StoreProvider", caught by the router's own boundary and immediately recovered from on
+ *  the next render -- harmless in practice, but console noise on every sign-out). */
 function AuthGate({ children }: { children: ReactNode }) {
   const { user, loading } = useSession();
-  const location = useLocation();
-  const onLoginRoute = location.pathname === "/login";
+  const matches = useMatches();
+  const router = useRouter();
+  const onLoginRoute = matches.some((match) => match.routeId === "/login");
+  const redirectTo = loading ? null : authRedirectTarget(!!user, onLoginRoute);
 
-  if (loading) {
+  useEffect(() => {
+    if (redirectTo) void router.navigate({ to: redirectTo, replace: true });
+  }, [redirectTo, router]);
+
+  if (loading || redirectTo) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-background text-sm text-muted-foreground">
-        Loading…
+        {loading ? "Loading…" : null}
       </div>
     );
   }
-  if (!user) return onLoginRoute ? <>{children}</> : <Navigate to="/login" />;
-  if (onLoginRoute) return <Navigate to="/" />;
+  if (!user) return <>{children}</>;
   return (
     <StoreProvider>
       <AppShell>{children}</AppShell>

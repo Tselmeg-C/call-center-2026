@@ -104,4 +104,22 @@ describe("http services", () => {
     const result = await services.logout();
     expect(result).toEqual({ ok: true, data: null });
   });
+
+  // #121: a session that expires or is revoked while the tab is open (no sign-out click involved)
+  // must still flip the shared session state to null, the same way an explicit logout does --
+  // otherwise AuthGate never learns the session is gone and the tab is stuck. Every authenticated
+  // request routes through this one `request()` helper, so a 401 there is the single place to
+  // catch it.
+  it("flips the subscribed session to null on any 401, not just an explicit logout", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ detail: "Sign in to continue." }, 401));
+    vi.stubGlobal("fetch", fetchMock);
+    const services = createHttpServices();
+    const seen: (unknown | null)[] = [];
+    services.subscribeSession((user) => seen.push(user));
+    await new Promise((resolve) => setTimeout(resolve, 0)); // let subscribeSession's own /session/me settle
+
+    const result = await services.getCustomer("000123");
+    expect(result.ok).toBe(false);
+    expect(seen[seen.length - 1]).toBeNull();
+  });
 });

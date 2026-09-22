@@ -97,6 +97,12 @@ export function createHttpServices(config: HttpServicesConfig = {}): Services {
     }
     if (!response.ok) {
       const [code, fallbackMessage] = mapError(response.status);
+      // #121: a 401 on any authenticated call means the session is gone server-side (expired or
+      // revoked -- e.g. an admin password reset elsewhere), not just that this one request failed.
+      // Flip the shared session state here, at the one place every request routes through, so
+      // AuthGate reacts the same way it does for an explicit sign-out instead of just leaving a
+      // failed call for the caller to toast while the page quietly stays on a dead session.
+      if (response.status === 401) sessionListener(null);
       // FastAPI's HTTPException(status, "some message") always serializes as {"detail": "some
       // message"}; surfacing it (when present) lets callers distinguish e.g. a 409 "name already
       // in use" from a 409 stale-version conflict, which share a status code but need different

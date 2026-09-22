@@ -2,7 +2,6 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
   Outlet,
   Link,
-  Navigate,
   createRootRouteWithContext,
   useLocation,
   useRouter,
@@ -115,22 +114,45 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
   errorComponent: ErrorComponent,
 });
 
+/** #121: which route, if any, a given session/location combination must be redirected to.
+ *  Pure and exported so it's directly testable without rendering -- a signed-out visitor away
+ *  from /login always goes to /login, a signed-in visitor sitting on /login is bounced to /,
+ *  everything else stays put. */
+export function authRedirectTarget(signedIn: boolean, onLoginRoute: boolean): "/login" | "/" | null {
+  if (!signedIn) return onLoginRoute ? null : "/login";
+  return onLoginRoute ? "/" : null;
+}
+
 /** Gate everything behind session state from the service layer (see _docs/authentication.md):
- *  signed out visitors only ever see /login, and a signed-in visitor is bounced away from it. */
+ *  signed out visitors only ever see /login, and a signed-in visitor is bounced away from it.
+ *
+ *  #121: this used to render a declarative `<Navigate>` for the redirect. That leaves the app on
+ *  a blank page after sign-out (and after any 401 that flips the session to null mid-tab, see
+ *  services/http.ts) -- rendering `<Navigate>` unmounts the authenticated view immediately, but
+ *  its own effect-driven navigation doesn't reliably follow through. Driving the same redirect
+ *  explicitly via `router.navigate` here -- the one place every unauthenticated state (sign-out,
+ *  session expiry, a revoked session) already funnels through -- fixes it at the root instead of
+ *  in each caller, and also means Back into a now-stale authenticated URL re-triggers this same
+ *  effect rather than re-rendering cached authenticated content. */
 function AuthGate({ children }: { children: ReactNode }) {
   const { user, loading } = useSession();
   const location = useLocation();
+  const router = useRouter();
   const onLoginRoute = location.pathname === "/login";
+  const redirectTo = loading ? null : authRedirectTarget(!!user, onLoginRoute);
 
-  if (loading) {
+  useEffect(() => {
+    if (redirectTo) void router.navigate({ to: redirectTo, replace: true });
+  }, [redirectTo, router]);
+
+  if (loading || redirectTo) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-background text-sm text-muted-foreground">
-        Loading…
+        {loading ? "Loading…" : null}
       </div>
     );
   }
-  if (!user) return onLoginRoute ? <>{children}</> : <Navigate to="/login" />;
-  if (onLoginRoute) return <Navigate to="/" />;
+  if (!user) return <>{children}</>;
   return (
     <StoreProvider>
       <AppShell>{children}</AppShell>

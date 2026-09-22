@@ -18,6 +18,7 @@ from fastapi import Body, Cookie, Depends, FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from starlette.routing import Match
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, StrictBool, StrictInt, StrictStr, StringConstraints, field_validator, model_validator
 from pwdlib import PasswordHash
 from .storage import mode, database_url
@@ -341,10 +342,28 @@ def collection_import_values(headers: list[str], values: tuple[object, ...]) -> 
     return result
 
 
+# The log line's `route` must be the route *template* (`/customers/{bcn}`), never the concrete
+# path: a concrete path puts customer BCNs in the logs and gives route-level aggregation unbounded
+# cardinality. Starlette only writes `scope["route"]` while dispatching, i.e. during `call_next`,
+# so reading it at middleware entry (the bug QA found on #27, commit e6afab2's intent never taking
+# effect) always fell through to `request.url.path`. After `call_next` it is there; for this
+# middleware's own early returns -- which answer *before* routing has happened -- we ask the router
+# the same question it would have asked, via `Route.matches`. Unmatched paths (404s) keep the raw
+# path, which is the only thing there is to log.
+def route_template(request: Request) -> str:
+    route = request.scope.get("route")
+    if route is not None: return getattr(route, "path", request.url.path)
+    partial = None
+    for candidate in request.app.routes:
+        match, _ = candidate.matches(request.scope)
+        if match is Match.FULL: return getattr(candidate, "path", request.url.path)
+        if match is Match.PARTIAL and partial is None: partial = candidate  # path matched, method didn't (405)
+    return getattr(partial, "path", request.url.path) if partial is not None else request.url.path
+
+
 @app.middleware("http")
 async def origin_guard(request: Request, call_next):
     started = perf_counter()
-    route = getattr(request.scope.get("route"), "path", request.url.path)
     candidate = request.headers.get("x-request-id", "")
     request_id = candidate if re.fullmatch(r"[A-Za-z0-9._-]{1,128}", candidate) else str(uuid4())
     otel_setup.annotate_request_id(request_id)
@@ -352,7 +371,7 @@ async def origin_guard(request: Request, call_next):
         try: content_length = int(request.headers.get("content-length", "0"))
         except ValueError: content_length = 0
         if content_length > 11 * 1024 * 1024:
-            logger.warning("request id=%s method=%s route=%s status=413 duration_ms=%.3f error=upload_limit", request_id, request.method, route, (perf_counter() - started) * 1000, extra={"request_id": request_id})
+            logger.warning("request id=%s method=%s route=%s status=413 duration_ms=%.3f error=upload_limit", request_id, request.method, route_template(request), (perf_counter() - started) * 1000, extra={"request_id": request_id})
             return Response("Upload is too large.", status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, headers={"x-request-id": request_id}, media_type="application/json")
     # /session/login is deliberately exempt, not a gap (checked live for #27): this guard exists
     # to stop CSRF -- an already-authenticated session cookie being replayed cross-site to mutate
@@ -365,12 +384,12 @@ async def origin_guard(request: Request, call_next):
         origin = request.headers.get("origin")
         referer = request.headers.get("referer", "")
         if origin not in set(ALLOWED_ORIGINS) and not any(referer.startswith(value + "/") for value in ALLOWED_ORIGINS):
-            logger.warning("request id=%s method=%s route=%s status=403 duration_ms=%.3f error=origin", request_id, request.method, route, (perf_counter() - started) * 1000, extra={"request_id": request_id})
+            logger.warning("request id=%s method=%s route=%s status=403 duration_ms=%.3f error=origin", request_id, request.method, route_template(request), (perf_counter() - started) * 1000, extra={"request_id": request_id})
             return Response("Origin not allowed.", status_code=403, headers={"x-request-id": request_id}, media_type="application/json")
     response = await call_next(request)
     response.headers["x-request-id"] = request_id
     response.headers["x-app-version"] = APP_VERSION
-    logger.info("request id=%s method=%s route=%s status=%s duration_ms=%.3f error=%s", request_id, request.method, route, response.status_code, (perf_counter() - started) * 1000, "none" if response.status_code < 400 else "http_error", extra={"request_id": request_id})
+    logger.info("request id=%s method=%s route=%s status=%s duration_ms=%.3f error=%s", request_id, request.method, route_template(request), response.status_code, (perf_counter() - started) * 1000, "none" if response.status_code < 400 else "http_error", extra={"request_id": request_id})
     return response
 
 

@@ -117,19 +117,28 @@ class Login(BaseModel):
 SubmissionId = Annotated[StrictStr, StringConstraints(min_length=1, max_length=120, pattern=r"\S")]
 # #68: user, rule and closure-reason ids are String(120) columns.
 Id120 = Annotated[StrictStr, StringConstraints(min_length=1, max_length=120)]
+# #112: ASCII C0 controls other than tab/LF/CR, plus DEL -- rejected in free-text fields (name,
+# label, note, text). NUL (U+0000) is #109's separate concern (not handled here); full Unicode Cc
+# (which also covers C1 controls \x80-\x9F) is out of scope per the issue.
+CONTROL_CHARS = re.compile(r"[\x01-\x08\x0B\x0C\x0E-\x1F\x7F]")
+
+def reject_control_chars(value: str) -> str:
+    if CONTROL_CHARS.search(value): raise ValueError("control character not allowed")
+    return value
+
 # Trimmed, then 1-120 chars (String(120) columns): rule names, closure-reason labels and user names.
-RuleName = Annotated[StrictStr, StringConstraints(strip_whitespace=True, min_length=1, max_length=120)]
+RuleName = Annotated[StrictStr, StringConstraints(strip_whitespace=True, min_length=1, max_length=120), AfterValidator(reject_control_chars)]
 DATE_ONLY = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
 
 class InteractionCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
     outcome: Literal["Attempt", "Contact"]
-    note: StrictStr | None = Field(default=None, max_length=4000)
+    note: Annotated[StrictStr, StringConstraints(max_length=4000), AfterValidator(reject_control_chars)] | None = None
     submissionId: SubmissionId
 
 class NoteCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    text: Annotated[StrictStr, StringConstraints(strip_whitespace=True, min_length=1, max_length=4000)]
+    text: Annotated[StrictStr, StringConstraints(strip_whitespace=True, min_length=1, max_length=4000), AfterValidator(reject_control_chars)]
     submissionId: SubmissionId
 
 def due_instant(value: str) -> datetime:
@@ -151,7 +160,7 @@ class FollowUpCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
     type: Literal["Appointment", "Reminder"]
     due: StrictStr | None = None
-    note: Annotated[StrictStr, StringConstraints(strip_whitespace=True, min_length=1, max_length=4000)]
+    note: Annotated[StrictStr, StringConstraints(strip_whitespace=True, min_length=1, max_length=4000), AfterValidator(reject_control_chars)]
     submissionId: SubmissionId
 
     @field_validator("due")

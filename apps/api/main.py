@@ -1177,7 +1177,7 @@ def list_import_results(page: int = Query(1, ge=1), page_size: int = Query(25, g
 
 @app.get("/admin/assignment-rules")
 def list_assignment_rules(_: Annotated[User, Depends(admin_user)]) -> list[dict]:
-    return repo.rules
+    return sorted(repo.rules, key=lambda item: (item["order"], item["id"]))  # ties by id, plain string compare, like ORDER BY position, id (#103)
 
 def _validate_rule_members(member_ids: list[str]) -> list[str]:
     valid = {item["id"] for item in repo.users.values() if item["role"] == "Sales" and item["active"]}
@@ -1191,7 +1191,7 @@ def create_assignment_rule(body: AssignmentRuleDraft, _: Annotated[User, Depends
     try: conditions = assignment_rules.validate_conditions(body.conditions)
     except assignment_rules.ConditionError as exc: raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
     member_ids = _validate_rule_members(body.memberIds)
-    rule = {"id": f"rule-{len(repo.rules)+1}", "name": body.name.strip(), "conditions": conditions, "memberIds": member_ids, "active": body.active, "order": len(repo.rules)+1}; repo.rules.append(rule); repo.assignment_version += 1
+    rule = {"id": f"rule-{len(repo.rules)+1}", "name": body.name.strip(), "conditions": conditions, "memberIds": member_ids, "active": body.active, "order": len(repo.rules)+1}; repo.rules.append(rule); repo.rules.sort(key=lambda item: (item["order"], item["id"])); repo.assignment_version += 1
     if assignment_db is not None:
         assignment_db.create_rule(rule_id=rule["id"], name=rule["name"], position=rule["order"], actor_id=_.id, conditions=conditions, member_ids=member_ids)
         assignment_db.set_setting("assignment_version", {"value": repo.assignment_version})
@@ -1219,14 +1219,14 @@ def update_assignment_rule(rule_id: str, body: AssignmentRulePatch, _: Annotated
         except ValueError as exc: raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
         if stored is None: raise HTTPException(status.HTTP_404_NOT_FOUND, "Rule not found.")
         rule.update(name=stored.name, active=stored.active, order=stored.position, conditions=stored.conditions or [], memberIds=member_ids if member_ids is not None else rule["memberIds"])
-        repo.rules.sort(key=lambda item: item["order"])
+        repo.rules.sort(key=lambda item: (item["order"], item["id"]))
         repo.assignment_version = expected_version + 1
         return rule
     for key in ("name", "active", "order"):
         if key in patch: rule[key] = patch[key]
     if conditions is not None: rule["conditions"] = conditions
     if member_ids is not None: rule["memberIds"] = member_ids
-    repo.rules.sort(key=lambda item: item["order"]); repo.assignment_version += 1
+    repo.rules.sort(key=lambda item: (item["order"], item["id"])); repo.assignment_version += 1
     return rule
 
 @app.get("/admin/assignment-fallback")
@@ -1276,7 +1276,7 @@ def run_assignment(body: AssignmentRunRequest, _: Annotated[User, Depends(admin_
     counts = dict.fromkeys(active_sales, 0)
     for row in repo.customers.values():
         if row.get("status") == "Open" and row.get("ownerId") in counts: counts[row["ownerId"]] += 1
-    rule_specs = [{"id": rule["id"], "name": rule["name"], "conditions": rule.get("conditions", []), "member_ids": rule.get("memberIds", [])} for rule in sorted(repo.rules, key=lambda item: item["order"]) if rule["active"]]
+    rule_specs = [{"id": rule["id"], "name": rule["name"], "conditions": rule.get("conditions", []), "member_ids": rule.get("memberIds", [])} for rule in sorted(repo.rules, key=lambda item: (item["order"], item["id"])) if rule["active"]]
     assigned = 0
     for row in sorted(candidates, key=lambda item: item["bcn"]):
         owner, _reason = assignment_rules.resolve_owner(lambda field, row=row: row.get(field), rule_specs, repo.fallback_sales, active_sales, counts)

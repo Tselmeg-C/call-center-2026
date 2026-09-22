@@ -21,7 +21,9 @@
     "test:pinned-actions": "sh .github/workflows/test-pinned-actions.sh"
   },
   "devDependencies": {
+    "@playwright/test": "^1.63.0",
     "railway": "^3.11.0",
+    "tsx": "^4.23.15",
     "typescript": "5.8.3"
   }
 }

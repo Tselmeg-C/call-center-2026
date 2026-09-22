@@ -19,3 +19,9 @@ next-env.d.ts
 # Local environment files
 .env*
 *.log
+
+# test accounts
+.test_accounts
+
+# demo recordings
+demo/output/

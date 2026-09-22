@@ -217,6 +217,33 @@ function toRange(condition: RuleCondition): Range | null {
 const rangesDisjoint = (a: Range, b: Range) =>
   a.hi < b.lo || b.hi < a.lo || (a.hi === b.lo && !(a.hiInc && b.loInc)) || (b.hi === a.lo && !(b.hiInc && a.loInc));
 
+// -- Precision gap (#71 QA, fixed in #102) -------------------------------------------------------
+// The backend compares numbers with Decimal and folds text case with casefold; JS `Number` and
+// `toLowerCase` are both slightly less precise. For #71's "may overlap" that only hid a warning;
+// for #102's "never assigns"/"contradicts" claims it would produce a false positive, so a numeric
+// value with too many significant digits, or a `contains` comparison touching a non-ASCII
+// character, is never allowed to prove disjointness, implication or contradiction.
+const MAX_SAFE_SIGNIFICANT_DIGITS = 15;
+
+/** Counts a decimal string's significant digits (leading/insignificant zeros stripped). */
+function significantDigitCount(raw: string): number {
+  const s = raw.trim().replace(/^[+-]/, "");
+  const [intPart = "", fracPart = ""] = s.split(".");
+  const trimmedInt = intPart.replace(/^0+/, "");
+  const trimmedFrac = trimmedInt ? fracPart : fracPart.replace(/^0+/, "");
+  return (trimmedInt + trimmedFrac).length;
+}
+
+const isAscii = (s: string) => [...s].every((ch) => ch.codePointAt(0)! <= 0x7f);
+
+/** True when a numeric condition carries a value JS `Number` can't represent as precisely as the
+ *  backend's `Decimal`. */
+function hasUnsafeNumeric(condition: RuleCondition): boolean {
+  if (fieldKind(condition.field) !== "numeric") return false;
+  const values = Array.isArray(condition.value) ? condition.value : [condition.value];
+  return values.some((v) => v !== null && v !== undefined && significantDigitCount(String(v)) > MAX_SAFE_SIGNIFICANT_DIGITS);
+}
+
 /** True when no single customer value can satisfy both conditions (same field assumed). */
 export function conditionsDisjoint(a: RuleCondition, b: RuleCondition): boolean {
   const aNull = a.operator === "is-null";
@@ -236,10 +263,15 @@ export function conditionsDisjoint(a: RuleCondition, b: RuleCondition): boolean 
     const [values, other] = setA ? [setA, b] : setB ? [setB, a] : [null, null];
     if (!values || !other) return false; // contains/!= against contains/!= -- can't prove disjoint
     if (other.operator === "!=") return values.every((item) => item === other.value);
-    if (other.operator === "contains") return values.every((item) => !item.toLowerCase().includes(String(other.value).toLowerCase()));
+    if (other.operator === "contains") {
+      const needle = String(other.value);
+      if (!isAscii(needle) || !values.every(isAscii)) return false; // casefold precision gap -- unprovable
+      return values.every((item) => !item.toLowerCase().includes(needle.toLowerCase()));
+    }
     return false;
   }
   // numeric / date
+  if (kind === "numeric" && (hasUnsafeNumeric(a) || hasUnsafeNumeric(b))) return false;
   const [rangeA, rangeB] = [toRange(a), toRange(b)];
   if (rangeA && rangeB) return rangesDisjoint(rangeA, rangeB);
   const [point, other] = a.operator === "!=" ? [rangeB, a] : b.operator === "!=" ? [rangeA, b] : [null, null];
@@ -257,6 +289,100 @@ export function rulesMayOverlap(a: RuleCondition[], b: RuleCondition[]): boolean
 export function sortByPriority<T extends Pick<AssignmentRule, "id" | "order">>(rules: readonly T[]): T[] {
   return rules.slice().sort((a, b) => a.order - b.order || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
 }
+
+// -- Unreachable-rule detection (#102) --------------------------------------------------------
+// A rule can never assign anyone when an earlier active rule already catches every customer it
+// would match ("covers" it), or its own conditions contradict each other. This is the opposite
+// bias from #71's overlap check: anything not provably true counts as "not implied"/"does not
+// cover", because claiming "never assigns" when it's actually possible is a false positive (worse
+// than #71's false-negative "may overlap" miss).
+// ponytail: single-condition proofs only, per #102's scope -- combining several conditions of one
+// rule (range merging) or several earlier rules to jointly cover a later one is a follow-up.
+function textImplies(b: RuleCondition, a: RuleCondition): boolean {
+  const enumerated = (c: RuleCondition): string[] | null =>
+    c.operator === "=" ? [String(c.value)] : c.operator === "in" && Array.isArray(c.value) ? c.value.map(String) : null;
+
+  const satisfiesA = (item: string): boolean => {
+    if (a.operator === "=") return item === String(a.value);
+    if (a.operator === "!=") return item !== String(a.value);
+    if (a.operator === "in" && Array.isArray(a.value)) return a.value.map(String).includes(item);
+    if (a.operator === "contains") {
+      const needle = String(a.value);
+      if (!isAscii(item) || !isAscii(needle)) return false; // casefold precision gap -- unprovable
+      return item.toLowerCase().includes(needle.toLowerCase());
+    }
+    return false;
+  };
+
+  const listB = enumerated(b);
+  if (listB) return listB.length > 0 && listB.every(satisfiesA);
+  if (b.operator === "!=" && a.operator === "!=") return String(b.value) === String(a.value);
+  if (b.operator === "contains" && a.operator === "contains") {
+    const bVal = String(b.value);
+    const aVal = String(a.value);
+    if (!isAscii(bVal) || !isAscii(aVal)) return false;
+    return bVal.toLowerCase().includes(aVal.toLowerCase());
+  }
+  return false;
+}
+
+function rangeImplies(b: RuleCondition, a: RuleCondition): boolean {
+  const kind = fieldKind(a.field);
+  if (kind === "numeric" && (hasUnsafeNumeric(a) || hasUnsafeNumeric(b))) return false;
+  const num = (v: unknown) => (kind === "date" ? Date.parse(String(v)) : Number(v));
+
+  if (a.operator === "!=") {
+    if (b.operator === "!=") return num(b.value) === num(a.value);
+    const rangeB = toRange(b);
+    if (!rangeB) return false;
+    const point = num(a.value);
+    const inRangeB = (rangeB.loInc ? point >= rangeB.lo : point > rangeB.lo) && (rangeB.hiInc ? point <= rangeB.hi : point < rangeB.hi);
+    return !inRangeB;
+  }
+  if (b.operator === "!=") return false; // a single excluded point can't be proven to sit inside a's bounded range
+
+  const rangeA = toRange(a);
+  const rangeB = toRange(b);
+  if (!rangeA || !rangeB) return false;
+  const loOk = rangeA.lo < rangeB.lo || (rangeA.lo === rangeB.lo && (rangeA.loInc || !rangeB.loInc));
+  const hiOk = rangeA.hi > rangeB.hi || (rangeA.hi === rangeB.hi && (rangeA.hiInc || !rangeB.hiInc));
+  return loOk && hiOk;
+}
+
+/** True when every customer value satisfying `b` also satisfies `a` (same field). Conservative:
+ *  anything not provably true counts as false. */
+export function conditionImplies(b: RuleCondition, a: RuleCondition): boolean {
+  if (b.field !== a.field) return false;
+  if (a.operator === "is-null") return b.operator === "is-null";
+  if (a.operator === "is-not-null") return b.operator !== "is-null";
+  if (b.operator === "is-null" || b.operator === "is-not-null") return false;
+
+  const kind = fieldKind(a.field);
+  if (kind === "boolean") {
+    const target = (c: RuleCondition) => (c.operator === "=" ? c.value === true : c.value !== true);
+    return target(b) === target(a);
+  }
+  if (kind === "text") return textImplies(b, a);
+  return rangeImplies(b, a);
+}
+
+/** True when an earlier rule's every condition is implied by some single condition of a later rule
+ *  on the same field (conditions are never combined). A rule with zero conditions is a catch-all
+ *  that covers every later rule. */
+export function ruleCovers(earlierConditions: RuleCondition[], laterConditions: RuleCondition[]): boolean {
+  return earlierConditions.every((a) => laterConditions.some((b) => b.field === a.field && conditionImplies(b, a)));
+}
+
+/** True when some pair of a rule's same-field conditions is flagged disjoint by conditionsDisjoint. */
+export function ruleContradicts(conditions: RuleCondition[]): boolean {
+  return conditions.some((a, i) => conditions.slice(i + 1).some((b) => a.field === b.field && conditionsDisjoint(a, b)));
+}
+
+/** Eligible-member caveat: `resolve_owner` skips a matching rule with no eligible members, so a
+ *  covering rule only counts toward "never assigns" if at least one of its members is currently an
+ *  active Sales user. Does not gate the (order-agnostic) "may overlap" warning. */
+const ruleHasEligibleMember = (rule: Pick<AssignmentRule, "memberIds">, salesUsers: User[]) =>
+  rule.memberIds.some((id) => salesUsers.some((u) => u.id === id));
 
 // A 409 from POST/PATCH /admin/assignment-rules is either a duplicate name or a stale `version`
 // (see apps/api/main.py's create_assignment_rule/update_assignment_rule); services/http.ts and
@@ -361,7 +487,24 @@ function AdminAssignment() {
                           </p>
                         )}
                         {rule.active && (() => {
-                          const shadowedBy = sortedRules.slice(0, index).filter((other) => other.active && rulesMayOverlap(other.conditions, rule.conditions));
+                          if (ruleContradicts(rule.conditions)) {
+                            return (
+                              <p className="mt-1 flex items-center gap-1 text-xs text-warning">
+                                <AlertTriangle className="size-3.5 shrink-0" /> Can never match: its conditions contradict each other.
+                              </p>
+                            );
+                          }
+                          const earlierActive = sortedRules.slice(0, index).filter((other) => other.active && !ruleContradicts(other.conditions));
+                          const covering = earlierActive.filter((other) => ruleHasEligibleMember(other, salesUsers) && ruleCovers(other.conditions, rule.conditions));
+                          if (covering.length > 0) {
+                            return (
+                              <p className="mt-1 flex items-center gap-1 text-xs text-warning">
+                                <AlertTriangle className="size-3.5 shrink-0" /> Never assigns: every customer it matches goes to higher-priority{" "}
+                                {covering.map((other) => `#${other.order} ${other.name}`).join(", ")} first.
+                              </p>
+                            );
+                          }
+                          const shadowedBy = earlierActive.filter((other) => rulesMayOverlap(other.conditions, rule.conditions));
                           return shadowedBy.length > 0 ? (
                             <p className="mt-1 flex items-center gap-1 text-xs text-warning">
                               <AlertTriangle className="size-3.5 shrink-0" /> May overlap with higher-priority{" "}
@@ -559,13 +702,27 @@ function RuleForm({
   // them from the picker. Show them too, flagged, instead of silently losing that membership.
   const noActiveSalesUsers = salesUsers.length === 0;
 
-  // Live overlap warning (#71): only once every condition row is complete and valid (zero rows is a
-  // valid catch-all), so a half-filled form doesn't warn against every active rule.
+  // Live warnings (#71 "may overlap", #102 "never assigns"/"contradicts"): only once every
+  // condition row is complete and valid (zero rows is a valid catch-all) and the rule is Active, so
+  // a half-filled form doesn't warn against every active rule. Precedence: contradiction, then
+  // never-assigns, then may-overlap -- at most one alert shows. "Never assigns" only compares
+  // against rules earlier in priority order (a new rule is placed last, so every active rule counts
+  // as earlier); "may overlap" is order-agnostic, like #71. A self-contradicting other rule is never
+  // named in either alert.
   const draftResults = conditions.map(draftToCondition);
   const draftConditions = draftResults.flatMap((result) => ("condition" in result ? [result.condition] : []));
+  const validActive = active && draftConditions.length === draftResults.length;
+  const priorityRules = sortByPriority(assignmentRules);
+  const selfIndex = mode === "edit" ? priorityRules.findIndex((r) => r.id === rule!.id) : priorityRules.length;
+  const earlierRules = priorityRules.slice(0, selfIndex);
+
+  const contradicts = validActive && ruleContradicts(draftConditions);
+  const neverAssigns = validActive && !contradicts
+    ? earlierRules.filter((other) => other.active && !ruleContradicts(other.conditions) && ruleHasEligibleMember(other, salesUsers) && ruleCovers(other.conditions, draftConditions))
+    : [];
   const overlapping =
-    active && draftConditions.length === draftResults.length
-      ? sortByPriority(assignmentRules).filter((other) => other.active && other.id !== rule?.id && rulesMayOverlap(other.conditions, draftConditions))
+    validActive && !contradicts && neverAssigns.length === 0
+      ? priorityRules.filter((other) => other.id !== rule?.id && other.active && !ruleContradicts(other.conditions) && rulesMayOverlap(other.conditions, draftConditions))
       : [];
   const pickableUsers = [...salesUsers, ...allUsers.filter((u) => memberIds.includes(u.id) && !salesUsers.some((s) => s.id === u.id))];
 
@@ -740,7 +897,23 @@ function RuleForm({
           )}
         </div>
 
-        {overlapping.length > 0 && (
+        {contradicts && (
+          <Alert>
+            <AlertTriangle className="size-4" />
+            <AlertTitle>This rule can never match</AlertTitle>
+            <AlertDescription>Its conditions contradict each other, so no customer can satisfy all of them.</AlertDescription>
+          </Alert>
+        )}
+        {!contradicts && neverAssigns.length > 0 && (
+          <Alert>
+            <AlertTriangle className="size-4" />
+            <AlertTitle>This rule will never assign anyone</AlertTitle>
+            <AlertDescription>
+              Every customer it matches goes to {neverAssigns.map((other) => `#${other.order} ${other.name}`).join(", ")} first.
+            </AlertDescription>
+          </Alert>
+        )}
+        {!contradicts && neverAssigns.length === 0 && overlapping.length > 0 && (
           <Alert>
             <AlertTriangle className="size-4" />
             <AlertTitle>May overlap with other active rules</AlertTitle>

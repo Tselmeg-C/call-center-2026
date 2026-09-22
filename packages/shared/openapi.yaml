@@ -113,6 +113,12 @@ paths:
       parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/UserUpdate' } } } }
       responses: { '200': { description: Updated, content: { application/json: { schema: { $ref: '#/components/schemas/User' } } } }, '403': { $ref: '#/components/responses/Forbidden' }, '409': { $ref: '#/components/responses/Conflict' }, '422': { $ref: '#/components/responses/Validation' } }
+  /admin/users/{id}/reset-password:
+    post:
+      operationId: resetUserPassword
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/PasswordResetRequest' } } } }
+      responses: { '200': { description: Password reset, content: { application/json: { schema: { $ref: '#/components/schemas/User' } } } }, '401': { $ref: '#/components/responses/Unauthenticated' }, '403': { $ref: '#/components/responses/Forbidden' }, '404': { description: Not found }, '422': { $ref: '#/components/responses/Validation' } }
   /admin/closure-reasons:
     get: { operationId: listClosureReasons, responses: { '200': { description: Reasons, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/ClosureReason' } } } } }, '403': { $ref: '#/components/responses/Forbidden' } } }
     post: { operationId: createClosureReason, requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/LabelRequest' } } } }, responses: { '201': { description: Created }, '403': { $ref: '#/components/responses/Forbidden' }, '409': { $ref: '#/components/responses/Conflict' }, '422': { $ref: '#/components/responses/Validation' } } }
@@ -179,6 +185,7 @@ components:
     FollowUp: { type: object, required: [id, bcn, type, due, note, status, actorId, createdAt], properties: { id: { type: string }, bcn: { type: string }, type: { type: string, enum: [Appointment, Reminder] }, due: { type: [string, 'null'] }, note: { type: [string, 'null'] }, status: { type: string, enum: [Open, Completed, Cancelled] }, actor: { type: string }, actorId: { type: string }, interactionId: { type: [string, 'null'] }, version: { type: integer }, createdAt: { type: string, format: date-time }, updatedAt: { type: string, format: date-time } }, additionalProperties: false }
     AdminUserRequest: { type: object, required: [name, email, role], properties: { name: { type: string, minLength: 1, maxLength: 120 }, email: { type: string, format: email, maxLength: 254 }, role: { type: string, enum: [Admin, Sales] }, initialPassword: { type: string, writeOnly: true } }, additionalProperties: false }
     UserUpdate: { type: object, properties: { name: { type: string }, role: { type: string, enum: [Admin, Sales] }, active: { type: boolean } }, additionalProperties: false }
+    PasswordResetRequest: { type: object, required: [password], properties: { password: { type: string, minLength: 12, maxLength: 128, writeOnly: true } }, additionalProperties: false }
     ClosureReason: { type: object, required: [id, label, active], properties: { id: { type: string }, label: { type: string }, active: { type: boolean } }, additionalProperties: false }
     LabelRequest: { type: object, required: [label], properties: { label: { type: string, minLength: 1, maxLength: 120 } }, additionalProperties: false }
     ReasonUpdate: { type: object, properties: { label: { type: string }, active: { type: boolean } }, additionalProperties: false }

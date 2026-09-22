@@ -104,6 +104,38 @@ describe("mock services: admin", () => {
     expect(result.ok).toBe(false);
   });
 
+  it("#66: resets a user's password, updating the stored credential and appending a distinct audit action", async () => {
+    const services = createMockServices();
+    await signIn(services, "alex@example.test");
+    const reset = await services.resetUserPassword("sales-river", "brand new correct horse");
+    expect(reset.ok).toBe(true);
+    expect(reset.ok && Object.keys(reset.data).sort()).toEqual(["active", "email", "id", "name", "role"]);
+    await services.logout();
+    expect((await services.login("river@example.test", MOCK_PASSWORD)).ok).toBe(false);
+    expect((await services.login("river@example.test", "brand new correct horse")).ok).toBe(true);
+    await signIn(services, "alex@example.test");
+    const audit = await services.audit({ action: "Password reset" });
+    expect(audit.ok && audit.data.items[0]).toMatchObject({ target: "sales-river", actorId: "admin-demo" });
+  });
+
+  it("#66: rejects a too-short/too-long password and an unknown user for password reset", async () => {
+    const services = createMockServices();
+    await signIn(services, "alex@example.test");
+    const tooShort = await services.resetUserPassword("sales-river", "short");
+    expect(tooShort.ok).toBe(false);
+    expect(!tooShort.ok && tooShort.error.code).toBe("validation");
+    const missing = await services.resetUserPassword("does-not-exist", "brand new correct horse");
+    expect(missing.ok).toBe(false);
+  });
+
+  it("#66: blocks a Sales user from resetting anyone's password", async () => {
+    const services = createMockServices();
+    await signIn(services, "river@example.test");
+    const result = await services.resetUserPassword("sales-sky", "brand new correct horse");
+    expect(result.ok).toBe(false);
+    expect(!result.ok && result.error.code).toBe("forbidden");
+  });
+
   it("runs bulk assignment onto the single active rule's owner", async () => {
     const services = createMockServices();
     await signIn(services, "alex@example.test");

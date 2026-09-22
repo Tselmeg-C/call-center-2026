@@ -156,6 +156,7 @@ export function createHttpServices(config: HttpServicesConfig = {}): Services {
     listUsers: () => request<User[]>("/admin/users"),
     createUser: (input: UserDraft) => request<User>("/admin/users", json("POST", input)),
     updateUser: (id, patch: UserPatch) => request<User>(`/admin/users/${seg(id)}`, json("PATCH", patch)),
+    resetUserPassword: (id, password) => request<User>(`/admin/users/${seg(id)}/reset-password`, json("POST", { password })),
 
     listClosureReasons: () => request<ClosureReason[]>("/admin/closure-reasons"),
     createClosureReason: (label) => request<ClosureReason>("/admin/closure-reasons", json("POST", { label })),

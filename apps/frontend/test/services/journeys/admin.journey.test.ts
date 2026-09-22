@@ -126,4 +126,43 @@ describe("real-HTTP Admin journey", () => {
     const after = await admin.getCustomer("700001");
     expect(after.ok && after.data.ownerId).toBe(null);
   });
+
+  // #66: admin-driven password reset, over real HTTP.
+  it("resets another user's password, revoking their active session, and is admin-gated", async () => {
+    const created = await admin.createUser({ name: "Reset Target", email: "reset-target@example.test", role: "Sales", password: "synthetic-only-original" });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    const target = createHttpServices({ baseUrl: backend.baseUrl, origin: backend.origin, fetch: newActorFetch() });
+    const targetLogin = await target.login("reset-target@example.test", "synthetic-only-original");
+    expect(targetLogin.ok).toBe(true);
+    expect((await target.currentUser()).ok).toBe(true);
+
+    // Sales-role caller is forbidden. (river was deactivated by an earlier test in this file, so
+    // sky -- still active -- is used here.)
+    const sales = createHttpServices({ baseUrl: backend.baseUrl, origin: backend.origin, fetch: newActorFetch() });
+    expect((await sales.login("sky@example.test", "synthetic-only-sky")).ok).toBe(true);
+    const forbidden = await sales.resetUserPassword(created.data.id, "synthetic-only-forbidden");
+    expect(forbidden.ok).toBe(false);
+    expect(!forbidden.ok && forbidden.error.code).toBe("forbidden");
+
+    // Unknown user -> request-failure (404).
+    const missing = await admin.resetUserPassword("does-not-exist", "synthetic-only-missing");
+    expect(missing.ok).toBe(false);
+    expect(!missing.ok && missing.error.code).toBe("request-failure");
+
+    // Too short -> validation (422).
+    const tooShort = await admin.resetUserPassword(created.data.id, "short");
+    expect(tooShort.ok).toBe(false);
+    expect(!tooShort.ok && tooShort.error.code).toBe("validation");
+
+    const reset = await admin.resetUserPassword(created.data.id, "synthetic-only-reset-password");
+    expect(reset.ok).toBe(true);
+    expect(reset.ok && Object.keys(reset.data).sort()).toEqual(["active", "email", "id", "name", "role"]);
+
+    // The target's existing session is revoked, the old password no longer works, the new one does.
+    expect((await target.currentUser()).ok).toBe(false);
+    expect((await target.login("reset-target@example.test", "synthetic-only-original")).ok).toBe(false);
+    expect((await target.login("reset-target@example.test", "synthetic-only-reset-password")).ok).toBe(true);
+  });
 });

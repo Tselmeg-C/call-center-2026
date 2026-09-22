@@ -1026,6 +1026,26 @@ def update_user(user_id: str, patch: UserPatch, actor: Annotated[User, Depends(a
                 append_audit(actor.id, "Customer ownership released", bcn, {"oldOwner": user_id, "newOwner": None, "reason": "Owner deactivated"})
     return User.model_validate(record)
 
+@app.post("/admin/users/{user_id}/reset-password", response_model=User)
+def reset_user_password(user_id: str, data: ResetPassword, actor: Annotated[User, Depends(admin_user)]) -> User:
+    # Admin-driven counterpart to #60's memory-only, flag-gated /operator/reset-password: gated by
+    # the same admin_user session dependency as every other /admin/* route (no env var/flag), and
+    # works in both storage modes. Unlike update_user's self-demote guard, resetting your own
+    # password (and so revoking your own session) is expected, not blocked.
+    if auth_db is not None:
+        row = auth_db.reset_password(user_id, password_hash.hash(data.password))
+        if not row: raise HTTPException(status.HTTP_404_NOT_FOUND, "User not found.")
+        result = User(id=row.id, name=row.name, email=row.email, role=row.role, active=row.active)
+    else:
+        record = repo.users.get(user_id)
+        if not record: raise HTTPException(status.HTTP_404_NOT_FOUND, "User not found.")
+        record["password"] = password_hash.hash(data.password)
+        for token, (owner, _) in list(repo.sessions.items()):
+            if owner == user_id: repo.sessions.pop(token, None)
+        result = User.model_validate(record)
+    append_audit(actor.id, "Password reset", user_id, {})  # never include the password, plain or hashed
+    return result
+
 @app.get("/admin/closure-reasons", response_model=list[ClosureReason])
 def list_reasons(_: Annotated[User, Depends(admin_user)]) -> list[ClosureReason]:
     return [ClosureReason.model_validate(item) for item in repo.reasons.values()]

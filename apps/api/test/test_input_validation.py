@@ -955,10 +955,12 @@ def test_login_nul_in_email_or_password_is_422_without_throttle_effects(env):
 def test_other_ascii_control_characters_in_name_are_rejected(env):
     """#109 shipped only the NUL check and documented \\x01/\\x7f in `name` as still 201 (left for
     #112). #112 closes that gap: every ASCII C0 control other than tab/LF/CR, plus DEL, in `name`
-    now returns 422, not 201."""
+    now returns 422, not 201, and no user is created."""
+    before = stored_state(env)
     for bad in ("A\x01B", "A\x7fB", "A\x1bB", "A\x0bB", "A\x0cB"):
         response = env.admin.post("/admin/users", json=draft(name=bad), headers=ORIGIN)
         assert response.status_code == 422 and response.json() == INVALID, (bad, response.text)
+    assert stored_state(env) == before
 
 
 def test_tab_lf_cr_are_still_accepted_in_note_and_text_fields(env):
@@ -1049,6 +1051,43 @@ def test_control_char_in_condition_value_submission_id_and_query_param_stays_acc
     assert followup["note"] == "Call back"
     listing = env.admin.get("/customers", params={"q": "Ac\x01me"}, headers=ORIGIN)
     assert listing.status_code == 200
+
+
+def test_admin_user_patch_control_char_in_name_rejected_without_writing(env):
+    """PATCH /admin/users/{id} shares RuleName with POST /admin/users -- same rejection, no write."""
+    before = stored_state(env)
+    response = env.admin.patch(f"/admin/users/{env.sales_id}", json={"active": False, "name": "a\x01b"}, headers=ORIGIN)
+    assert response.status_code == 422 and response.json() == INVALID
+    assert stored_state(env) == before  # customer ownership (part of stored_state) untouched
+    assert env.sales.get("/session/me").status_code == 200  # session not revoked
+
+
+def test_operator_provision_control_char_in_name_rejected_before_secret_and_state(env, monkeypatch):
+    """Same #91-style ordering as the NUL provision test: identical 422 whether the secret is
+    missing, wrong, or correct, and identical whether an Admin already exists or not."""
+    secret = secrets.token_urlsafe(24)
+    monkeypatch.setenv("OPERATOR_PROVISION_SECRET", secret)
+    client = TestClient(main.app, base_url="http://localhost")
+    try:
+        base = {"name": "Initial Admin", "email": "first@example.test", "password": PASSWORD}
+        bad = [base | {"name": "\x01Admin"}, base | {"name": "Admin\x7f"}]
+        for headers in ({}, {"x-operator-secret": "wrong"}, {"x-operator-secret": secret}):  # identical before and after an Admin exists
+            reject_identity(env, lambda body: client.post("/operator/provision", json=body, headers=ORIGIN | headers), bad)
+    finally:
+        client.close()
+
+
+def test_operator_reset_password_control_char_in_password_still_accepted(env):
+    """`password` stays exempt (hashed before storage), same as the admin-driven reset-password
+    endpoint and #112's other password-field exemptions."""
+    client = TestClient(main.app, base_url="http://localhost")
+    try:
+        new_password = "reset\x01word12"
+        response = client.post(f"/operator/reset-password/{env.sales_id}", json={"password": new_password}, headers=ORIGIN)
+        assert response.status_code == 200
+        assert client.post("/session/login", json={"email": "sales64@example.test", "password": new_password}, headers=ORIGIN).status_code == 200
+    finally:
+        client.close()
 
 
 def test_cli_models_reject_control_chars_same_as_http_and_operator_py_needs_no_changes():

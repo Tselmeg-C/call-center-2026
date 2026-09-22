@@ -93,7 +93,7 @@ BAD_FOLLOWUP_BODIES = [
     *({"type": value} for value in ("appointment", "Follow-up needed", "", None, 1)),
     *({"due": value} for value in ("not-a-date", "2026-13-45", "2026-02-30", "", "   ", 20260920, ["2026-09-20"], "2026-09-20T08:00", "1999-12-31", "1999-12-31T23:59:59Z", (NOW + timedelta(days=5 * 366)).isoformat())),
     {"type": "Appointment", "due": None},
-    *({"note": value} for value in ("", "   \n", "x" * 4001, " " + "x" * 4001, None)),
+    *({"note": value} for value in ("", "   \n", "x" * 4001, " " + "x" * 4001, None, "A\x01B", "A\x7fB")),  # #112: ASCII control chars
     *({"submissionId": value} for value in ("", "   ", "s" * 121, None, 5)),
     {"status": "Completed"},
     {"dueKind": "none"},
@@ -197,7 +197,7 @@ def test_cancel_body_validation_and_no_body_fallback(env):
 
 @pytest.mark.parametrize("body", [
     {"outcome": "contact"}, {"outcome": "Other"}, {"outcome": None}, {"outcome": 1},
-    {"note": "x" * 4001}, {"note": 5}, {"submissionId": "s" * 121}, {"submissionId": " "}, {"extra": True},
+    {"note": "x" * 4001}, {"note": 5}, {"note": "A\x1bB"}, {"submissionId": "s" * 121}, {"submissionId": " "}, {"extra": True},  # #112: ASCII control chars in note
 ])
 def test_complete_and_interaction_reject_bad_input(env, body):
     item = create_followup(env.sales)
@@ -254,7 +254,7 @@ def junk_conditions(env):
 
 def bad_rule_fields(env):
     return [
-        *({"name": value} for value in ("", "   ", "n" * 121, " " + "n" * 121, 5, None, ["x"])),
+        *({"name": value} for value in ("", "   ", "n" * 121, " " + "n" * 121, 5, None, ["x"], "A\x01B", "A\x7fB")),  # #112: ASCII control chars
         *({"active": value} for value in ("true", 1, "yes", None)),
         *({"conditions": value} for value in junk_conditions(env)),
         *({"memberIds": value} for value in (env.sales_id, None, [1], [None], [""], ["m" * 121], [env.sales_id] * 101, {"a": 1})),
@@ -446,7 +446,7 @@ BAD_SUBMISSION_IDS = ["", "   ", "s" * 121, None, 5, True]
 def test_note_rejects_bad_input_and_trims(env):
     send = lambda body: env.sales.post(f"/customers/{BCN}/notes", json=body, headers=ORIGIN)
     submission = uid()
-    bad = [*({"text": value, "submissionId": submission} for value in ("", "   \n", "x" * 4001, " " + "x" * 4001, None, 5, ["x"])),
+    bad = [*({"text": value, "submissionId": submission} for value in ("", "   \n", "x" * 4001, " " + "x" * 4001, None, 5, ["x"], "A\x01B", "A\x7fB")),  # #112: ASCII control chars
            *({"text": "ok", "submissionId": value} for value in BAD_SUBMISSION_IDS), {"text": "ok"}, {"submissionId": submission},
            {"text": "ok", "submissionId": submission, "extra": 1}]
     reject_all(env, send, bad)
@@ -547,7 +547,7 @@ def test_closure_reasons_reject_bad_input(env):
     reason = env.admin.post("/admin/closure-reasons", json={"label": "  Lost  "}, headers=ORIGIN)
     assert reason.status_code == 201 and reason.json()["label"] == "Lost"
     rid = reason.json()["id"]
-    bad_labels = ["", "   ", "l" * 121, " " + "l" * 121, None, 5, ["x"]]
+    bad_labels = ["", "   ", "l" * 121, " " + "l" * 121, None, 5, ["x"], "A\x01B", "A\x7fB"]  # #112: ASCII control chars
     reject_all(env, lambda body: env.admin.post("/admin/closure-reasons", json=body, headers=ORIGIN),
                [*({"label": value} for value in bad_labels), {}, {"label": "New", "active": True}, {"label": "New", "id": "x"}])
     reject_all(env, lambda body: env.admin.patch(f"/admin/closure-reasons/{rid}", json=body, headers=ORIGIN),
@@ -902,13 +902,6 @@ def test_nul_lookalikes_are_accepted_and_stored_as_sent(env):
     assert unicode_and_whitespace.status_code == 200
 
 
-def test_other_control_characters_in_name_are_unaffected_by_the_nul_rule(env):
-    """U+0001 and U+0007F are out of scope for #109 (tracked separately as #112)."""
-    for char in ("\x01", "\x7f"):
-        created = env.admin.post("/admin/users", json=draft(name=f"Name{char}Extra"), headers=ORIGIN)
-        assert created.status_code == 201, created.text
-
-
 def test_import_filename_with_nul_rejected_and_stores_no_job(env):
     before = stored_state(env)
     response = raw_multipart_upload(env, uid(), f"a{NUL}b.xlsx", workbook(["964901", "Filename NUL"]))
@@ -953,6 +946,46 @@ def test_login_nul_in_email_or_password_is_422_without_throttle_effects(env):
             assert client.post("/session/login", json={"email": f"admin64@example.test{NUL}", "password": PASSWORD}).status_code == 422
         well_formed = client.post("/session/login", json={"email": "admin64@example.test", "password": "wrong password here"})
         assert well_formed.status_code == 401  # not 429: the 20 NUL attempts never touched the throttle
+    finally:
+        client.close()
+
+
+# ---- #112: ASCII control characters (other than NUL, which is #109's separate concern) ---------
+
+def test_other_ascii_control_characters_in_name_are_rejected(env):
+    """#109 shipped only the NUL check and documented \\x01/\\x7f in `name` as still 201 (left for
+    #112). #112 closes that gap: every ASCII C0 control other than tab/LF/CR, plus DEL, in `name`
+    now returns 422, not 201."""
+    for bad in ("A\x01B", "A\x7fB", "A\x1bB", "A\x0bB", "A\x0cB"):
+        response = env.admin.post("/admin/users", json=draft(name=bad), headers=ORIGIN)
+        assert response.status_code == 422 and response.json() == INVALID, (bad, response.text)
+
+
+def test_tab_lf_cr_are_still_accepted_in_note_and_text_fields(env):
+    """#112's reject set stops at tab/LF/CR: notes/labels are plain text today and CRLF paste
+    (Windows editors/clipboards) must keep working."""
+    boundary = "Line one\tindented\nLine two\r\nLine three"
+    followup = create_followup(env.sales, note=boundary)
+    assert followup["note"] == boundary
+    note = env.sales.post(f"/customers/{BCN}/notes", json={"text": boundary, "submissionId": uid()}, headers=ORIGIN)
+    assert note.status_code == 200 and note.json()["text"] == boundary
+    interaction = env.sales.post(f"/customers/{BCN}/interactions", json={"outcome": "Attempt", "note": boundary, "submissionId": sid()}, headers=ORIGIN)
+    assert interaction.status_code == 200
+
+
+def test_control_char_in_email_and_password_is_still_accepted_and_password_still_logs_in(env):
+    """#112 explicitly exempts `email` (already ASCII-only via new_email) and `password` (hashed
+    before storage) -- a control character there is unaffected, same as before this issue."""
+    created = env.admin.post("/admin/users", json=draft(email="a\x01@example.test", password="pass\x01word123"), headers=ORIGIN)
+    assert created.status_code == 201, created.text
+    reset = env.admin.post(f"/admin/users/{env.sales_id}/reset-password", json={"password": "reset\x01word12"}, headers=ORIGIN)
+    assert reset.status_code == 200
+    # A fresh, unauthenticated client for both logins: reusing env.admin's client would overwrite
+    # its own session cookie with the one /session/login just issued for a different account.
+    client = TestClient(main.app, base_url="http://localhost")
+    try:
+        assert client.post("/session/login", json={"email": created.json()["email"], "password": "pass\x01word123"}, headers=ORIGIN).status_code == 200
+        assert client.post("/session/login", json={"email": "sales64@example.test", "password": "reset\x01word12"}, headers=ORIGIN).status_code == 200
     finally:
         client.close()
 
@@ -1005,3 +1038,32 @@ def test_idempotent_write_nul_submission_id_stores_no_record_then_succeeds_witho
     assert stored_state(env) == before
     retried = env.sales.post(f"/customers/{BCN}/notes", json={"text": "Called back", "submissionId": submission}, headers=ORIGIN)
     assert retried.status_code == 200 and retried.json()["text"] == "Called back"
+
+
+def test_control_char_in_condition_value_submission_id_and_query_param_stays_accepted(env):
+    """#112 does not touch conditions[].value (machine-compared filter config, not free-text prose),
+    submissionId (an idempotency key, not display text) or query parameters (read-only filters)."""
+    rule = env.admin.post("/admin/assignment-rules", json={"name": "Cond", "conditions": [{"field": "name", "operator": "=", "value": "Ac\x01me"}], "memberIds": [env.sales_id]}, headers=ORIGIN)
+    assert rule.status_code == 201 and rule.json()["conditions"][0]["value"] == "Ac\x01me"
+    followup = create_followup(env.sales, submissionId="sub\x01mission")
+    assert followup["note"] == "Call back"
+    listing = env.admin.get("/customers", params={"q": "Ac\x01me"}, headers=ORIGIN)
+    assert listing.status_code == 200
+
+
+def test_cli_models_reject_control_chars_same_as_http_and_operator_py_needs_no_changes():
+    """#112's architecture: the check lives on the shared RuleName type, so apps/api/operator.py's
+    CLI (which builds Provision/AssignmentRuleDraft/ClosureReasonDraft directly, bypassing HTTP)
+    rejects the same characters with zero CLI-specific code -- its existing
+    `except (HTTPException, ValidationError, ValueError): raise SystemExit(...)` already turns this
+    ValidationError into the right outcome. This test proves that, rather than assuming it."""
+    for bad in (
+        lambda: main.Provision(name="A\x01B", email="op@example.test", role="Admin", password=PASSWORD),
+        lambda: main.AssignmentRuleDraft(name="A\x01B"),
+        lambda: main.ClosureReasonDraft(label="A\x7fB"),
+    ):
+        with pytest.raises(ValidationError):
+            bad()
+    # email/password stay exempt in the CLI too, matching the HTTP decision.
+    main.Provision(name="Ok", email="a\x01@example.test", password=PASSWORD)
+    main.ResetPassword(password="a\x01" + "x" * 11)

@@ -55,6 +55,7 @@ type Ctx = {
   reassign: (bcn: string, toUserId: string | null, reason: string) => Promise<boolean>;
   runAssignment: () => Promise<{ assigned: number }>;
   toggleUserActive: (id: string) => Promise<boolean>;
+  resetUserPassword: (id: string, password: string) => Promise<boolean>;
   toggleRule: (id: string) => Promise<boolean>;
   /** Up/down reordering via `swapRuleOrder`: two version-checked PATCHes sent one after the other.
    *  On failure it toasts and resyncs rules + assignment version from the server. */
@@ -273,6 +274,16 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     return true;
   };
 
+  const resetUserPassword: Ctx["resetUserPassword"] = async (id, password) => {
+    const result = await services.resetUserPassword(id, password);
+    if (!result.ok) {
+      reportError(result.error.message);
+      return false;
+    }
+    setUsers((prev) => prev.map((item) => (item.id === id ? toUser(result.data) : item)));
+    return true;
+  };
+
   const toggleRule: Ctx["toggleRule"] = async (id) => {
     const target = rules.find((item) => item.id === id);
     if (!target) return false;
@@ -378,6 +389,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         reassign,
         runAssignment,
         toggleUserActive,
+        resetUserPassword,
         toggleRule,
         moveRule,
         createAssignmentRule,

@@ -177,6 +177,7 @@ export interface Services {
   listUsers(): Promise<Result<User[]>>;
   createUser(input: UserDraft): Promise<Result<User>>;
   updateUser(id: string, patch: UserPatch): Promise<Result<User>>;
+  resetUserPassword(id: string, password: string): Promise<Result<User>>;
 
   listClosureReasons(): Promise<Result<ClosureReason[]>>;
   createClosureReason(label: string): Promise<Result<ClosureReason>>;

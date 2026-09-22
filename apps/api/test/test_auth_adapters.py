@@ -668,6 +668,102 @@ def test_shared_session_clock_logout_recovery_and_role(adapter, monkeypatch):
         assert client.get("/session/me").status_code == 401
 
 
+def test_shared_admin_reset_password_gating_and_session_revocation(adapter):
+    """#66: POST /admin/users/{id}/reset-password, in both storage modes. Gated by the same
+    admin_user dependency as every other /admin/* route (401 unauthenticated, 403 Sales), 404 for
+    an unknown user, 422 for an out-of-range password, and on success the target's stored hash
+    changes (old password stops working, new one signs in) and every one of the target's active
+    sessions -- including the admin's own, when resetting their own password -- is revoked."""
+    admin, admin_secret = provision("admin@example.test", role="Admin")
+    target, target_secret = provision("target@example.test", role="Sales")
+    with TestClient(main.app, base_url="http://localhost") as admin_client, \
+         TestClient(main.app, base_url="http://localhost") as target_client, \
+         TestClient(main.app, base_url="http://localhost") as sales_client:
+        assert sign_in(target_client, target.email, target_secret).status_code == 200
+        assert target_client.get("/session/me").status_code == 200
+
+        # Unauthenticated caller -> 401.
+        unauth = admin_client.post(f"/admin/users/{target.id}/reset-password", json={"password": "new correct horse battery"}, headers=ORIGIN)
+        assert unauth.status_code == 401
+
+        assert sign_in(admin_client, admin.email, admin_secret).status_code == 200
+
+        # Sales-role caller -> 403.
+        assert sign_in(sales_client, target.email, target_secret).status_code == 200
+        forbidden = sales_client.post(f"/admin/users/{target.id}/reset-password", json={"password": "another correct horse"}, headers=ORIGIN)
+        assert forbidden.status_code == 403
+
+        # Unknown user -> 404.
+        assert admin_client.post("/admin/users/does-not-exist/reset-password", json={"password": "another correct horse"}, headers=ORIGIN).status_code == 404
+
+        # Too short / too long -> 422.
+        assert admin_client.post(f"/admin/users/{target.id}/reset-password", json={"password": "short"}, headers=ORIGIN).status_code == 422
+        assert admin_client.post(f"/admin/users/{target.id}/reset-password", json={"password": "x" * 129}, headers=ORIGIN).status_code == 422
+
+        new_password = "new correct horse battery staple"
+        reset = admin_client.post(f"/admin/users/{target.id}/reset-password", json={"password": new_password}, headers=ORIGIN)
+        assert reset.status_code == 200
+        assert set(reset.json()) == {"id", "name", "email", "role", "active"}
+        assert new_password not in reset.text and target_secret not in reset.text
+
+        # The target's prior session is revoked, the old password stops working, and the new one does.
+        assert target_client.get("/session/me").status_code == 401
+        assert sign_in(target_client, target.email, target_secret).status_code == 401
+        assert sign_in(target_client, target.email, new_password).status_code == 200
+
+        # An admin can reset their own password through the same endpoint; it revokes their own
+        # active session too -- expected, not a bug, and needs no self-guard.
+        assert admin_client.get("/session/me").status_code == 200
+        self_reset = admin_client.post(f"/admin/users/{admin.id}/reset-password", json={"password": "admin new correct horse staple"}, headers=ORIGIN)
+        assert self_reset.status_code == 200
+        assert admin_client.get("/session/me").status_code == 401
+
+
+def test_postgres_admin_reset_password_audit_never_leaks_password(postgres_url, monkeypatch):
+    """#66: the audit trail records who reset whose password, distinct from 'User changed', and
+    never contains the password value -- plaintext or hashed -- in any storage mode that persists
+    audit at all (Postgres; memory mode has no persistent non-customer audit log today, same as
+    the existing 'User changed' action)."""
+    from ..db_assignment import AssignmentDatabase
+    from ..db_customers import CustomerDatabase
+    from ..db_activity import ActivityDatabase
+
+    migrate()
+    auth = AuthDatabase(postgres_url, create_schema=False)
+    customers = CustomerDatabase(postgres_url, create_schema=False)
+    assignments = AssignmentDatabase(postgres_url, create_schema=False)
+    activities = ActivityDatabase(postgres_url, create_schema=False)
+    monkeypatch.setattr(main, "auth_db", auth)
+    monkeypatch.setattr(main, "customer_db", customers)
+    monkeypatch.setattr(main, "assignment_db", assignments)
+    monkeypatch.setattr(main, "activity_db", activities)
+    main.repo.reset()
+    try:
+        admin, admin_secret = provision("audit-admin@example.test", role="Admin")
+        target, target_secret = provision("audit-target@example.test", role="Sales")
+        main.repo.users[admin.id] = {"id": admin.id, "name": admin.name, "role": "Admin", "active": True}
+        main.repo.users[target.id] = {"id": target.id, "name": target.name, "role": "Sales", "active": True}
+        new_password = "audited correct horse battery staple"
+        with TestClient(main.app, base_url="http://localhost") as client:
+            assert sign_in(client, admin.email, admin_secret).status_code == 200
+            reset = client.post(f"/admin/users/{target.id}/reset-password", json={"password": new_password}, headers=ORIGIN)
+            assert reset.status_code == 200
+
+            audit = client.get("/admin/audit", params={"action": "Password reset"}).json()
+            assert audit["total"] == 1
+            item = audit["items"][0]
+            assert item["action"] == "Password reset" and item["target"] == target.id and item["actorId"] == admin.id
+            assert new_password not in reset.text and target_secret not in reset.text
+            hashed = main.password_hash.hash(new_password)
+            for text_value in (reset.text, str(audit)):
+                assert new_password not in text_value and hashed not in text_value
+                # No Argon2-shaped hash of *any* password leaked into either response either.
+                assert "$argon2" not in text_value
+    finally:
+        auth.engine.dispose(); customers.engine.dispose(); assignments.engine.dispose(); activities.engine.dispose()
+        main.repo.reset()
+
+
 def test_postgres_migrations_constraints_and_rollback(postgres_url, monkeypatch):
     from ..db_customers import CustomerDatabase
 

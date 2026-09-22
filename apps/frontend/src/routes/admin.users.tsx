@@ -1,8 +1,10 @@
 import { createFileRoute } from "@tanstack/react-router";
+import { useState } from "react";
 import { toast } from "sonner";
 import { PageHeader } from "@/components/PageHeader";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import {
   Table,
   TableBody,
@@ -30,7 +32,22 @@ export const Route = createFileRoute("/admin/users")({
 });
 
 function AdminUsers() {
-  const { users, customers, toggleUserActive } = useStore();
+  const { users, customers, toggleUserActive, resetUserPassword } = useStore();
+  const [resettingId, setResettingId] = useState<string | null>(null);
+  const [passwordDraft, setPasswordDraft] = useState("");
+
+  const cancelReset = () => {
+    setResettingId(null);
+    setPasswordDraft("");
+  };
+
+  const submitReset = async (id: string, name: string) => {
+    const succeeded = await resetUserPassword(id, passwordDraft);
+    if (succeeded) {
+      toast.success(`${name}'s password was reset`);
+      cancelReset();
+    }
+  };
 
   return (
     <RequireAdmin>
@@ -74,17 +91,41 @@ function AdminUsers() {
                     </span>
                   </TableCell>
                   <TableCell className="text-right">
-                    <Button
-                      size="sm"
-                      variant={u.active ? "outline" : "secondary"}
-                      disabled={u.role === "admin"}
-                      onClick={async () => {
-                        const succeeded = await toggleUserActive(u.id);
-                        if (succeeded) toast.success(u.active ? `${u.name} deactivated` : `${u.name} activated`);
-                      }}
-                    >
-                      {u.active ? "Deactivate" : "Activate"}
-                    </Button>
+                    <div className="flex items-center justify-end gap-2">
+                      <Button
+                        size="sm"
+                        variant={u.active ? "outline" : "secondary"}
+                        disabled={u.role === "admin"}
+                        onClick={async () => {
+                          const succeeded = await toggleUserActive(u.id);
+                          if (succeeded) toast.success(u.active ? `${u.name} deactivated` : `${u.name} activated`);
+                        }}
+                      >
+                        {u.active ? "Deactivate" : "Activate"}
+                      </Button>
+                      {resettingId === u.id ? (
+                        <>
+                          <Input
+                            type="password"
+                            autoFocus
+                            value={passwordDraft}
+                            onChange={(e) => setPasswordDraft(e.target.value)}
+                            placeholder="New password (12-128 chars)"
+                            className="h-8 w-48"
+                          />
+                          <Button size="sm" onClick={() => submitReset(u.id, u.name)}>
+                            Save
+                          </Button>
+                          <Button size="sm" variant="ghost" onClick={cancelReset}>
+                            Cancel
+                          </Button>
+                        </>
+                      ) : (
+                        <Button size="sm" variant="outline" onClick={() => setResettingId(u.id)}>
+                          Reset password
+                        </Button>
+                      )}
+                    </div>
                   </TableCell>
                 </TableRow>
               );

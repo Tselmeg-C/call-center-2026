@@ -403,6 +403,17 @@ export function createMockServices(): Services {
       if (wasActiveSales && (updated.active === false || updated.role !== "Sales")) releaseOwnedCustomers(admin.data, id);
       return Promise.resolve(ok(publicUser(updated)));
     },
+    resetUserPassword: (id, password) => {
+      const admin = requireAdmin();
+      if (!admin.ok) return Promise.resolve(admin);
+      const target = findUser(id);
+      if (!target) return Promise.resolve(failure("request-failure", "User not found."));
+      if (password.length < 12 || password.length > 128) return Promise.resolve(failure("validation", "Password must be 12-128 characters."));
+      const updated: MockUser = { ...target, password };
+      users = users.map((item) => (item.id === id ? updated : item));
+      audit(admin.data.id, "Password reset", id, {});
+      return Promise.resolve(ok(publicUser(updated)));
+    },
 
     listClosureReasons: () => {
       const auth = requireAuth();

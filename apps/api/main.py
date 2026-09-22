@@ -964,13 +964,16 @@ class AssignmentRunRequest(BaseModel):
 def provision_user(data: Provision) -> User:
     data = Provision.model_validate({key: getattr(data, key) for key in ("name", "email", "role", "password")})
     email = data.email
+    # #69: hash unconditionally, before the existence check, so an already-registered email can't
+    # be told apart from a new one by whether the Argon2 hash ran (same pattern as #63's login()).
+    hashed = password_hash.hash(data.password)
     if auth_db is not None:
         if auth_db.user_by_email(email): raise ValueError("normalized identity already exists")
-        row = auth_db.create_user(user_id=f"user-{uuid4()}", name=data.name, email=email, role=data.role, password_hash=password_hash.hash(data.password))
+        row = auth_db.create_user(user_id=f"user-{uuid4()}", name=data.name, email=email, role=data.role, password_hash=hashed)
         return User(id=row.id, name=row.name, email=row.email, role=row.role, active=row.active)
     if any(item["email"] == email for item in repo.users.values()):
         raise ValueError("normalized identity already exists")
-    record = {"id": f"user-{len(repo.users) + 1}", "name": data.name, "email": email, "role": data.role, "active": True, "password": password_hash.hash(data.password)}
+    record = {"id": f"user-{len(repo.users) + 1}", "name": data.name, "email": email, "role": data.role, "active": True, "password": hashed}
     repo.users[record["id"]] = record
     return User.model_validate(record)
 
@@ -1032,14 +1035,18 @@ def reset_user_password(user_id: str, data: ResetPassword, actor: Annotated[User
     # the same admin_user session dependency as every other /admin/* route (no env var/flag), and
     # works in both storage modes. Unlike update_user's self-demote guard, resetting your own
     # password (and so revoking your own session) is expected, not blocked.
+    # #69: the memory branch hashes unconditionally, before the user_id lookup, so a nonexistent
+    # id can't be told apart from a real one by whether the Argon2 hash ran (Postgres already did
+    # this -- the hash is computed as a call argument to reset_password() before the lookup).
     if auth_db is not None:
         row = auth_db.reset_password(user_id, password_hash.hash(data.password))
         if not row: raise HTTPException(status.HTTP_404_NOT_FOUND, "User not found.")
         result = User(id=row.id, name=row.name, email=row.email, role=row.role, active=row.active)
     else:
+        hashed = password_hash.hash(data.password)
         record = repo.users.get(user_id)
         if not record: raise HTTPException(status.HTTP_404_NOT_FOUND, "User not found.")
-        record["password"] = password_hash.hash(data.password)
+        record["password"] = hashed
         for token, (owner, _) in list(repo.sessions.items()):
             if owner == user_id: repo.sessions.pop(token, None)
         result = User.model_validate(record)
@@ -1421,14 +1428,16 @@ def operator_provision(data: Provision, x_operator_secret: Annotated[str | None,
 
 
 def operator_reset_password(user_id: str, data: ResetPassword) -> User:
+    # #69: same fix as reset_user_password's memory branch -- hash before the lookup.
     if auth_db is not None:
         row = auth_db.reset_password(user_id, password_hash.hash(data.password))
         if not row: raise HTTPException(status.HTTP_404_NOT_FOUND, "User not found.")
         return User(id=row.id, name=row.name, email=row.email, role=row.role, active=row.active)
+    hashed = password_hash.hash(data.password)
     record = repo.users.get(user_id)
     if not record:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "User not found.")
-    record["password"] = password_hash.hash(data.password)
+    record["password"] = hashed
     for token, (owner, _) in list(repo.sessions.items()):
         if owner == user_id: repo.sessions.pop(token, None)
     return User.model_validate(record)

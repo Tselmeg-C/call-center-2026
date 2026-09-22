@@ -476,10 +476,32 @@ def test_shared_identity_validation_and_safe_failures(adapter):
         provision("short@example.test", password=secrets.token_hex(5))
 
 
+def test_shared_provision_hashes_before_existence_check(adapter, monkeypatch):
+    # #69: same bug class as #63's login(), reversed -- provision_user used to check "email
+    # already exists" before hashing, so an already-registered email 409'd without ever paying the
+    # Argon2 cost while a new email always did. It now hashes exactly once, unconditionally,
+    # before either existence check can short-circuit.
+    user, secret = provision("existing@example.test")
+    calls = _count_hash(monkeypatch)
+    with pytest.raises(ValueError, match="normalized identity already exists"):
+        provision("existing@example.test")
+    assert len(calls) == 1
+    calls.clear()
+    provision("new@example.test")
+    assert len(calls) == 1
+
+
 def _count_verify(monkeypatch):
     calls = []
     real = main.password_hash.verify
     monkeypatch.setattr(main.password_hash, "verify", lambda password, hash: calls.append(1) or real(password, hash))
+    return calls
+
+
+def _count_hash(monkeypatch):
+    calls = []
+    real = main.password_hash.hash
+    monkeypatch.setattr(main.password_hash, "hash", lambda password: calls.append(1) or real(password))
     return calls
 
 
@@ -717,6 +739,32 @@ def test_shared_admin_reset_password_gating_and_session_revocation(adapter):
         self_reset = admin_client.post(f"/admin/users/{admin.id}/reset-password", json={"password": "admin new correct horse staple"}, headers=ORIGIN)
         assert self_reset.status_code == 200
         assert admin_client.get("/session/me").status_code == 401
+
+
+def test_shared_admin_reset_password_hashes_before_lookup(adapter, monkeypatch):
+    # #69: the memory branch of reset_user_password used to look up user_id and raise 404 before
+    # ever hashing, so only a real user_id paid the Argon2 cost. Postgres was already safe (the
+    # hash is computed as a call argument to auth_db.reset_password() before the lookup). Both
+    # branches now hash exactly once whether or not user_id exists.
+    admin, admin_secret = provision("admin@example.test", role="Admin")
+    with TestClient(main.app, base_url="http://localhost") as client:
+        assert sign_in(client, admin.email, admin_secret).status_code == 200
+        calls = _count_hash(monkeypatch)
+        missing = client.post("/admin/users/does-not-exist/reset-password", json={"password": "another correct horse"}, headers=ORIGIN)
+        assert missing.status_code == 404 and len(calls) == 1
+
+
+def test_shared_operator_reset_password_hashes_before_lookup(adapter, monkeypatch):
+    # #69: same fix, for operator_reset_password's memory branch (used by the flag-gated
+    # /operator/reset-password/{user_id} route). Called directly here since route registration is
+    # fixed at process import time regardless of adapter/env, matching this file's other direct
+    # main.operator_reset_password(...) usage.
+    from fastapi import HTTPException
+
+    calls = _count_hash(monkeypatch)
+    with pytest.raises(HTTPException) as missing:
+        main.operator_reset_password("does-not-exist", main.ResetPassword(password="another correct horse"))
+    assert missing.value.status_code == 404 and len(calls) == 1
 
 
 def test_postgres_admin_reset_password_audit_never_leaks_password(postgres_url, monkeypatch):

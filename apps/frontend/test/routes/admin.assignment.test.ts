@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   CONDITION_FIELDS,
   blankConditionDraft,
+  conditionImplies,
   conditionToDraft,
   conditionsDisjoint,
   describeCondition,
@@ -10,6 +11,8 @@ import {
   initialConditionDrafts,
   isDuplicateNameConflict,
   isStaleVersionConflict,
+  ruleContradicts,
+  ruleCovers,
   rulesMayOverlap,
   sortByPriority,
 } from "@/routes/admin.assignment";
@@ -200,6 +203,131 @@ describe("admin assignment: overlap detection (#71)", () => {
     const a = [c("propensity_tier", "=", "A"), c("recent", "=", true)];
     expect(rulesMayOverlap(a, [c("branch_code", "=", "X1")])).toBe(true);
     expect(rulesMayOverlap(a, [c("branch_code", "=", "X1"), c("recent", "=", false)])).toBe(false);
+  });
+});
+
+describe("admin assignment: ruleCovers (#102)", () => {
+  const c = (field: string, operator: RuleCondition["operator"], value: RuleCondition["value"] = null): RuleCondition => ({ field, operator, value });
+
+  it("treats a zero-condition rule as a catch-all that covers everything, including another catch-all", () => {
+    expect(ruleCovers([], [c("propensity_tier", "=", "A")])).toBe(true);
+    expect(ruleCovers([], [])).toBe(true);
+  });
+
+  it("covers catch-all and text `in`/`=` combinations, but not the reverse", () => {
+    expect(ruleCovers([c("propensity_tier", "in", ["A", "B"])], [c("propensity_tier", "=", "A")])).toBe(true);
+    expect(ruleCovers([c("propensity_tier", "in", ["A", "B"])], [c("propensity_tier", "in", ["B", "A"])])).toBe(true);
+    expect(ruleCovers([c("propensity_tier", "=", "A")], [c("propensity_tier", "in", ["A", "B"])])).toBe(false);
+  });
+
+  it("is case-sensitive for text `=`", () => {
+    expect(ruleCovers([c("name", "=", "Acme")], [c("name", "=", "acme")])).toBe(false);
+  });
+
+  it("covers/doesn't cover via `!=`", () => {
+    expect(ruleCovers([c("branch_code", "!=", "X1")], [c("branch_code", "=", "X2")])).toBe(true);
+    expect(ruleCovers([c("branch_code", "!=", "X1")], [c("branch_code", "!=", "X1")])).toBe(true);
+    expect(ruleCovers([c("branch_code", "!=", "X1")], [c("branch_code", "in", ["X1", "X2"])])).toBe(false);
+    expect(ruleCovers([c("branch_code", "!=", "X1")], [c("branch_code", "!=", "X2")])).toBe(false);
+  });
+
+  it("is case-insensitive for `contains`", () => {
+    expect(ruleCovers([c("name", "contains", "acme")], [c("name", "=", "Big ACME Ltd")])).toBe(true);
+    expect(ruleCovers([c("name", "contains", "acme")], [c("name", "in", ["Acme", "Acme Corp"])])).toBe(true);
+    expect(ruleCovers([c("name", "contains", "acme")], [c("name", "contains", "Big Acme")])).toBe(true);
+    expect(ruleCovers([c("name", "contains", "acme")], [c("name", "contains", "acm")])).toBe(false);
+    expect(ruleCovers([c("name", "contains", "acme")], [c("name", "in", ["Acme", "Beta"])])).toBe(false);
+  });
+
+  it("respects inclusive/exclusive numeric range bounds", () => {
+    expect(ruleCovers([c("propensity_score", ">=", "50")], [c("propensity_score", "between", ["60", "80"])])).toBe(true);
+    expect(ruleCovers([c("propensity_score", ">=", "50")], [c("propensity_score", "=", "50")])).toBe(true);
+    expect(ruleCovers([c("propensity_score", ">", "50")], [c("propensity_score", "between", ["50", "80"])])).toBe(false);
+    expect(ruleCovers([c("propensity_score", "<", "50")], [c("propensity_score", "=", "10")])).toBe(true);
+    expect(ruleCovers([c("propensity_score", "between", ["0", "100"])], [c("propensity_score", "between", ["0", "100"])])).toBe(true);
+  });
+
+  it("compares numbers as numbers, and `!=` against a value/range excluding the point", () => {
+    expect(ruleCovers([c("propensity_score", "=", "5")], [c("propensity_score", "=", "5.0")])).toBe(true);
+    expect(ruleCovers([c("propensity_score", "!=", "5")], [c("propensity_score", ">", "5")])).toBe(true);
+    expect(ruleCovers([c("propensity_score", "!=", "5")], [c("propensity_score", "=", "6")])).toBe(true);
+    expect(ruleCovers([c("propensity_score", "!=", "5")], [c("propensity_score", ">=", "5")])).toBe(false);
+  });
+
+  it("compares date ranges", () => {
+    expect(
+      ruleCovers([c("last_purchase_date", "<", "2025-01-01")], [c("last_purchase_date", "between", ["2024-01-01", "2024-12-31"])]),
+    ).toBe(true);
+    expect(ruleCovers([c("last_purchase_date", "<", "2025-01-01")], [c("last_purchase_date", "<=", "2025-01-01")])).toBe(false);
+  });
+
+  it("compares booleans", () => {
+    expect(ruleCovers([c("recent", "!=", true)], [c("recent", "=", false)])).toBe(true);
+    expect(ruleCovers([c("recent", "=", true)], [c("recent", "=", false)])).toBe(false);
+  });
+
+  it("handles null/not-null semantics", () => {
+    expect(ruleCovers([c("rsm_name", "is-not-null")], [c("rsm_name", "=", "Kim")])).toBe(true);
+    expect(ruleCovers([c("rsm_name", "is-not-null")], [c("rsm_name", "!=", "Kim")])).toBe(true);
+    expect(ruleCovers([c("rsm_name", "is-not-null")], [c("rsm_name", "is-null")])).toBe(false);
+    expect(ruleCovers([c("rsm_name", "is-null")], [c("rsm_name", "is-null")])).toBe(true);
+    expect(ruleCovers([c("rsm_name", "is-null")], [c("rsm_name", "=", "Kim")])).toBe(false);
+    expect(ruleCovers([c("rsm_name", "!=", "Kim")], [c("rsm_name", "is-not-null")])).toBe(false);
+  });
+
+  it("never combines multiple conditions on either side", () => {
+    expect(ruleCovers([c("propensity_tier", "=", "A")], [c("propensity_tier", "=", "A"), c("recent", "=", true)])).toBe(true);
+    expect(ruleCovers([c("propensity_tier", "=", "A"), c("recent", "=", true)], [c("propensity_tier", "=", "A")])).toBe(false);
+    expect(ruleCovers([c("branch_code", "=", "X1")], [c("propensity_tier", "=", "A")])).toBe(false);
+  });
+
+  it("stays conservative about misses that would need combining conditions", () => {
+    expect(
+      ruleCovers([c("propensity_score", "between", ["0", "10"])], [c("propensity_score", ">=", "2"), c("propensity_score", "<=", "8")]),
+    ).toBe(false);
+    expect(ruleCovers([c("propensity_tier", "in", ["A", "B"])], [c("propensity_tier", "contains", "A")])).toBe(false);
+  });
+});
+
+describe("admin assignment: ruleContradicts (#102)", () => {
+  const c = (field: string, operator: RuleCondition["operator"], value: RuleCondition["value"] = null): RuleCondition => ({ field, operator, value });
+
+  it("flags a disjoint same-field pair", () => {
+    expect(ruleContradicts([c("propensity_score", "<", "1"), c("propensity_score", ">", "5")])).toBe(true);
+    expect(ruleContradicts([c("propensity_tier", "=", "A"), c("propensity_tier", "=", "B")])).toBe(true);
+    expect(ruleContradicts([c("rsm_name", "is-null"), c("rsm_name", "=", "Kim")])).toBe(true);
+    expect(ruleContradicts([c("recent", "=", true), c("recent", "!=", true)])).toBe(true);
+    expect(ruleContradicts([c("last_purchase_date", "<", "2024-01-01"), c("last_purchase_date", ">", "2024-06-30")])).toBe(true);
+  });
+
+  it("does not flag a satisfiable pair, cross-field pairs, an empty list, or a conservative three-way miss", () => {
+    expect(ruleContradicts([c("propensity_score", "<=", "5"), c("propensity_score", ">=", "5")])).toBe(false);
+    expect(ruleContradicts([c("propensity_tier", "in", ["A", "B"]), c("propensity_tier", "!=", "A")])).toBe(false);
+    expect(ruleContradicts([c("propensity_tier", "=", "A"), c("recent", "=", false)])).toBe(false);
+    expect(ruleContradicts([])).toBe(false);
+    expect(
+      ruleContradicts([c("propensity_tier", "in", ["A", "B"]), c("propensity_tier", "!=", "A"), c("propensity_tier", "!=", "B")]),
+    ).toBe(false);
+  });
+});
+
+describe("admin assignment: precision gap fix from #71 QA (#102)", () => {
+  const c = (field: string, operator: RuleCondition["operator"], value: RuleCondition["value"] = null): RuleCondition => ({ field, operator, value });
+
+  it("never proves disjointness/implication/contradiction from a >15-significant-digit numeric value", () => {
+    expect(conditionsDisjoint(c("propensity_score", "=", "0.1"), c("propensity_score", "!=", "0.10000000000000001"))).toBe(false);
+    expect(ruleContradicts([c("propensity_score", "=", "0.1"), c("propensity_score", "!=", "0.10000000000000001")])).toBe(false);
+    expect(conditionsDisjoint(c("revenue_amount_2025", "=", "9007199254740993"), c("revenue_amount_2025", "!=", "9007199254740992"))).toBe(false);
+    expect(conditionsDisjoint(c("propensity_score", "<", "0.10000000000000001"), c("propensity_score", ">=", "0.1"))).toBe(false);
+  });
+
+  it("never proves disjointness/covering from a non-ASCII `contains` comparison", () => {
+    expect(conditionsDisjoint(c("name", "=", "Straße"), c("name", "contains", "SS"))).toBe(false);
+    expect(ruleCovers([c("name", "contains", "SS")], [c("name", "=", "Straße")])).toBe(false);
+  });
+
+  it("still resolves conditionImplies directly for a safe numeric pair", () => {
+    expect(conditionImplies(c("propensity_score", "=", "5"), c("propensity_score", ">=", "5"))).toBe(true);
   });
 });
 

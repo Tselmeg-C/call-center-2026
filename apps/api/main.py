@@ -6,6 +6,7 @@ from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor
 from secrets import token_urlsafe
 from uuid import uuid4
+import json
 import re
 import logging
 from hashlib import sha256
@@ -361,6 +362,44 @@ def route_template(request: Request) -> str:
     return getattr(partial, "path", request.url.path) if partial is not None else request.url.path
 
 
+# #109: PostgreSQL text columns can't hold U+0000, so a NUL anywhere in request input must be
+# rejected before it ever reaches storage -- in memory mode too, so both modes behave alike. This
+# is the one shared place every request passes through (next to origin_guard, which every request
+# already goes through); no per-model/per-field validator duplicates this.
+def _contains_nul(value: object) -> bool:
+    """Walk a decoded JSON value at every depth (keys and values) for an actual U+0000 character --
+    never a raw-byte or escaped-text search, which would wrongly reject the literal 6-character
+    text \\u0000."""
+    if isinstance(value, str): return "\x00" in value
+    if isinstance(value, dict): return any(_contains_nul(key) or _contains_nul(item) for key, item in value.items())
+    if isinstance(value, list): return any(_contains_nul(item) for item in value)
+    return False
+
+
+async def _request_has_nul(request: Request) -> bool:
+    """The decoded path, every query parameter name/value, the parsed JSON body (any depth) and
+    multipart filenames/text fields -- never the bytes of an uploaded file itself."""
+    if "\x00" in request.url.path: return True
+    if any("\x00" in key or "\x00" in value for key, value in request.query_params.multi_items()): return True
+    content_type = request.headers.get("content-type", "")
+    body = await request.body()  # cached on the Request; replayed unchanged to the handler below
+    if content_type.startswith("multipart/form-data"):
+        try: form = await request.form()
+        except Exception: return False  # malformed multipart: let the handler's own parsing 422/400 it
+        try:
+            for name, value in form.multi_items():
+                if "\x00" in name: return True
+                if isinstance(value, str) and "\x00" in value: return True
+                if "\x00" in (getattr(value, "filename", None) or ""): return True
+            return False
+        finally:
+            await form.close()
+    if not body: return False
+    try: parsed = json.loads(body)
+    except ValueError: return False  # invalid JSON: keep today's 422 from the handler, not ours
+    return _contains_nul(parsed)
+
+
 @app.middleware("http")
 async def origin_guard(request: Request, call_next):
     started = perf_counter()
@@ -386,6 +425,9 @@ async def origin_guard(request: Request, call_next):
         if origin not in set(ALLOWED_ORIGINS) and not any(referer.startswith(value + "/") for value in ALLOWED_ORIGINS):
             logger.warning("request id=%s method=%s route=%s status=403 duration_ms=%.3f error=origin", request_id, request.method, route_template(request), (perf_counter() - started) * 1000, extra={"request_id": request_id})
             return Response("Origin not allowed.", status_code=403, headers={"x-request-id": request_id}, media_type="application/json")
+    if await _request_has_nul(request):
+        logger.warning("request id=%s method=%s route=%s status=422 duration_ms=%.3f error=nul", request_id, request.method, route_template(request), (perf_counter() - started) * 1000, extra={"request_id": request_id})
+        return JSONResponse({"detail": "Invalid request."}, status_code=422, headers={"x-request-id": request_id})
     response = await call_next(request)
     response.headers["x-request-id"] = request_id
     response.headers["x-app-version"] = APP_VERSION

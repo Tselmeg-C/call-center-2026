@@ -6,3 +6,5 @@ Synthetic valid and error payloads live in [`packages/shared/contract-fixtures.j
 Transport shapes are checked in at [`packages/shared/transport.ts`](../packages/shared/transport.ts); the same command checks operation coverage and detects mapping drift before a backend is introduced.
 
 Production sessions use an opaque `HttpOnly` cookie with `SameSite=Lax`, `Path=/`, and `Secure` outside localhost development. Sessions expire absolutely after eight hours; logout, expiry, password reset, deactivation, and role changes revoke them. Unsafe authenticated requests require an allowed `Origin` (or same-origin `Referer` fallback); credentialed CORS uses exact frontend origins. Examples and logs never contain passwords or session values.
+
+A NUL (U+0000) anywhere in a request -- any JSON string or object key at any depth, a query or path parameter, or an upload filename -- gives `422 {"detail": "Invalid request."}` with nothing stored, in both memory and PostgreSQL mode (#109); it's checked once, in `origin_guard`, not per endpoint.

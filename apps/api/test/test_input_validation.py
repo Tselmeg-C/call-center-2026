@@ -758,3 +758,250 @@ def test_operator_reset_password_rejects_bad_input_without_writing(env):
         assert client.post("/session/login", json={"email": "sales64@example.test", "password": " " + PASSWORD}).status_code == 200
     finally:
         client.close()
+
+
+# ---- #109: a NUL (U+0000) anywhere in request input is 422 Invalid request., in one shared check
+# every request passes through -- never per-model/per-field, never stored, never 500/503. ------------
+
+NUL = "\x00"
+
+
+def assert_nul_rejected(response):
+    assert response.status_code == 422 and response.json() == INVALID, response.text
+    assert "x-request-id" in response.headers  # rejected requests still get the header
+
+
+def raw_multipart_upload(env, submission_id, filename, content, content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"):
+    """Builds the multipart body by hand (bypassing httpx's `files=` encoder, which percent-encodes
+    a NUL in the filename instead of sending a real 0x00 byte) so a filename with a genuine NUL can
+    reach the server at all."""
+    boundary = "nul109boundary"
+    body = (f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="{filename}"\r\nContent-Type: {content_type}\r\n\r\n').encode("latin-1") + content + f"\r\n--{boundary}--\r\n".encode("latin-1")
+    url = f"/admin/imports?submission_id={submission_id}"
+    return env.admin.post(url, content=body, headers=ORIGIN | {"content-type": f"multipart/form-data; boundary={boundary}"})
+
+
+def workbook_with_raw_entity(entity, row) -> bytes:
+    """An ordinary workbook (see `workbook()`) with its customer_name cell's inline string replaced,
+    byte-for-byte in the sheet XML, by a raw (unescaped) XML entity -- e.g. `&#0;`, which XML 1.0
+    forbids as a character reference and openpyxl's parser rejects with ParseError."""
+    base = workbook(row)
+    with ZipFile(BytesIO(base)) as source:
+        files = {name: source.read(name) for name in source.namelist()}
+    needle = f'<c r="B2" t="inlineStr"><is><t>{row[1]}</t></is></c>'.encode()
+    sheet = files["xl/worksheets/sheet1.xml"]
+    assert needle in sheet, sheet
+    files["xl/worksheets/sheet1.xml"] = sheet.replace(needle, f'<c r="B2" t="inlineStr"><is><t>{entity}</t></is></c>'.encode(), 1)
+    out = BytesIO()
+    with ZipFile(out, "w", ZIP_DEFLATED) as archive:
+        for name, data in files.items(): archive.writestr(name, data)
+    return out.getvalue()
+
+
+def test_shared_rule_rejects_nul_in_every_json_body_endpoint(env):
+    """One field per JSON-body endpoint from the issue's table (login/provision/reset-password/
+    admin-user-create have their own dedicated nothing-stored tests below)."""
+    reason = env.admin.post("/admin/closure-reasons", json={"label": "Reason"}, headers=ORIGIN).json()
+    rule = create_rule(env)
+    item = create_followup(env.sales)
+    before = stored_state(env)
+    cases = [
+        lambda: env.admin.patch(f"/admin/users/{env.sales_id}", json={"name": f"a{NUL}b"}, headers=ORIGIN),
+        lambda: env.admin.post("/admin/closure-reasons", json={"label": f"L{NUL}"}, headers=ORIGIN),
+        lambda: env.admin.patch(f"/admin/closure-reasons/{reason['id']}", json={"label": f"{NUL}L"}, headers=ORIGIN),
+        lambda: env.admin.post("/admin/assignment-rules", json={"name": f"R{NUL}", "conditions": [], "memberIds": [env.sales_id]}, headers=ORIGIN),
+        lambda: env.admin.post("/admin/assignment-rules", json={"name": "Fresh", "conditions": [{"field": f"na{NUL}me", "operator": "=", "value": "x"}], "memberIds": [env.sales_id]}, headers=ORIGIN),
+        lambda: env.admin.post("/admin/assignment-rules", json={"name": "Fresh", "conditions": [{"field": "name", "operator": f"{NUL}=", "value": "x"}], "memberIds": [env.sales_id]}, headers=ORIGIN),
+        lambda: env.admin.post("/admin/assignment-rules", json={"name": "Fresh", "conditions": [{"field": "name", "operator": "=", "value": f"x{NUL}"}], "memberIds": [env.sales_id]}, headers=ORIGIN),
+        lambda: env.admin.post("/admin/assignment-rules", json={"name": "Fresh", "conditions": [], "memberIds": [f"{env.sales_id}{NUL}"]}, headers=ORIGIN),
+        lambda: env.admin.patch(f"/admin/assignment-rules/{rule['id']}", json={"name": f"{NUL}"}, headers=ORIGIN),
+        lambda: env.admin.put("/admin/assignment-fallback", json=[f"{env.sales_id}{NUL}"], headers=ORIGIN),
+        lambda: env.admin.post("/admin/assignment-runs", json={"scope": "unassigned", "submissionId": f"{NUL}"}, headers=ORIGIN),
+        lambda: env.admin.post("/admin/assignments/run", json={"scope": f"unassigned{NUL}", "submissionId": sid()}, headers=ORIGIN),
+        lambda: env.admin.post(f"/admin/assignments/manual/{BCN}", json={"ownerId": f"{env.sales_id}{NUL}", "submissionId": sid()}, headers=ORIGIN),
+        lambda: env.admin.post(f"/admin/assignments/manual/{BCN}", json={"ownerId": None, "submissionId": f"{NUL}"}, headers=ORIGIN),
+        lambda: env.sales.post(f"/customers/{BCN}/interactions", json={"outcome": "Contact", "note": f"{NUL}note", "submissionId": sid()}, headers=ORIGIN),
+        lambda: env.sales.post(f"/customers/{BCN}/follow-ups/{item['id']}/complete", json={"outcome": "Contact", "note": f"done{NUL}", "submissionId": sid()}, headers=ORIGIN),
+        lambda: env.sales.post(f"/customers/{BCN}/notes", json={"text": f"a{NUL}b", "submissionId": sid()}, headers=ORIGIN),
+        lambda: env.sales.post(f"/customers/{BCN}/notes", json={"text": "ok", "submissionId": f"s{NUL}"}, headers=ORIGIN),
+        lambda: env.sales.post(f"/customers/{BCN}/follow-ups", json={"type": f"Reminder{NUL}", "due": None, "note": "Call", "submissionId": sid()}, headers=ORIGIN),
+        lambda: env.sales.post(f"/customers/{BCN}/follow-ups", json={"type": "Reminder", "due": None, "note": f"Call{NUL}back", "submissionId": sid()}, headers=ORIGIN),
+        lambda: env.sales.patch(f"/customers/{BCN}/follow-ups/{item['id']}", json={"type": "Reminder", "due": None, "note": f"{NUL}", "submissionId": sid()}, headers=ORIGIN),
+        lambda: env.sales.post(f"/customers/{BCN}/follow-ups/{item['id']}/cancel", json={"submissionId": f"{NUL}c"}, headers=ORIGIN),
+        lambda: env.sales.post(f"/customers/{BCN}/close", json={"reasonId": reason["id"], "submissionId": f"c{NUL}"}, headers=ORIGIN),
+        lambda: env.sales.post(f"/customers/{BCN}/reopen", json={"submissionId": f"{NUL}r"}, headers=ORIGIN),
+    ]
+    for send in cases:
+        assert_nul_rejected(send())
+    assert stored_state(env) == before
+
+
+def test_shared_rule_rejects_nul_in_query_parameters(env):
+    before = stored_state(env)
+    cases = [
+        lambda: env.sales.get("/customers?q=%00"),
+        lambda: env.sales.get("/customers?status=%00"),
+        lambda: env.sales.get("/customers?owner=%00"),
+        lambda: env.sales.get("/customers?%00=x"),  # NUL in the query parameter's *name*
+        lambda: env.admin.get("/admin/audit?actor=%00"),
+        lambda: env.admin.get("/admin/audit?action=%00"),
+        lambda: env.admin.get("/admin/audit?bcn=%00"),
+        lambda: env.admin.get("/admin/audit?start=%00"),
+        lambda: env.admin.get("/admin/audit?end=%00"),
+        lambda: env.admin.get("/admin/reports?start=%00"),
+        lambda: env.admin.get("/admin/reports?end=%00"),
+        lambda: upload(env, "a%00b", workbook(["964900", "QueryNul"])),
+    ]
+    for send in cases:
+        assert_nul_rejected(send())
+    assert stored_state(env) == before
+
+
+def test_shared_rule_rejects_nul_in_path_parameters(env):
+    reason = env.admin.post("/admin/closure-reasons", json={"label": "PathReason"}, headers=ORIGIN).json()
+    rule = create_rule(env)
+    before = stored_state(env)
+    cases = [
+        lambda: env.sales.get("/customers/%00"),
+        lambda: env.sales.post("/customers/%00/notes", json={"text": "x", "submissionId": sid()}, headers=ORIGIN),
+        lambda: env.sales.delete(f"/customers/{BCN}/history/%00", headers=ORIGIN),
+        lambda: env.sales.patch(f"/customers/{BCN}/follow-ups/%00", json={"type": "Reminder", "due": None, "note": "x", "submissionId": sid()}, headers=ORIGIN),
+        lambda: env.sales.post(f"/customers/{BCN}/follow-ups/%00/cancel", json={"submissionId": sid()}, headers=ORIGIN),
+        lambda: env.admin.patch("/admin/users/%00", json={"name": "X"}, headers=ORIGIN),
+        lambda: env.admin.patch(f"/admin/closure-reasons/%00", json={"label": "Y"}, headers=ORIGIN),
+        lambda: env.admin.patch("/admin/assignment-rules/%00", json={"active": False}, headers=ORIGIN),
+        lambda: env.admin.get("/admin/imports/%00"),
+        lambda: env.admin.get("/admin/imports/%00/errors"),
+        lambda: env.admin.post("/admin/assignments/manual/%00", json={"ownerId": None, "submissionId": sid()}, headers=ORIGIN),
+    ]
+    for send in cases:
+        assert_nul_rejected(send())
+    assert stored_state(env) == before
+    assert reason["label"] == "PathReason" and rule["name"].startswith("Rule ")  # setup itself was unaffected
+
+
+def test_nul_nested_in_list_or_object_value_and_in_an_object_key_are_rejected(env):
+    before = stored_state(env)
+    nested_in_list = {"name": "Fresh", "conditions": [{"field": "name", "operator": "in", "value": ["ok", f"b{NUL}"]}], "memberIds": [env.sales_id]}
+    assert_nul_rejected(env.admin.post("/admin/assignment-rules", json=nested_in_list, headers=ORIGIN))
+    nested_in_object_value = {"name": "Fresh", "conditions": [{"field": "name", "operator": "=", "value": {f"k{NUL}": "v"}}], "memberIds": [env.sales_id]}
+    assert_nul_rejected(env.admin.post("/admin/assignment-rules", json=nested_in_object_value, headers=ORIGIN))
+    nested_top_level_key = {f"na{NUL}me": "Fresh", "conditions": [], "memberIds": [env.sales_id]}
+    assert_nul_rejected(env.admin.post("/admin/assignment-rules", json=nested_top_level_key, headers=ORIGIN))
+    assert stored_state(env) == before
+
+
+def test_nul_lookalikes_are_accepted_and_stored_as_sent(env):
+    literal_escape = "\\u0000"  # the six literal characters \, u, 0, 0, 0, 0 -- not a NUL
+    assert len(literal_escape) == 6 and NUL not in literal_escape
+    note = env.sales.post(f"/customers/{BCN}/notes", json={"text": literal_escape, "submissionId": sid()}, headers=ORIGIN)
+    assert note.status_code == 200 and note.json()["text"] == literal_escape
+    percent_encoded_percent = env.sales.get("/customers?q=%2500")  # decodes to the literal text %00, not NUL
+    assert percent_encoded_percent.status_code == 200
+    unicode_and_whitespace = env.sales.post(f"/customers/{BCN}/notes", json={"text": "müller 🎉\ttabbed\nnewline", "submissionId": sid()}, headers=ORIGIN)
+    assert unicode_and_whitespace.status_code == 200
+
+
+def test_other_control_characters_in_name_are_unaffected_by_the_nul_rule(env):
+    """U+0001 and U+0007F are out of scope for #109 (tracked separately as #112)."""
+    for char in ("\x01", "\x7f"):
+        created = env.admin.post("/admin/users", json=draft(name=f"Name{char}Extra"), headers=ORIGIN)
+        assert created.status_code == 201, created.text
+
+
+def test_import_filename_with_nul_rejected_and_stores_no_job(env):
+    before = stored_state(env)
+    response = raw_multipart_upload(env, uid(), f"a{NUL}b.xlsx", workbook(["964901", "Filename NUL"]))
+    assert_nul_rejected(response)
+    assert stored_state(env) == before
+
+
+def test_import_ordinary_workbook_with_raw_nul_zip_bytes_still_imports(env):
+    content = workbook(["964902", "Zip Bytes"])
+    assert b"\x00" in content  # an ordinary .xlsx is a zip; its raw bytes already contain 0x00
+    response = upload(env, uid(), content)
+    assert response.status_code == 201, response.text
+
+
+def test_import_workbook_cell_nul_entity_is_422_workbook_could_not_be_processed(env):
+    content = workbook_with_raw_entity("&#0;", ["964903", "Imported"])
+    before = stored_state(env)
+    response = upload(env, uid(), content)
+    assert response.status_code == 422 and response.json() == {"detail": "Workbook could not be processed."}, response.text
+    assert stored_state(env) == before
+
+
+def test_nul_never_500_regardless_of_auth_or_origin_order(env):
+    anonymous = TestClient(main.app, base_url="http://localhost")
+    try:
+        unauthenticated = anonymous.get("/customers/%00")
+        assert unauthenticated.status_code in (401, 403, 422)
+        wrong_origin = env.sales.post(f"/customers/{BCN}/notes", json={"text": f"x{NUL}", "submissionId": sid()}, headers={"origin": "http://evil.example"})
+        assert wrong_origin.status_code in (401, 403, 422)
+    finally:
+        anonymous.close()
+
+
+def test_login_nul_in_email_or_password_is_422_without_throttle_effects(env):
+    client = TestClient(main.app, base_url="http://localhost")
+    try:
+        for email in ("admin64@example.test", "nobody@example.test"):
+            for body in ({"email": f"{email}{NUL}", "password": PASSWORD}, {"email": email, "password": f"{NUL}{PASSWORD}"}, {"email": f"{NUL}", "password": PASSWORD}):
+                assert_nul_rejected(client.post("/session/login", json=body))
+        assert not main.repo.login_failures and not main.repo.login_failures_by_ip
+        for _ in range(20):
+            assert client.post("/session/login", json={"email": f"admin64@example.test{NUL}", "password": PASSWORD}).status_code == 422
+        well_formed = client.post("/session/login", json={"email": "admin64@example.test", "password": "wrong password here"})
+        assert well_formed.status_code == 401  # not 429: the 20 NUL attempts never touched the throttle
+    finally:
+        client.close()
+
+
+def test_operator_provision_nul_in_name_or_email_rejected_before_secret_and_state(env, monkeypatch):
+    secret = secrets.token_urlsafe(24)
+    monkeypatch.setenv("OPERATOR_PROVISION_SECRET", secret)
+    client = TestClient(main.app, base_url="http://localhost")
+    try:
+        base = {"name": "Initial Admin", "email": "first@example.test", "password": PASSWORD}
+        bad = [base | {"name": f"{NUL}Admin"}, base | {"email": f"first{NUL}@example.test"}]
+        for headers in ({}, {"x-operator-secret": "wrong"}, {"x-operator-secret": secret}):  # identical before and after an Admin exists
+            reject_identity(env, lambda body: client.post("/operator/provision", json=body, headers=ORIGIN | headers), bad)
+    finally:
+        client.close()
+
+
+def test_operator_reset_password_nul_in_password_rejected_and_stores_nothing(env):
+    client = TestClient(main.app, base_url="http://localhost")
+    try:
+        before = stored_state(env)
+        response = client.post(f"/operator/reset-password/{env.sales_id}", json={"password": f"{NUL}{PASSWORD}"}, headers=ORIGIN)
+        assert_nul_rejected(response)
+        assert stored_state(env) == before
+        assert env.sales.get("/session/me").status_code == 200  # session not revoked, password unchanged
+    finally:
+        client.close()
+
+
+def test_admin_user_create_nul_in_name_or_email_creates_no_user(env):
+    send = lambda body: env.admin.post("/admin/users", json=body, headers=ORIGIN)
+    base = draft()
+    bad = [base | {"name": f"{NUL}Name"}, base | {"email": f"a{NUL}@example.test"}]
+    reject_identity(env, send, bad)
+
+
+def test_admin_user_patch_nul_name_returns_422_and_keeps_active_and_ownership(env):
+    before = stored_state(env)
+    response = env.admin.patch(f"/admin/users/{env.sales_id}", json={"active": False, "name": f"a{NUL}"}, headers=ORIGIN)
+    assert_nul_rejected(response)
+    assert stored_state(env) == before  # customer ownership (part of stored_state) untouched
+    assert env.sales.get("/session/me").status_code == 200  # session not revoked
+
+
+def test_idempotent_write_nul_submission_id_stores_no_record_then_succeeds_without_nul(env):
+    submission = sid()
+    before = stored_state(env)
+    rejected = env.sales.post(f"/customers/{BCN}/notes", json={"text": "Called back", "submissionId": f"{NUL}{submission}"}, headers=ORIGIN)
+    assert_nul_rejected(rejected)
+    assert stored_state(env) == before
+    retried = env.sales.post(f"/customers/{BCN}/notes", json={"text": "Called back", "submissionId": submission}, headers=ORIGIN)
+    assert retried.status_code == 200 and retried.json()["text"] == "Called back"

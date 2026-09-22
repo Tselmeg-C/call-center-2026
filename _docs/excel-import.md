@@ -8,4 +8,5 @@ Imported fields are source attributes: `bcn` (required text, max 128), `customer
 
 - The `submission_id` query parameter is required: 1-120 characters with at least one non-whitespace character. Otherwise the request returns `422 {"detail": "Invalid request."}` before the file is read or any job is stored.
 - The uploaded filename is at most 255 characters (`422 {"detail": "Invalid request."}` otherwise) and must end in `.xlsx` (`422 "Upload an .xlsx workbook."` otherwise).
+- A NUL (U+0000) anywhere in `submission_id` or the filename also gives `422 {"detail": "Invalid request."}` with no job stored (#109) -- checked before the upload is read, same as everywhere else in the API. The uploaded file's own bytes are never scanned for it: an ordinary `.xlsx` is a zip and routinely contains raw `0x00` bytes, which import normally; a workbook cell that encodes NUL via an XML entity (`&#0;`) still fails to parse and gives `422 "Workbook could not be processed."` via openpyxl's own error.
 - Oversized uploads (10 MiB), expanded content (100 MiB) and row counts (10,000) return `413`.

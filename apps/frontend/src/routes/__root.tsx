@@ -3,7 +3,7 @@ import {
   Outlet,
   Link,
   createRootRouteWithContext,
-  useLocation,
+  useMatches,
   useRouter,
 } from "@tanstack/react-router";
 import { useEffect, type ReactNode } from "react";
@@ -133,12 +133,22 @@ export function authRedirectTarget(signedIn: boolean, onLoginRoute: boolean): "/
  *  explicitly via `router.navigate` here -- the one place every unauthenticated state (sign-out,
  *  session expiry, a revoked session) already funnels through -- fixes it at the root instead of
  *  in each caller, and also means Back into a now-stale authenticated URL re-triggers this same
- *  effect rather than re-rendering cached authenticated content. */
+ *  effect rather than re-rendering cached authenticated content.
+ *
+ *  `onLoginRoute` is read from `useMatches()` rather than `useLocation().pathname`. The router
+ *  commits a navigation's URL (what useLocation reads) and its resolved route matches (what
+ *  <Outlet/> renders) as two separate stores, so a render can observe the new pathname a tick
+ *  before <Outlet/> has swapped away from the previous, still-authenticated route match. Reading
+ *  onLoginRoute from the same matches store Outlet itself renders from keeps this decision and
+ *  Outlet's content always in lockstep, so the StoreProvider wrapper never drops out from under
+ *  a still-mounted authenticated route component (which otherwise throws "useStore must be used
+ *  inside StoreProvider", caught by the router's own boundary and immediately recovered from on
+ *  the next render -- harmless in practice, but console noise on every sign-out). */
 function AuthGate({ children }: { children: ReactNode }) {
   const { user, loading } = useSession();
-  const location = useLocation();
+  const matches = useMatches();
   const router = useRouter();
-  const onLoginRoute = location.pathname === "/login";
+  const onLoginRoute = matches.some((match) => match.routeId === "/login");
   const redirectTo = loading ? null : authRedirectTarget(!!user, onLoginRoute);
 
   useEffect(() => {

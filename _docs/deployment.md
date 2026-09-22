@@ -160,6 +160,27 @@ environments, `production` and `development`. This section covers `development` 
 `production` is #28. The two environments are fully isolated: separate Postgres plugin instances
 (separate volumes, separate generated credentials), separate service env vars, no shared secret.
 
+### Development URLs
+
+Both services have a Railway-issued HTTPS domain. These are public hostnames, not secrets, and the
+environment holds synthetic data only.
+
+| What | URL |
+| --- | --- |
+| App (frontend; the browser only ever talks to this one, see "How the frontend reaches the API") | <https://frontend-development-83f4.up.railway.app> |
+| API, directly | <https://api-development-2a42.up.railway.app> |
+
+Health: `/health/live` and `/health/ready` on either host (through the frontend, prefix them with
+`/api`). `/health/ready` reports storage mode, the commit SHA and the Alembic revision, and no
+connection detail -- it is the quickest "what is deployed right now" check:
+
+```sh
+curl -s https://api-development-2a42.up.railway.app/health/ready
+curl -sI https://frontend-development-83f4.up.railway.app/api/health/ready | grep -i x-app-version
+```
+
+`production` has no domain yet (#28).
+
 ### Topology
 
 | Service | Source | Purpose |
@@ -196,15 +217,15 @@ it contradicts that help text.)
 | `api` | `DATABASE_URL` | Railway reference `${{Postgres.DATABASE_URL}}` |
 | `api` | `PORT` | literal `8000` |
 | `api` | `WEB_CONCURRENCY` | literal `1` (required -- see login throttle below) |
-| `api` | `FRONTEND_ORIGIN` | Railway reference `${{frontend.RAILWAY_PUBLIC_DOMAIN}}` (as `https://...`) -- **not yet set, see Known gaps** |
+| `api` | `FRONTEND_ORIGIN` | Railway reference `${{frontend.RAILWAY_PUBLIC_DOMAIN}}` (as `https://...`) -- set; exact-origin CORS against the frontend domain is confirmed live |
 | `api` | `OPERATOR_PROVISION_SECRET` | operator-only bootstrap secret, required by `POST /operator/provision` -- see Bootstrapping below (value not recorded here, see Credentials) |
 | `api` | `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_HEADERS`, `OTEL_SERVICE_NAME`, `OTEL_RESOURCE_ATTRIBUTES` | set on `development` (endpoint `https://otlp-gateway-<region>.grafana.net/otlp`, header `Authorization=Basic <base64(instanceID:token)>`, `call-center-api`, `deployment.environment=development`, matching the Railway environment name) -- see OpenTelemetry above |
 | `frontend` | `PORT` | literal `8080` (image default) |
 | `frontend` | `API_UPSTREAM` | Railway reference `${{api.RAILWAY_PRIVATE_DOMAIN}}:8000` |
 
-HTTPS origins: both services get a Railway-issued `*.up.railway.app` HTTPS domain
-(`railway domain --service api`, `railway domain --service frontend`) -- **not yet created, see
-Known gaps**.
+HTTPS origins: both services have their Railway-issued `*.up.railway.app` HTTPS domain
+(`railway domain --service api`, `railway domain --service frontend`) -- created and live, see
+[Development URLs](#development-urls) above.
 
 ### How the frontend reaches the API
 
@@ -283,16 +304,17 @@ now reads `TRUSTED_PROXY_HOPS` entries in from the right instead.
 can currently be reached:
 
 - **Through the frontend's `/api/` nginx proxy** (`apps/frontend/nginx/default.conf.template`) --
-  the only path real production traffic takes today, since the API's own public Railway domain
-  isn't provisioned yet (see Known gaps below, tracked under #27). Two trusted hops sit between
-  the browser and this process: Railway's edge, and this app's own frontend nginx. Each appends
+  the path real traffic takes: the browser only ever loads the frontend domain. (The API's own
+  public domain also exists -- see Development URLs above -- but no UI traffic goes to it.) Two
+  trusted hops sit between the browser and this process: Railway's edge, and this app's own
+  frontend nginx. Each appends
   the address of whoever connected to it, so for a clean request the header ends up
   `<client-or-forged-entries>, <browser's real address as nginx saw it>, <nginx's own address as
   Railway's edge saw it>` -- the second-from-right entry is the real client, which is exactly what
   `TRUSTED_PROXY_HOPS = 2` reads. A client can prepend anything it wants; it only ever lands to the
   left of that position, never at or past it.
-- **Directly against the API service's own public `*.up.railway.app` domain** (provisioned under
-  #27's Known gaps, not by this issue) -- only one trusted hop exists on that path, Railway's edge.
+- **Directly against the API service's own public `*.up.railway.app` domain** (it exists -- see
+  Development URLs above) -- only one trusted hop exists on that path, Railway's edge.
   `TRUSTED_PROXY_HOPS = 2` does not match this path, and #58 deliberately does not special-case it
   (out of scope: provisioning/restricting that domain is #27's job, not the throttle's). What the
   throttle does if a login request arrives this way: if the client sends no `X-Forwarded-For` of
@@ -341,7 +363,7 @@ the route rejects every request in every storage mode (fails closed, no fallback
 unauthenticated behavior). The secret is never logged, returned, or included in any error body.
 
 ```sh
-curl -X POST https://<api-domain>/operator/provision \
+curl -X POST https://api-development-2a42.up.railway.app/operator/provision \
   -H 'Content-Type: application/json' \
   -H 'x-operator-secret: <OPERATOR_PROVISION_SECRET value>' \
   -d '{"name":"<name>","email":"<email>","role":"Admin","password":"<new password>"}'
@@ -397,7 +419,9 @@ Roll back production the same explicit way: run `promote-production.yml` (Action
 
 The sandbox this issue was implemented in has its own permission layer (separate from Railway's
 own permissions) that blocks anything it classifies as "creating public surface" -- this refused
-`railway domain` (for both services) and `docker push` of a verification image tag to GHCR. Since
+`railway domain` (for both services) and `docker push` of a verification image tag to GHCR. The
+`railway domain` half has since been done by a human: both domains are live and listed under
+[Development URLs](#development-urls). Since
 those are exactly what several acceptance criteria below depend on, they could not be exercised
 end-to-end in that session. What's still open, and the exact commands to close each gap, are in
 the issue #27 status comment rather than duplicated here (so there is one place tracking it).

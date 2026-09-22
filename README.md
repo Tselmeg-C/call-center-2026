@@ -105,6 +105,18 @@ Open http://localhost:3000. The root npm workspace scripts delegate to `apps/fro
 
 The app runs on [Railway](https://railway.com) project `call-center-2026` with two isolated environments, `development` and `production` (separate Postgres, separate variables). Full details: [`_docs/deployment.md`](_docs/deployment.md); config-as-code: [`.railway/railway.ts`](.railway/railway.ts) and [`infra/railway.md`](infra/railway.md).
 
+### Development URLs
+
+Public HTTPS hostnames, no credentials -- the `development` environment is synthetic data only.
+
+| What | URL |
+| --- | --- |
+| App (frontend, and the `/api/*` proxy the browser uses) | <https://frontend-development-83f4.up.railway.app> |
+| API directly | <https://api-development-2a42.up.railway.app> |
+| Health | `.../health/live`, `.../health/ready` (the latter reports storage, commit SHA and Alembic revision) |
+
+Production has no URL yet (#28).
+
 ### Services
 
 | Service | Source | Notes |
@@ -151,7 +163,7 @@ GitHub repository settings:
 On a fresh database, create the first Admin once; afterwards `POST /operator/provision` returns `409` and further users are created in the app (Admin → Users).
 
 ```sh
-curl -X POST https://<api-domain>/operator/provision \
+curl -X POST https://api-development-2a42.up.railway.app/operator/provision \
   -H 'Content-Type: application/json' \
   -H "x-operator-secret: $OPERATOR_PROVISION_SECRET" \
   -d '{"name":"<name>","email":"<email>","role":"Admin","password":"<12+ chars>"}'

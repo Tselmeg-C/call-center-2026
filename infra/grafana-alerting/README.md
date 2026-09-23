@@ -22,6 +22,7 @@ runbook and #35's issue thread for status.
 | `alert-rule-error-rate.json` | Alert rule: 5xx error rate > 5% on `development`, sourced from OTel metrics (#34/#44). | **Applied and live**, `isPaused: false`; PromQL checked against live `development` data (#35). |
 | `alert-rule-latency-p95.json` | Alert rule: p95 request duration > 1s on `development`, sourced from OTel metrics (#34/#44), matching the 1s p95 target in `_docs/persistence.md`. | **Applied and live**, `isPaused: false`; PromQL checked against live `development` data (#35). |
 | `contact-point-github-issue.json` | Webhook contact point: `POST https://api.github.com/repos/Tselmeg-C/call-center-2026/issues` with a custom JSON payload template (title/body/labels), no hosted middleman. | **Applied and live**, real PAT set (see #138 -- `authorization_credentials` lives in `settings`, not a `secureSettings` sibling). |
+| `notification-policy-route-email.json` | Child route placed **before** the GitHub route: matches `team=on-call`/`service=call-center-api`/`severity=critical` and sends to the owner-created email contact point `TselmegC` with `continue: true`, so the GitHub route still matches. Both `/health/ready` alerts (development and production) email; the warning-level rules don't. No contact-point file: the owner created it in the Grafana UI so the address never lives in this repo (#95). | **Applied and live** (2026-09-23, #95). |
 | `notification-policy-route.json` | One child route (not the whole policy tree) to merge into the stack's existing root notification policy, matching `team=on-call`/`service=call-center-api` labels to the contact point above, with `group_interval`/`repeat_interval` set. | **Applied and live**; `grafana_alerting_apply.py` does a GET-merge-PUT so it never clobbers unrelated routes. |
 
 ## Why Synthetic Monitoring for the readiness rule
@@ -38,7 +39,7 @@ filters on.
 Monitoring uses its own API/token scope, not the `alerting:write`/`dashboards:write`
 service-account scope named in #35's constraints -- and until a human finishes the one-time
 Synthetics setup in the Grafana UI (**Testing & synthetics -> Synthetics**, then **Synthetics ->
-Config** to generate an access token, saved as `grafana_sm_access_token`), there's no "Synthetic
+Config** to generate an access token, saved in `.env` as `grafana_sm_token`), there's no "Synthetic
 Monitoring" datasource on the stack and the SM API 403s regardless of token. There is no API for
 that one-time setup step. Once it's done, `../grafana_sm_apply.py` creates/updates the check itself
 from `synthetic-monitoring-check-health-ready.json` -- no further UI clicking needed. It discovers
@@ -52,7 +53,7 @@ decoder rejects an int here with `"invalid ip version string"` despite these bei
 ```sh
 # Never put values on the command line or in this file. Load from wherever this repo's
 # convention keeps them (e.g. .env), by variable name only:
-#   grafana_stack_url, grafana_service_account_token, GRAFANA_PROM_DATASOURCE_UID
+#   grafana_stack_url, grafana_service_account_token, GRAFANA_PROM_DATASOURCE_UID, grafana_sm_token
 set -a; . ./.env 2>/dev/null; set +a
 GRAFANA_STACK_URL="$grafana_stack_url" GRAFANA_SERVICE_ACCOUNT_TOKEN="$grafana_service_account_token" \
   python3 infra/grafana_alerting_apply.py --dry-run   # prints what it WOULD send, no network call
@@ -62,9 +63,9 @@ GRAFANA_STACK_URL="$grafana_stack_url" GRAFANA_SERVICE_ACCOUNT_TOKEN="$grafana_s
 
 # Synthetic Monitoring check -- separate token/API, see the section above for why:
 GRAFANA_STACK_URL="$grafana_stack_url" GRAFANA_SERVICE_ACCOUNT_TOKEN="$grafana_service_account_token" \
-  GRAFANA_SM_ACCESS_TOKEN="$grafana_sm_access_token" python3 infra/grafana_sm_apply.py --dry-run
+  GRAFANA_SM_ACCESS_TOKEN="$grafana_sm_token" python3 infra/grafana_sm_apply.py --dry-run
 GRAFANA_STACK_URL="$grafana_stack_url" GRAFANA_SERVICE_ACCOUNT_TOKEN="$grafana_service_account_token" \
-  GRAFANA_SM_ACCESS_TOKEN="$grafana_sm_access_token" python3 infra/grafana_sm_apply.py
+  GRAFANA_SM_ACCESS_TOKEN="$grafana_sm_token" python3 infra/grafana_sm_apply.py
 ```
 
 The script never prints token values, only HTTP status codes. It does **not** set the GitHub PAT --

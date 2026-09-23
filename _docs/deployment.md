@@ -181,6 +181,33 @@ curl -sI https://frontend-development-83f4.up.railway.app/api/health/ready | gre
 
 Production: `https://frontend-prod-production-d39f.up.railway.app`. api-prod has no public domain; see the production section below.
 
+### Development health monitor (#95)
+
+Grafana Cloud **Synthetic Monitoring** probes the development API's readiness endpoint. It replaced
+the GitHub Actions cron `dev-health-monitor.yml`, which was deleted in #95 because scheduled runs
+arrived hours apart.
+
+- **Check:** job `health-ready-development`, HTTP `GET https://api-development-2a42.up.railway.app/health/ready`,
+  every **60 s** with a **6 s** timeout, London probe. Only HTTP 200 passes. A 503, connection,
+  DNS or TLS error, or a timeout gives `probe_success = 0`. Config:
+  `infra/grafana-alerting/synthetic-monitoring-check-health-ready.json`, applied by `infra/grafana_sm_apply.py`.
+- **History:** Grafana → Testing & synthetics → Synthetics → `health-ready-development`, or query
+  `probe_success{job="health-ready-development"}` in the Prometheus datasource.
+- **Alert:** rule `oncall-health-ready-development` fires when `probe_success` < 1 for 5 minutes, or
+  when there is no data.
+- **Who is notified:** the owner by **email** (Grafana contact point `TselmegC`; the address is kept
+  only in Grafana) **and** the #35 on-call GitHub-issue webhook (`on-call-github-issue`). The email
+  route matches `team=on-call, service=call-center-api, severity=critical`, so the production
+  `/health/ready` alert emails too. The warning-level error-rate and latency rules do not email.
+- **Repeat and resolve:** a continuously failing check notifies once, then again at most every
+  **4 h** (`repeat_interval`). The email contact point has `disableResolveMessage: false`, so a
+  "resolved" email is sent on recovery. The GitHub webhook has `disableResolveMessage: true`, so it
+  opens no issue on recovery.
+- **Pause it:** disable the SM check (Synthetics → `health-ready-development` → Disable, or set
+  `"enabled": false` in the check JSON and re-run `grafana_sm_apply.py`). Or pause the alert rule, or
+  add a silence for `alertname`, in Grafana → Alerting. With the check disabled, the rule sees no
+  data and fires (`noDataState: Alerting`), so pause or silence the rule as well.
+
 ### Topology
 
 | Service | Source | Purpose |

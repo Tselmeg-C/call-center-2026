@@ -6,21 +6,22 @@ applies them to the live stack through the [Grafana Alerting Provisioning HTTP
 API](https://grafana.com/docs/grafana/latest/developers/http_api/alerting_provisioning/), the
 same kind of stack this repo already talks to for `observability/grafana-dashboard.json` (#34/#44).
 
-**Not yet applied to the live stack.** The engineering session that authored these files had no
-Grafana credentials at all in its sandbox (`grafana_stack_url` / `grafana_service_account_token`
-were not present, unlike the `.env` convention used by prior sessions on #44/#95) and does not have
-the fine-grained GitHub PAT this needs either (see below) -- both need a human/owner action first.
-See `_docs/on-call.md` for the exact remaining steps and #35's issue thread for status.
+**Applied and live** (as of #135/#138/#95's Synthetic Monitoring follow-up): the contact point,
+notification-policy route, and `/health/ready` alert rule are all live on the stack, backed by a
+real Synthetic Monitoring check (see `synthetic-monitoring-check-health-ready.json` below). The
+two OTel-sourced rules stay `isPaused: true`, blocked on #44. See `_docs/on-call.md` for the
+runbook and #35's issue thread for status.
 
 ## Files
 
 | File | What it is | Status |
 | --- | --- | --- |
-| `alert-rule-health-ready.json` | Alert rule: `/health/ready` failing on `development`, sourced from a Grafana Synthetic Monitoring HTTP check's `probe_success` metric. Does not depend on OTel export. | Ready to apply once the SM check exists and credentials are available. |
+| `alert-rule-health-ready.json` | Alert rule: `/health/ready` failing on `development`, sourced from a Grafana Synthetic Monitoring HTTP check's `probe_success` metric. Does not depend on OTel export. | **Applied and live.** |
+| `synthetic-monitoring-check-health-ready.json` | The Synthetic Monitoring HTTP check itself (`../grafana_sm_apply.py` applies it) -- `probe_success` for this exact target is what the rule above queries. | **Applied and live** (check id `91042`, London probe). |
 | `alert-rule-error-rate.json` | Alert rule: 5xx error rate > 5% on `development`, sourced from OTel metrics (#34/#44). | **`isPaused: true`. Blocked on #44** -- authored only, not verified. |
 | `alert-rule-latency-p95.json` | Alert rule: p95 request duration > 1s on `development`, sourced from OTel metrics (#34/#44), matching the 1s p95 target in `_docs/persistence.md`. | **`isPaused: true`. Blocked on #44** -- authored only, not verified. |
-| `contact-point-github-issue.json` | Webhook contact point: `POST https://api.github.com/repos/Tselmeg-C/call-center-2026/issues` with a custom JSON payload template (title/body/labels), no hosted middleman. | Ready to apply; the PAT placeholder in `secureSettings` must be replaced **only in the Grafana UI/API call**, never committed. |
-| `notification-policy-route.json` | One child route (not the whole policy tree) to merge into the stack's existing root notification policy, matching `team=on-call`/`service=call-center-api` labels to the contact point above, with `group_interval`/`repeat_interval` set. | Ready to apply; `grafana_alerting_apply.py` does a GET-merge-PUT so it never clobbers unrelated routes. |
+| `contact-point-github-issue.json` | Webhook contact point: `POST https://api.github.com/repos/Tselmeg-C/call-center-2026/issues` with a custom JSON payload template (title/body/labels), no hosted middleman. | **Applied and live**, real PAT set (see #138 -- `authorization_credentials` lives in `settings`, not a `secureSettings` sibling). |
+| `notification-policy-route.json` | One child route (not the whole policy tree) to merge into the stack's existing root notification policy, matching `team=on-call`/`service=call-center-api` labels to the contact point above, with `group_interval`/`repeat_interval` set. | **Applied and live**; `grafana_alerting_apply.py` does a GET-merge-PUT so it never clobbers unrelated routes. |
 
 ## Why Synthetic Monitoring for the readiness rule
 
@@ -28,13 +29,22 @@ The acceptance criteria call for "Grafana Synthetic Monitoring or an equivalent 
 the live URL directly." Grafana Alerting itself has no built-in "GET this URL and check the status
 code" query type; Synthetic Monitoring is the Grafana Cloud product that does that and publishes
 `probe_success`/`probe_http_status_code` etc. as ordinary Prometheus series in the stack's metrics
-datasource, which `alert-rule-health-ready.json` then queries like any other metric. **Creating the
-SM check itself is a separate manual step** (Synthetic Monitoring uses its own API/token scope,
-not the `alerting:write`/`dashboards:write` service-account scope named in #35's constraints): in
-Grafana Cloud, **Synthetic Monitoring -> New check -> HTTP**, target
-`https://api-development-2a42.up.railway.app/health/ready`, frequency 1m, expect HTTP 200. Once
-that check exists, its `instance` label is the target URL, which is exactly what
-`alert-rule-health-ready.json`'s query already filters on.
+datasource, which `alert-rule-health-ready.json` then queries like any other metric. Its `instance`
+label is the check's target URL, which is exactly what `alert-rule-health-ready.json`'s query
+filters on.
+
+**Creating the check requires a human step first, but not the check creation itself.** Synthetic
+Monitoring uses its own API/token scope, not the `alerting:write`/`dashboards:write`
+service-account scope named in #35's constraints -- and until a human finishes the one-time
+Synthetics setup in the Grafana UI (**Testing & synthetics -> Synthetics**, then **Synthetics ->
+Config** to generate an access token, saved as `grafana_sm_access_token`), there's no "Synthetic
+Monitoring" datasource on the stack and the SM API 403s regardless of token. There is no API for
+that one-time setup step. Once it's done, `../grafana_sm_apply.py` creates/updates the check itself
+from `synthetic-monitoring-check-health-ready.json` -- no further UI clicking needed. It discovers
+this tenant's region-specific SM API host (`https://synthetic-monitoring-api-<region>.grafana.net`
+-- not a fixed hostname) by reading that datasource's `jsonData.apiHost`, and sends the check's
+enum fields (`ipVersion`, `method`) as their string name (`"V4"`, `"GET"`) -- the API's JSON
+decoder rejects an int here with `"invalid ip version string"` despite these being protobuf enums.
 
 ## Applying
 
@@ -50,6 +60,12 @@ GRAFANA_STACK_URL="$grafana_stack_url" GRAFANA_SERVICE_ACCOUNT_TOKEN="$grafana_s
                                                         # and the health-ready rule only
 GRAFANA_STACK_URL="$grafana_stack_url" GRAFANA_SERVICE_ACCOUNT_TOKEN="$grafana_service_account_token" \
   python3 infra/grafana_alerting_apply.py --include-blocked  # also applies the two disabled #44-blocked rules
+
+# Synthetic Monitoring check -- separate token/API, see the section above for why:
+GRAFANA_STACK_URL="$grafana_stack_url" GRAFANA_SERVICE_ACCOUNT_TOKEN="$grafana_service_account_token" \
+  GRAFANA_SM_ACCESS_TOKEN="$grafana_sm_access_token" python3 infra/grafana_sm_apply.py --dry-run
+GRAFANA_STACK_URL="$grafana_stack_url" GRAFANA_SERVICE_ACCOUNT_TOKEN="$grafana_service_account_token" \
+  GRAFANA_SM_ACCESS_TOKEN="$grafana_sm_access_token" python3 infra/grafana_sm_apply.py
 ```
 
 The script never prints token values, only HTTP status codes. It does **not** set the GitHub PAT --

@@ -1,0 +1,15 @@
+{
+  "job": "health-ready-development",
+  "target": "https://api-development-2a42.up.railway.app/health/ready",
+  "enabled": true,
+  "frequency": 60000,
+  "timeout": 6000,
+  "probes": [1],
+  "labels": [{ "name": "environment", "value": "development" }],
+  "settings": {
+    "http": {
+      "ipVersion": "V4",
+      "method": "GET"
+    }
+  }
+}

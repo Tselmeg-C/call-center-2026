@@ -58,8 +58,8 @@
   },
   "annotations": {
     "summary": "call-center-api p95 request duration above 1s on development",
-    "description": "BLOCKED ON #44: authored and left disabled (isPaused=true) until OTel data is confirmed reaching Grafana Cloud with the deployment_environment=development label (issue #44). Threshold matches the 1s p95 target documented in _docs/persistence.md. Do not enable or treat as verified before #44 closes and this rule has been evaluated against real traffic.",
+    "description": "Fires when call-center-api p95 request duration on development exceeds 1s over 5m, sustained for 10m. Threshold matches the 1s p95 target documented in _docs/persistence.md. Idle development yields NaN/no data, which does not cross the threshold. Sourced from OTel metrics joined to target_info on deployment_environment, the same join as observability/grafana-dashboard.json.",
     "runbook_url": "https://github.com/Tselmeg-C/call-center-2026/blob/main/_docs/on-call.md"
   },
-  "isPaused": true
+  "isPaused": false
 }

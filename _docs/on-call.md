@@ -32,14 +32,14 @@ the alerting path itself.
 
 Config-as-code lives under [`infra/grafana-alerting/`](../infra/grafana-alerting/README.md),
 applied via `infra/grafana_alerting_apply.py` against the Grafana Alerting Provisioning HTTP API.
-Three rules, one webhook contact point, one notification-policy route:
+Four rules, one webhook contact point, one notification-policy route:
 
 | Rule | Source | Status |
 | --- | --- | --- |
-| `/health/ready` failing (development) | Synthetic Monitoring `probe_success` against the live readiness URL directly -- no OTel dependency | Authored, ready to apply once a human supplies Grafana credentials and creates the SM check (see the README) |
+| `/health/ready` failing (development) | Synthetic Monitoring `probe_success` against the live readiness URL directly -- no OTel dependency | **Applied and live** (SM check `91042`; fired for real in #136) |
 | `/health/ready` failing (production, #28) | Same Synthetic Monitoring check, against `frontend-prod-production-d39f.up.railway.app/api/health/ready` | **Applied and live** (2026-09-23, `probe_success = 1`). It fires through the same contact point, so the issue says `production`. The agent still investigates and fixes in `development` only, and a human promotes the fix |
-| Elevated 5xx error rate (development) | OTel metrics (#34/#44) | Authored, `isPaused: true` -- **blocked on #44** (needs real OTel data in Grafana Cloud to evaluate against) |
-| p95 latency SLO breach (development) | OTel metrics (#34/#44) | Authored, `isPaused: true` -- **blocked on #44**, same reason |
+| Elevated 5xx error rate (development) | OTel metrics, joined to `target_info` on `deployment_environment` like the dashboard | **Applied and live**, `isPaused: false` (#35). 5xx share > 5% over 5m, for 10m. Idle `development` gives no data, which maps to OK |
+| p95 latency SLO breach (development) | OTel metrics, same join | **Applied and live**, `isPaused: false` (#35). p95 > 1s over 5m, for 10m (target from `_docs/persistence.md`). Idle gives NaN/no data, which never crosses the threshold |
 
 The webhook contact point `POST`s directly to `https://api.github.com/repos/Tselmeg-C/call-center-2026/issues`
 with a custom JSON payload (`title`, `body`, `labels`) -- no new hosted middleman service. The
@@ -157,9 +157,7 @@ when the real probe/webhook isn't wired yet.
 fixes a genuine synthetic bug -> CI gates pass -> image published -> human promotes" drill needs,
 in order:
 
-1. The Grafana webhook actually wired live -- blocked on the fine-grained GitHub PAT (needs a
-   human in the GitHub UI; there is no API to create one) **and** on this session having no
-   Grafana credentials at all (see "What's left for the owner" below).
+1. The Grafana webhook actually wired live -- **done** (#138; the live alert opened #136).
 2. A real, deliberately-introduced synthetic bug landed on `main` for the agent to find --
    introducing that itself requires a merge, which the implementing engineer role for #35 does
    not do (same "never merge" rule any engineer session follows).
@@ -176,29 +174,30 @@ Grafana `/health/ready` alert (or a manual `on-call`-labeled stand-in issue) sum
 walk through steps 1-6 above with a human doing the merge and the promotion. Record the run URL,
 the PR/commit, and the promotion decision as evidence, the same way this document records #134.
 
-**The error-rate and latency-breach alert paths** are drilled the same way once #44 closes and
-those two rules are un-paused; until then this is a named follow-up tracked on #35 (and on #44
-while it stays open).
+**The error-rate and latency-breach rules** are enabled (#35). Their PromQL was checked live
+against `development` telemetry, and each was shown to reach `Firing` with a lowered threshold in
+rule **Preview** only, never saved, so no real issue was opened. A real end-to-end drill of these
+two paths is part of the same follow-up as above.
 
 ## What's left for the owner
 
-1. **Create the fine-grained GitHub PAT**: GitHub -> Settings -> Developer settings -> Fine-grained
+1. ~~**Create the fine-grained GitHub PAT**~~ -- **done** (#138). GitHub -> Settings -> Developer settings -> Fine-grained
    tokens -> generate one scoped to only `Tselmeg-C/call-center-2026`, permission "Issues: Read and
    write" only. There is no API for this step.
-2. **Supply Grafana Cloud credentials** (`grafana_stack_url`, a service-account token scoped to
+2. ~~**Supply Grafana Cloud credentials**~~ -- **done**, in the gitignored `.env` by variable name. Originally: (`grafana_stack_url`, a service-account token scoped to
    `alerting:write`/`dashboards:write`, and the stack's Prometheus datasource UID) to a session
    that can run `infra/grafana_alerting_apply.py` -- or apply `infra/grafana-alerting/*.json`
    manually through the Grafana UI using those files as the exact reference.
-3. **Paste the PAT from step 1 into the Grafana contact point's secure `authorization_credentials`
-   field** during that apply -- never into a file, commit, issue, or chat message.
+3. ~~**Paste the PAT from step 1 into the Grafana contact point's secure `authorization_credentials`
+   field**~~ -- **done** (#138). Never into a file, commit, issue, or chat message.
 4. ~~Create the Synthetic Monitoring HTTP check for `/health/ready` on `development`~~ -- **done.**
    Check id `91042` (London probe), applied via `infra/grafana_sm_apply.py`. The one remaining
    manual part was the one-time Synthetics setup in the Grafana UI (**Testing & synthetics ->
    Synthetics**, then **Synthetics -> Config** for an access token) -- there's no API for that
    step, but check creation/updates themselves are now code (see
    `infra/grafana-alerting/README.md`).
-5. Once wired, run (or ask for) the follow-up end-to-end drill described above, including the
-   error-rate/latency rules once #44 closes.
+5. Run (or ask for) the follow-up end-to-end drill described above, covering all three
+   `development` signals.
 
 **Confirmed live, 2026-09-23:** the full loop fired for real -- `/health/ready` alerted on a
 genuine `NoData` gap (this SM check didn't exist yet), the webhook opened

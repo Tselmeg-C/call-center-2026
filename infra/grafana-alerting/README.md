@@ -9,7 +9,7 @@ same kind of stack this repo already talks to for `observability/grafana-dashboa
 **Applied and live** (as of #135/#138/#95's Synthetic Monitoring follow-up): the contact point,
 notification-policy route, and `/health/ready` alert rule are all live on the stack, backed by a
 real Synthetic Monitoring check (see `synthetic-monitoring-check-health-ready.json` below). The
-two OTel-sourced rules stay `isPaused: true`, blocked on #44. See `_docs/on-call.md` for the
+two OTel-sourced rules (error rate, p95 latency) are enabled and live too (#35). See `_docs/on-call.md` for the
 runbook and #35's issue thread for status.
 
 ## Files
@@ -19,8 +19,8 @@ runbook and #35's issue thread for status.
 | `alert-rule-health-ready.json` | Alert rule: `/health/ready` failing on `development`, sourced from a Grafana Synthetic Monitoring HTTP check's `probe_success` metric. Does not depend on OTel export. | **Applied and live.** |
 | `synthetic-monitoring-check-health-ready.json` | The Synthetic Monitoring HTTP check itself (`../grafana_sm_apply.py` applies it) -- `probe_success` for this exact target is what the rule above queries. | **Applied and live** (check id `91042`, London probe). |
 | `alert-rule-health-ready-production.json` / `synthetic-monitoring-check-health-ready-production.json` | Same pair for `production` (#28), probing `https://frontend-prod-production-d39f.up.railway.app/api/health/ready` through the frontend's `/api` proxy (api-prod has no public domain), so it also catches a broken frontend-to-API upstream. Both apply scripts pick it up automatically. | **Applied and live** (2026-09-23, London probe, `probe_success = 1`). |
-| `alert-rule-error-rate.json` | Alert rule: 5xx error rate > 5% on `development`, sourced from OTel metrics (#34/#44). | **`isPaused: true`. Blocked on #44** -- authored only, not verified. |
-| `alert-rule-latency-p95.json` | Alert rule: p95 request duration > 1s on `development`, sourced from OTel metrics (#34/#44), matching the 1s p95 target in `_docs/persistence.md`. | **`isPaused: true`. Blocked on #44** -- authored only, not verified. |
+| `alert-rule-error-rate.json` | Alert rule: 5xx error rate > 5% on `development`, sourced from OTel metrics (#34/#44). | **Applied and live**, `isPaused: false`; PromQL checked against live `development` data (#35). |
+| `alert-rule-latency-p95.json` | Alert rule: p95 request duration > 1s on `development`, sourced from OTel metrics (#34/#44), matching the 1s p95 target in `_docs/persistence.md`. | **Applied and live**, `isPaused: false`; PromQL checked against live `development` data (#35). |
 | `contact-point-github-issue.json` | Webhook contact point: `POST https://api.github.com/repos/Tselmeg-C/call-center-2026/issues` with a custom JSON payload template (title/body/labels), no hosted middleman. | **Applied and live**, real PAT set (see #138 -- `authorization_credentials` lives in `settings`, not a `secureSettings` sibling). |
 | `notification-policy-route.json` | One child route (not the whole policy tree) to merge into the stack's existing root notification policy, matching `team=on-call`/`service=call-center-api` labels to the contact point above, with `group_interval`/`repeat_interval` set. | **Applied and live**; `grafana_alerting_apply.py` does a GET-merge-PUT so it never clobbers unrelated routes. |
 
@@ -58,9 +58,7 @@ GRAFANA_STACK_URL="$grafana_stack_url" GRAFANA_SERVICE_ACCOUNT_TOKEN="$grafana_s
   python3 infra/grafana_alerting_apply.py --dry-run   # prints what it WOULD send, no network call
 GRAFANA_STACK_URL="$grafana_stack_url" GRAFANA_SERVICE_ACCOUNT_TOKEN="$grafana_service_account_token" \
   python3 infra/grafana_alerting_apply.py             # applies contact point, notification-policy route,
-                                                        # and the health-ready rule only
-GRAFANA_STACK_URL="$grafana_stack_url" GRAFANA_SERVICE_ACCOUNT_TOKEN="$grafana_service_account_token" \
-  python3 infra/grafana_alerting_apply.py --include-blocked  # also applies the two disabled #44-blocked rules
+                                                        # and every alert-rule-*.json
 
 # Synthetic Monitoring check -- separate token/API, see the section above for why:
 GRAFANA_STACK_URL="$grafana_stack_url" GRAFANA_SERVICE_ACCOUNT_TOKEN="$grafana_service_account_token" \

@@ -14,7 +14,6 @@ This script never prints, logs, or echoes their values -- only HTTP status codes
 Usage (see infra/grafana-alerting/README.md for the full walkthrough):
     GRAFANA_STACK_URL=... GRAFANA_SERVICE_ACCOUNT_TOKEN=... python3 infra/grafana_alerting_apply.py --dry-run
     GRAFANA_STACK_URL=... GRAFANA_SERVICE_ACCOUNT_TOKEN=... python3 infra/grafana_alerting_apply.py
-    GRAFANA_STACK_URL=... GRAFANA_SERVICE_ACCOUNT_TOKEN=... python3 infra/grafana_alerting_apply.py --include-blocked
 
 Optional: GITHUB_ONCALL_PAT, if set, is forwarded into the contact point's secure
 authorization_credentials field instead of the committed placeholder. It is read from the
@@ -36,8 +35,12 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 ALERTING_DIR = HERE / "grafana-alerting"
 
-ALWAYS_RULES = ["alert-rule-health-ready.json", "alert-rule-health-ready-production.json"]
-BLOCKED_RULES = ["alert-rule-error-rate.json", "alert-rule-latency-p95.json"]
+RULES = [
+    "alert-rule-health-ready.json",
+    "alert-rule-health-ready-production.json",
+    "alert-rule-error-rate.json",
+    "alert-rule-latency-p95.json",
+]
 CONTACT_POINT_FILE = "contact-point-github-issue.json"
 POLICY_ROUTE_FILE = "notification-policy-route.json"
 
@@ -100,6 +103,7 @@ def apply_contact_point(base_url, token, pat, dry_run):
 
 def apply_alert_rule(base_url, token, filename, dry_run):
     rule = substitute_placeholders(load_json(filename))
+    print(f"rule {rule['uid']} ({filename}, isPaused={rule['isPaused']})")
     result = request(base_url, token, "POST", "/api/v1/provisioning/alert-rules", rule, dry_run)
     if result is None and not dry_run:
         request(
@@ -133,10 +137,6 @@ def apply_notification_policy(base_url, token, dry_run):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dry-run", action="store_true", help="print requests, make no network call")
-    parser.add_argument(
-        "--include-blocked", action="store_true",
-        help="also apply the two #44-blocked, isPaused rules (still disabled once applied)",
-    )
     args = parser.parse_args()
 
     base_url = os.environ.get("GRAFANA_STACK_URL")
@@ -152,13 +152,8 @@ def main():
 
     apply_contact_point(base_url, token, pat, args.dry_run)
     apply_notification_policy(base_url, token, args.dry_run)
-    for name in ALWAYS_RULES:
+    for name in RULES:
         apply_alert_rule(base_url, token, name, args.dry_run)
-    if args.include_blocked:
-        for name in BLOCKED_RULES:
-            apply_alert_rule(base_url, token, name, args.dry_run)
-    else:
-        print(f"Skipping {len(BLOCKED_RULES)} #44-blocked rule(s); pass --include-blocked to author them live (still isPaused).")
     return 0
 
 

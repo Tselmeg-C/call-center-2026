@@ -20,7 +20,7 @@ never a hardcoded endpoint or credential:
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | OTLP/HTTP base endpoint (Grafana Cloud's OTLP gateway). The exporters append `/v1/traces`, `/v1/metrics`, `/v1/logs`; they are always HTTP/protobuf (the gateway doesn't accept gRPC -- issue #44), so `OTEL_EXPORTER_OTLP_PROTOCOL` is not used. **Unset means OTel is fully disabled**: no exporter is constructed, no background export thread starts, no network call is ever attempted. | `https://otlp-gateway-<region>.grafana.net/otlp` |
 | `OTEL_EXPORTER_OTLP_HEADERS` | Auth for that endpoint (Grafana Cloud instance ID + API key, as `Authorization=Basic <base64>` or `key=value` pairs). | `Authorization=Basic <redacted>` |
 | `OTEL_SERVICE_NAME` | Service name attached to every span/log/metric. Defaults to `call-center-api` if unset. | `call-center-api` |
-| `OTEL_RESOURCE_ATTRIBUTES` | Extra resource attributes, most importantly `deployment.environment`: `development` on dev (matches the Railway environment name); production is set in #28 -- this is how environments are told apart in Grafana, not separate Grafana Cloud accounts. | `deployment.environment=prod` |
+| `OTEL_RESOURCE_ATTRIBUTES` | Extra resource attributes, most importantly `deployment.environment`: `development` on dev, `production` on production (matching the Railway environment names) -- this is how environments are told apart in Grafana, not separate Grafana Cloud accounts. | `deployment.environment=prod` |
 
 Real Grafana Cloud values (the actual OTLP endpoint URL, instance ID, and API key) are never
 committed to this repository. They exist only as Railway environment variables (set on the
@@ -151,13 +151,13 @@ Swap `<sha>` for `latest` to run the newest `main` build instead of a pinned com
 
 After verification, the workflow runs `railway service source connect --image <image>:<tag> --service <api-prod|frontend-prod> --environment production --project <id>` for both services, authenticated with the account-scoped `RAILWAY_API_TOKEN` secret (the same one the development deploy uses; a Project Token cannot run this mutation). The `api-prod` and `frontend-prod` services (Railway service names are unique across the whole project, so production cannot reuse dev's `api`/`frontend`/`Postgres`; its database is `postgres-prod`), their variables, and their domains must already exist in `production` -- the first `source connect` creates a service, but with no variables it would crash-loop. Promote the exact SHA development is running (`/health/ready`), not `latest`.
 
-**Manual one-time setup required**: the `production` environment's required-reviewer protection rule cannot be created by CI -- this repo's `GITHUB_TOKEN` gets a 403 on `PUT .../environments/production`. A repo admin must add it manually: GitHub web UI -> Settings -> Environments -> `production` -> Required reviewers -> add `Tselmeg-C`. Until that's done, `workflow_dispatch` runs against the `production` environment proceed without a human approval gate.
+**Required-reviewer gate:** CI can't create the `production` environment's required-reviewer rule, because this repo's `GITHUB_TOKEN` gets a 403 on `PUT .../environments/production`. A repo admin added it by hand (Settings -> Environments -> `production` -> Required reviewers -> `Tselmeg-C`). Confirmed working: run [35910206055](https://github.com/Tselmeg-C/call-center-2026/actions/runs/35910206055) waited for that approval. `gh workflow run` from a codespace gets a 403 because it uses the integration token, so start promotions from the Actions web UI.
 
 ## Railway `development` environment (#27)
 
 Project `call-center-2026` (Railway project id `e7501ba0-4b15-42e1-a4a5-e4a4aaba614b`) has two
 environments, `production` and `development`. This section covers `development` only --
-`production` is #28. The two environments are fully isolated: separate Postgres plugin instances
+see *Railway `production` environment (#28)* below for production. The two environments are fully isolated: separate Postgres plugin instances
 (separate volumes, separate generated credentials), separate service env vars, no shared secret.
 
 ### Development URLs
@@ -179,7 +179,7 @@ curl -s https://api-development-2a42.up.railway.app/health/ready
 curl -sI https://frontend-development-83f4.up.railway.app/api/health/ready | grep -i x-app-version
 ```
 
-`production` has no domain yet (#28).
+Production: `https://frontend-prod-production-d39f.up.railway.app`. api-prod has no public domain; see the production section below.
 
 ### Topology
 
@@ -489,6 +489,43 @@ either if the current image is the broken one. Use the `service source connect -
 <previous-sha>` form.
 
 Roll back production the same explicit way: run `promote-production.yml` (Actions -> Promote to production -> Run workflow) with the previous release's full commit SHA; it goes through the same `production` approval. Do not re-run an old GitHub Actions run to roll back: `ci.yml` deliberately does not move `latest` or redeploy development for a commit that is no longer the head of `main`.
+
+## Railway `production` environment (#28)
+
+`production` lives in the same Railway project as `development`. Railway service names must be
+unique across the whole project, so production uses its own names:
+
+| Service | Source | Public URL |
+| --- | --- | --- |
+| `frontend-prod` | `ghcr.io/tselmeg-c/call-center-2026-frontend:<sha>` | `https://frontend-prod-production-d39f.up.railway.app` |
+| `api-prod` | `ghcr.io/tselmeg-c/call-center-2026-api:<sha>` | none: reached only through the frontend's `/api` proxy |
+| `postgres-prod` | Railway Postgres plugin (own volume and credentials) | none |
+
+Variables (names only): api-prod has `CALL_CENTER_STORAGE=postgres`,
+`DATABASE_URL=${{postgres-prod.DATABASE_URL}}`, `FRONTEND_ORIGIN` (the exact frontend URL above),
+`PORT=8000`, `WEB_CONCURRENCY=1`, `OPERATOR_PROVISION_SECRET`, and the four `OTEL_*` variables. The OTEL
+endpoint and credential are the same as development, with `deployment.environment=production`.
+frontend-prod has `API_UPSTREAM=${{api-prod.RAILWAY_PRIVATE_DOMAIN}}:8000`. Nothing is shared with
+development except the Grafana Cloud stack, where the `deployment.environment` label keeps the
+environments apart.
+
+- **Readiness:** `curl https://frontend-prod-production-d39f.up.railway.app/api/health/ready`
+  returns the running SHA (`version`) and Alembic revision (`migration`).
+- **First Admin:** bootstrapped once via `/operator/provision` through the frontend proxy, with an
+  `Origin: https://frontend-prod-production-d39f.up.railway.app` header, since the API rejects unsafe
+  methods from any other origin. The bootstrap slot is spent. Further accounts come from `POST /admin/users`.
+- **Synthetic smoke:** `SMOKE_BASE_URL=https://frontend-prod-production-d39f.up.railway.app/api
+  SMOKE_ADMIN_EMAIL=<admin email> SMOKE_ADMIN_PASSWORD=<read with read -s, never on the command
+  line> python3 -m apps.api.postgres_smoke`. It runs the Admin/Sales journey: login, import,
+  assignment, interaction, follow-up create/complete, close/reopen, reimport preservation, reports,
+  audit, logout, and a 401 after logout. Each run leaves one `smoke-sales-<n>@example.test` user and
+  one "Smoke Customer" (BCN `99xxxx`). Keep them as labelled synthetic data rather than deleting
+  them, because the audit trail references them.
+- **Monitoring:** a Grafana Synthetic Monitoring check (`health-ready-production`) probes the
+  readiness URL above every 60s. The `oncall-health-ready-production` alert fires after 5 minutes
+  of failure, through the on-call GitHub-issue route (see `_docs/on-call.md`).
+- **Release and rollback:** `promote-production.yml` as described in *Promoting a published tag to
+  production* above. Release evidence is in `_docs/release-recovery.md`.
 
 ## On-call alerting (#35)
 

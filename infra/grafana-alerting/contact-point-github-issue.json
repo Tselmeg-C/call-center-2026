@@ -1,0 +1,21 @@
+{
+  "uid": "oncall-github-issue",
+  "name": "on-call-github-issue",
+  "type": "webhook",
+  "disableResolveMessage": true,
+  "settings": {
+    "url": "https://api.github.com/repos/Tselmeg-C/call-center-2026/issues",
+    "httpMethod": "POST",
+    "authorization_scheme": "token",
+    "httpHeaderName1": "Accept",
+    "httpHeaderValue1": "application/vnd.github+json",
+    "httpHeaderName2": "X-GitHub-Api-Version",
+    "httpHeaderValue2": "2022-11-28",
+    "payload": {
+      "template": "{\n  \"title\": \"[on-call] {{ .CommonLabels.alertname }} firing ({{ .CommonLabels.environment }})\",\n  \"body\": \"@claude\\n\\nAn on-call alert opened this issue automatically. Investigate using Tempo/Loki/metrics for this service and environment, then implement and test a fix in `development` per `_docs/team/software-engineer.md`. See `_docs/on-call.md` for the full runbook. Never touch production directly.\\n\\n**Alert:** {{ .CommonLabels.alertname }}\\n**Service:** {{ .CommonLabels.service }}\\n**Environment:** {{ .CommonLabels.environment }}\\n**Firing since:** {{ (index .Alerts.Firing 0).StartsAt }}\\n**Summary:** {{ .CommonAnnotations.summary }}\\n**Details:** {{ .CommonAnnotations.description }}\\n**Grafana:** {{ .ExternalURL }}\\n**Dashboard:** {{ .ExternalURL }}/d/call-center-api/call-center-api-request-telemetry?var-environment={{ .CommonLabels.environment }}\\n\\nThis body is generated only from alert metadata (name, service, environment, timing, dashboard links) -- it never includes raw log lines, query results, credentials, connection strings, or customer/note content.\",\n  \"labels\": [\"on-call\"]\n}"
+    }
+  },
+  "secureSettings": {
+    "authorization_credentials": "REPLACE-IN-GRAFANA-UI-ONLY--paste-the-fine-grained-PAT-here--issues-read-write--repo-restricted--never-commit-this-value"
+  }
+}

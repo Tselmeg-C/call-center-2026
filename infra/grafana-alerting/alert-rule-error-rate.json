@@ -1,0 +1,65 @@
+{
+  "uid": "oncall-error-rate-development",
+  "orgID": 1,
+  "folderUID": "oncall-alerts",
+  "ruleGroup": "on-call",
+  "title": "call-center-api: elevated 5xx error rate (development)",
+  "condition": "C",
+  "data": [
+    {
+      "refId": "A",
+      "queryType": "",
+      "relativeTimeRange": { "from": 600, "to": 0 },
+      "datasourceUid": "${GRAFANA_PROM_DATASOURCE_UID}",
+      "model": {
+        "refId": "A",
+        "instant": true,
+        "range": false,
+        "expr": "sum(rate(http_server_request_duration_seconds_count{job=\"call-center-api\", http_response_status_code=~\"5..\"}[5m]) * on (job, instance) group_left(deployment_environment) max by (job, instance, deployment_environment) (target_info{job=\"call-center-api\", deployment_environment=\"development\"})) / sum(rate(http_server_request_duration_seconds_count{job=\"call-center-api\"}[5m]) * on (job, instance) group_left(deployment_environment) max by (job, instance, deployment_environment) (target_info{job=\"call-center-api\", deployment_environment=\"development\"}))"
+      }
+    },
+    {
+      "refId": "B",
+      "queryType": "",
+      "relativeTimeRange": { "from": 600, "to": 0 },
+      "datasourceUid": "__expr__",
+      "model": {
+        "refId": "B",
+        "type": "reduce",
+        "expression": "A",
+        "reducer": "last"
+      }
+    },
+    {
+      "refId": "C",
+      "queryType": "",
+      "relativeTimeRange": { "from": 600, "to": 0 },
+      "datasourceUid": "__expr__",
+      "model": {
+        "refId": "C",
+        "type": "threshold",
+        "expression": "B",
+        "conditions": [
+          {
+            "evaluator": { "type": "gt", "params": [0.05] }
+          }
+        ]
+      }
+    }
+  ],
+  "noDataState": "OK",
+  "execErrState": "Error",
+  "for": "10m",
+  "labels": {
+    "team": "on-call",
+    "service": "call-center-api",
+    "environment": "development",
+    "severity": "warning"
+  },
+  "annotations": {
+    "summary": "call-center-api 5xx error rate above 5% on development",
+    "description": "BLOCKED ON #44: authored and left disabled (isPaused=true) until OTel data is confirmed reaching Grafana Cloud with the deployment_environment=development label (issue #44). Do not enable or treat as verified before #44 closes and this rule has been evaluated against real traffic.",
+    "runbook_url": "https://github.com/Tselmeg-C/call-center-2026/blob/main/_docs/on-call.md"
+  },
+  "isPaused": true
+}

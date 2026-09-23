@@ -490,6 +490,17 @@ either if the current image is the broken one. Use the `service source connect -
 
 Roll back production the same explicit way: run `promote-production.yml` (Actions -> Promote to production -> Run workflow) with the previous release's full commit SHA; it goes through the same `production` approval. Do not re-run an old GitHub Actions run to roll back: `ci.yml` deliberately does not move `latest` or redeploy development for a commit that is no longer the head of `main`.
 
+## On-call alerting (#35)
+
+Grafana Cloud alert rules (`/health/ready` failures, elevated error rate, p95 latency SLO --
+config-as-code in [`infra/grafana-alerting/`](../infra/grafana-alerting/README.md)) fire a webhook
+that opens a GitHub issue containing `@claude`, summoning the same on-call agent described in
+`_docs/team/software-engineer.md` to investigate (Tempo/Loki/metrics) and land a tested fix in
+`development` through the CI pipeline above. A human always makes the separate, deliberate call to
+promote that fix to production the normal way (`v*` tag or `promote-production.yml`) -- the agent
+never gets production access. Full runbook, trigger mechanism, duplicate/flapping handling, and
+silencing instructions: [`_docs/on-call.md`](on-call.md).
+
 ### Known gaps -- blocked in the implementing session, need a human follow-up
 
 The sandbox this issue was implemented in has its own permission layer (separate from Railway's

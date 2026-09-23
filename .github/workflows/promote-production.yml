@@ -70,5 +70,5 @@ jobs:
         run: |
           set -e
           npm install -g @railway/cli@5.57.5
-          railway service source connect --image "$IMAGE_API:$TAG" --service api --environment production --project "$RAILWAY_PROJECT_ID"
-          railway service source connect --image "$IMAGE_FRONTEND:$TAG" --service frontend --environment production --project "$RAILWAY_PROJECT_ID"
+          railway service source connect --image "$IMAGE_API:$TAG" --service api-prod --environment production --project "$RAILWAY_PROJECT_ID"
+          railway service source connect --image "$IMAGE_FRONTEND:$TAG" --service frontend-prod --environment production --project "$RAILWAY_PROJECT_ID"

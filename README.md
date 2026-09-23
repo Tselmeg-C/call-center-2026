@@ -218,6 +218,10 @@ Import [`observability/grafana-dashboard.json`](observability/grafana-dashboard.
 
 OTel names show up in Grafana with underscores: `http.route` → `http_route`, `deployment.environment` → `deployment_environment`, `http.server.request.duration` → `http_server_request_duration_seconds`. Metrics carry `job="call-center-api"` (from `service.name`).
 
+### On-call agent
+
+Grafana Cloud alert rules (config-as-code: [`infra/grafana-alerting/`](infra/grafana-alerting/README.md)) open a GitHub issue containing `@claude` when `/health/ready` fails or (once #44 closes) error rate/latency SLOs breach on `development`; that summons an agent to investigate via Tempo/Loki/metrics and land a tested fix, which flows through CI/CD above like any other change. A human always makes the separate call to promote to production. Full runbook: [`_docs/on-call.md`](_docs/on-call.md).
+
 ## Containers
 
 `apps/api/Dockerfile` and `apps/frontend/Dockerfile` build reproducible images for both apps; `infra/docker-compose.yml` runs the full stack (`postgres`, `api`, `frontend`) in containers with `docker compose -f infra/docker-compose.yml up --build`. This is additive -- the non-container `npm run dev` / `apps/api/start.sh` workflow above keeps working unchanged. `npm run smoke:containers` builds both images and smoke-checks them against `infra/docker-compose.test.yml`'s Postgres. See [`_docs/deployment.md`](_docs/deployment.md) for exact commands and details.

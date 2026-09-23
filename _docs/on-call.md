@@ -190,8 +190,17 @@ while it stays open).
    manually through the Grafana UI using those files as the exact reference.
 3. **Paste the PAT from step 1 into the Grafana contact point's secure `authorization_credentials`
    field** during that apply -- never into a file, commit, issue, or chat message.
-4. **Create the Synthetic Monitoring HTTP check** for `/health/ready` on `development` (see
-   `infra/grafana-alerting/README.md` for the exact target URL and settings) -- a separate manual
-   step, since check creation uses a different Grafana API/token scope than alerting/dashboards.
+4. ~~Create the Synthetic Monitoring HTTP check for `/health/ready` on `development`~~ -- **done.**
+   Check id `91042` (London probe), applied via `infra/grafana_sm_apply.py`. The one remaining
+   manual part was the one-time Synthetics setup in the Grafana UI (**Testing & synthetics ->
+   Synthetics**, then **Synthetics -> Config** for an access token) -- there's no API for that
+   step, but check creation/updates themselves are now code (see
+   `infra/grafana-alerting/README.md`).
 5. Once wired, run (or ask for) the follow-up end-to-end drill described above, including the
    error-rate/latency rules once #44 closes.
+
+**Confirmed live, 2026-09-23:** the full loop fired for real -- `/health/ready` alerted on a
+genuine `NoData` gap (this SM check didn't exist yet), the webhook opened
+[#136](https://github.com/Tselmeg-C/call-center-2026/issues/136), and the on-call agent
+investigated and correctly reported no code regression (the gap was infra setup, not a bug).
+Closed once the check above made the underlying condition resolve for real.

@@ -207,6 +207,13 @@ arrived hours apart.
   `"enabled": false` in the check JSON and re-run `grafana_sm_apply.py`). Or pause the alert rule, or
   add a silence for `alertname`, in Grafana → Alerting. With the check disabled, the rule sees no
   data and fires (`noDataState: Alerting`), so pause or silence the rule as well.
+- **Drill (2026-09-23, #95):** a temporary check against `/health/does-not-exist` (404) gave its
+  first `probe_success = 0` at 20:37:13Z. The alert fired at 20:43:10Z, and Grafana sent the email and
+  the GitHub issue (#149, closed as a drill) at 20:43:40Z. The owner confirmed the email arrived at
+  20:43Z. After the check was pointed at `/health/ready` it returned `probe_success = 1` at 20:44:26Z,
+  the alert was back to Normal by 20:50Z, and the resolved email was sent at 20:53:40Z. The temporary
+  check and rule were then deleted. The drill check ran every 4 minutes, not 60 s, because a third
+  60 s check would exceed the stack's 100,000 checks-per-month Synthetic Monitoring quota.
 
 ### Topology
 

@@ -29,7 +29,12 @@ def load(name):
 
 @pytest.mark.parametrize(
     "name",
-    ALL_RULE_FILES + ["contact-point-github-issue.json", "notification-policy-route.json"],
+    ALL_RULE_FILES
+    + [
+        "contact-point-github-issue.json",
+        "notification-policy-route.json",
+        "notification-policy-route-email.json",
+    ],
 )
 def test_file_is_valid_json(name):
     load(name)  # raises if invalid
@@ -136,3 +141,72 @@ def test_apply_script_never_places_tokens_on_a_command_line_literal():
     assert "os.environ.get(\"GRAFANA_SERVICE_ACCOUNT_TOKEN\")" in script
     assert "--token" not in script
     assert "add_argument(\"--pat\"" not in script
+
+
+# Owner-created in the Grafana UI (#95); the address lives only in Grafana, never in this repo.
+EMAIL_CONTACT_POINT = "TselmegC"
+
+
+def test_email_route_references_an_existing_receiver_and_continues():
+    import grafana_alerting_apply as apply
+
+    route = load("notification-policy-route-email.json")
+    assert route["receiver"] == EMAIL_CONTACT_POINT
+    # continue: true, and listed before the GitHub route, so the GitHub route still matches too.
+    assert route["continue"] is True
+    assert apply.POLICY_ROUTE_FILES == ["notification-policy-route-email.json", "notification-policy-route.json"]
+    assert route["repeat_interval"] == "4h"
+
+
+def _labels_match(route, labels):
+    return all(labels.get(k) == v for k, v in (m.split("=", 1) for m in route["matchers"]))
+
+
+@pytest.mark.parametrize("environment", ["development", "production"])
+def test_health_ready_alerts_route_to_both_email_and_github_issue(environment):
+    """Walks the managed routes the way Alertmanager does (first match, keep going on continue)."""
+    import grafana_alerting_apply as apply
+
+    labels = load(
+        "alert-rule-health-ready.json" if environment == "development" else "alert-rule-health-ready-production.json"
+    )["labels"]
+    assert labels["environment"] == environment
+    receivers = []
+    for route in (load(n) for n in apply.POLICY_ROUTE_FILES):
+        if _labels_match(route, labels):
+            receivers.append(route["receiver"])
+            if not route["continue"]:
+                break
+    assert receivers == [EMAIL_CONTACT_POINT, "on-call-github-issue"]
+
+
+def test_warning_rules_do_not_email():
+    route = load("notification-policy-route-email.json")
+    for name in ("alert-rule-error-rate.json", "alert-rule-latency-p95.json"):
+        assert not _labels_match(route, load(name)["labels"])
+
+
+def test_github_route_unchanged_by_email_route():
+    route = load("notification-policy-route.json")
+    assert route["receiver"] == "on-call-github-issue"
+    assert (route["group_interval"], route["repeat_interval"], route["continue"]) == ("5m", "4h", False)
+
+
+def test_merge_routes_keeps_unrelated_routes_and_replaces_ours_in_place():
+    import grafana_alerting_apply as apply
+
+    other_before = {"receiver": "someone-else", "matchers": ["a=b"]}
+    other_after = {"receiver": "another", "matchers": ["c=d"]}
+    stale_github = {"receiver": "on-call-github-issue", "matchers": ["old=1"]}
+    ours = [{"receiver": EMAIL_CONTACT_POINT}, {"receiver": "on-call-github-issue"}]
+    merged = apply.merge_routes([other_before, stale_github, other_after], ours)
+    assert merged == [other_before, *ours, other_after]
+    # Applying twice is idempotent, and an empty tree just gets ours.
+    assert apply.merge_routes(merged, ours) == merged
+    assert apply.merge_routes([], ours) == ours
+
+
+def test_no_committed_file_contains_an_email_address():
+    email = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+    for path in ALERTING_DIR.glob("*.json"):
+        assert not email.search(path.read_text(encoding="utf-8")), path.name

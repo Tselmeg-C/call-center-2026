@@ -58,26 +58,17 @@ jobs:
           docker manifest inspect "$IMAGE_FRONTEND:$TAG" > /dev/null
           echo "Both images verified for tag $TAG."
 
+      # Same account-scoped token and pattern as ci.yml's "Deploy development" step: a Project
+      # Token is environment-scoped and read-mostly and cannot run `service source connect`
+      # ("Unauthorized"). RAILWAY_API_TOKEN already exists and works for every environment in
+      # this account, so production reuses it rather than needing a separate secret.
       - name: Point Railway production service at verified tag
         env:
           TAG: ${{ inputs.image_tag }}
-          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          RAILWAY_API_TOKEN: ${{ secrets.RAILWAY_API_TOKEN }}
+          RAILWAY_PROJECT_ID: e7501ba0-4b15-42e1-a4a5-e4a4aaba614b
         run: |
-          # ponytail: documented placeholder, not a real Railway call. This repo does not yet
-          # have a RAILWAY_TOKEN secret or the production project/service IDs (pending #27/#28).
-          # The tag-existence verification above is fully real; this step only proves the gate
-          # is wired up. Once RAILWAY_TOKEN and the service IDs exist, replace the body below
-          # with the Railway CLI/API call that sets each service's deployed image to
-          # "$IMAGE_API:$TAG" / "$IMAGE_FRONTEND:$TAG", e.g.:
-          #   railway up --service <api-service-id> --image "$IMAGE_API:$TAG"
-          #   railway up --service <frontend-service-id> --image "$IMAGE_FRONTEND:$TAG"
-          # or the equivalent call against Railway's public GraphQL API
-          # (https://docs.railway.com/reference/public-api). Never echo RAILWAY_TOKEN.
-          if [ -z "$RAILWAY_TOKEN" ]; then
-            echo "RAILWAY_TOKEN is not configured yet -- Railway update is a documented placeholder."
-            echo "Verified tag $TAG is safe to promote for both $IMAGE_API and $IMAGE_FRONTEND."
-            echo "Wire this step up once #27/#28 supply RAILWAY_TOKEN and the Railway service IDs."
-            exit 0
-          fi
-          echo "RAILWAY_TOKEN is set but the Railway CLI/API call is not implemented yet -- see #27/#28."
-          exit 1
+          set -e
+          npm install -g @railway/cli@5.57.5
+          railway service source connect --image "$IMAGE_API:$TAG" --service api --environment production --project "$RAILWAY_PROJECT_ID"
+          railway service source connect --image "$IMAGE_FRONTEND:$TAG" --service frontend --environment production --project "$RAILWAY_PROJECT_ID"

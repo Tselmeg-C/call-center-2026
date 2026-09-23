@@ -37,9 +37,17 @@ assert client.get("/health/ready").status_code == 200
 sales = client.post("/admin/users", json={"name": "Smoke Sales", "email": sales_email, "role": "Sales", "password": password}, headers=origin)
 assert sales.status_code == 201
 sales_id = sales.json()["id"]
-workbook = Workbook(); workbook.active.append(["bcn", "customer_name"]); workbook.active.append([bcn, "Smoke Customer"])
-payload = BytesIO(); workbook.save(payload)
-imported = client.post(f"/admin/imports?submission_id=smoke-import-{run}", files={"file": ("smoke.xlsx", payload.getvalue(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")}, headers=origin)
+reasons = client.get("/admin/closure-reasons").json()
+reason_id = next((item["id"] for item in reasons if item["active"]), None) or client.post("/admin/closure-reasons", json={"label": "Smoke closure"}, headers=origin).json()["id"]
+
+
+def import_customer(name, submission_id):
+    workbook = Workbook(); workbook.active.append(["bcn", "customer_name"]); workbook.active.append([bcn, name])
+    payload = BytesIO(); workbook.save(payload)
+    return client.post(f"/admin/imports?submission_id={submission_id}", files={"file": ("smoke.xlsx", payload.getvalue(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")}, headers=origin)
+
+
+imported = import_customer("Smoke Customer", f"smoke-import-{run}")
 assert imported.status_code == 201 and imported.json()["created"] == 1
 assert client.get(f"/admin/imports/smoke-import-{run}/errors?page=1&page_size=25").json()["total"] == 0
 assigned = client.post(f"/admin/assignments/manual/{bcn}", json={"ownerId": sales_id, "submissionId": f"smoke-assignment-{run}"}, headers=origin)
@@ -56,9 +64,20 @@ assert completed.status_code == 200
 assert completed.json()["interactionId"].startswith("interaction-")
 detail = client.get(f"/customers/{bcn}")
 assert detail.status_code == 200 and detail.json()["followUps"][0]["interactionId"] == completed.json()["interactionId"]
+closed = client.post(f"/customers/{bcn}/close", json={"reasonId": reason_id, "submissionId": f"smoke-close-{run}"}, headers=origin)
+assert closed.status_code == 200 and closed.json()["status"] == "Closed"
+reopened = client.post(f"/customers/{bcn}/reopen", json={"submissionId": f"smoke-reopen-{run}"}, headers=origin)
+assert reopened.status_code == 200 and reopened.json()["status"] == "Open" and reopened.json()["ownerId"] == sales_id
 assert client.get("/workload").status_code == 200
 assert client.post("/session/logout", headers=origin).status_code == 204
 assert client.post("/session/login", json={"email": admin_email, "password": admin_password}).status_code == 200
+reimported = import_customer("Smoke Customer Reimported", f"smoke-reimport-{run}")
+assert reimported.status_code == 201 and reimported.json()["created"] == 0 and reimported.json()["updated"] == 1
+# Reimport refreshes source fields only: owner, status, history and follow-ups must survive it.
+after = client.get(f"/customers/{bcn}").json()
+assert after["name"] == "Smoke Customer Reimported" and after["ownerId"] == sales_id and after["status"] == "Open"
+assert {"Closure", "Reopen"} <= {item.get("kind") for item in after["histories"]}
+assert after["followUps"][0]["interactionId"] == completed.json()["interactionId"]
 assert client.get("/admin/reports").status_code == 200
 assert client.get("/admin/audit").status_code == 200
 assert client.post("/session/logout", headers=origin).status_code == 204

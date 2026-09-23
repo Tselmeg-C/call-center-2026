@@ -272,6 +272,10 @@ def readable_followups() -> list[dict]:
 def health_live() -> dict:
     return {"status": "ok"}
 
+@app.get("/version")
+def version() -> dict:
+    raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, "Version unavailable.")  # SYNTHETIC BUG (#148): should return {"version": APP_VERSION}
+
 def _check_postgres_ready() -> str:
     with auth_db.engine.connect() as connection:
         connection.exec_driver_sql("SELECT 1")

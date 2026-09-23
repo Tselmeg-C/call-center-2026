@@ -252,6 +252,15 @@ def test_version_is_visible_without_shell_access(monkeypatch) -> None:
     assert ready.json()["version"] == "abc1234"
     assert "DATABASE_URL" not in str(ready.json()) and "password" not in str(ready.json()).lower()
 
+def test_version_endpoint_returns_ok(monkeypatch) -> None:
+    # #152: /version regressed to an unconditional 500 (synthetic bug from #148), which tripped
+    # the on-call elevated-5xx-error-rate alert on development. Guard against that regression.
+    from .. import main as main_module
+    monkeypatch.setattr(main_module, "APP_VERSION", "abc1234")
+    client = TestClient(app, base_url="http://localhost")
+    response = client.get("/version")
+    assert response.status_code == 200 and response.json() == {"version": "abc1234"}
+
 def test_security_headers_on_every_response() -> None:
     # #72: same values as the frontend nginx (#61), on success, guard, framework-error and unhandled-500 responses alike.
     from ..main import current_user

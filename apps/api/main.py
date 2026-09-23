@@ -274,7 +274,7 @@ def health_live() -> dict:
 
 @app.get("/version")
 def version() -> dict:
-    raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, "Version unavailable.")  # SYNTHETIC BUG (#148): should return {"version": APP_VERSION}
+    return {"version": APP_VERSION}
 
 def _check_postgres_ready() -> str:
     with auth_db.engine.connect() as connection:

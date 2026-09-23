@@ -758,7 +758,6 @@ def create_followup(bcn: str, body: FollowUpCreate, user: Annotated[User, Depend
         if (prior.get("type"), prior.get("due"), prior.get("note")) != (body.type, body.due, body.note):
             raise HTTPException(status.HTTP_409_CONFLICT, "Submission already used.")
         return prior
-    if body.type not in {"Appointment", "Reminder"}: raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Invalid follow-up type.")
     reject_past_appointment(body)
     record = {"id": f"followup-{uuid4()}", "bcn": bcn, "type": body.type, "due": body.due, "note": body.note, "status": "Open", "actor": user.name, "actorId": user.id, "createdAt": datetime.now(timezone.utc).isoformat()}
     if activity_db is not None:

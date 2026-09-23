@@ -2,7 +2,7 @@
 
 No network call, no Grafana credentials needed -- validates the committed config-as-code is
 internally consistent and safe (no real-looking secret committed, @claude/on-call present where
-required, blocked rules stay disabled) without ever reaching the live stack.
+required, every rule enabled) without ever reaching the live stack.
 
 Run with: python3 -m pytest infra/test_grafana_alerting.py
 """
@@ -20,7 +20,6 @@ ALL_RULE_FILES = [
     "alert-rule-error-rate.json",
     "alert-rule-latency-p95.json",
 ]
-BLOCKED_RULE_FILES = ["alert-rule-error-rate.json", "alert-rule-latency-p95.json"]
 
 
 def load(name):
@@ -69,12 +68,18 @@ def test_health_ready_rule_is_enabled_and_not_blocked(name, instance):
     assert f'instance="{instance}"' in exprs
 
 
-@pytest.mark.parametrize("name", BLOCKED_RULE_FILES)
-def test_metrics_rules_are_disabled_and_documented_as_blocked(name):
+@pytest.mark.parametrize("name", ALL_RULE_FILES)
+def test_all_rules_enabled_and_not_described_as_blocked(name):
     rule = load(name)
-    assert rule["isPaused"] is True, f"{name} must stay isPaused until #44 closes"
-    assert "#44" in rule["annotations"]["description"]
-    assert "blocked" in rule["annotations"]["description"].lower()
+    assert rule["isPaused"] is False
+    assert "#44" not in rule["annotations"]["description"]
+
+
+def test_apply_script_applies_every_rule_file():
+    import grafana_alerting_apply as apply
+
+    assert sorted(apply.RULES) == sorted(ALL_RULE_FILES)
+    assert sorted(apply.RULES) == sorted(p.name for p in ALERTING_DIR.glob("alert-rule-*.json"))
 
 
 def test_contact_point_shape_and_github_target():

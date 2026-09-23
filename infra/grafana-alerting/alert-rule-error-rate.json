@@ -58,8 +58,8 @@
   },
   "annotations": {
     "summary": "call-center-api 5xx error rate above 5% on development",
-    "description": "BLOCKED ON #44: authored and left disabled (isPaused=true) until OTel data is confirmed reaching Grafana Cloud with the deployment_environment=development label (issue #44). Do not enable or treat as verified before #44 closes and this rule has been evaluated against real traffic.",
+    "description": "Fires when the share of call-center-api requests on development answered with a 5xx status exceeds 5% over 5m, sustained for 10m. Idle development (no requests) yields no data, which maps to OK. Sourced from OTel metrics joined to target_info on deployment_environment, the same join as observability/grafana-dashboard.json.",
     "runbook_url": "https://github.com/Tselmeg-C/call-center-2026/blob/main/_docs/on-call.md"
   },
-  "isPaused": true
+  "isPaused": false
 }

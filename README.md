@@ -224,7 +224,7 @@ OTel names show up in Grafana with underscores: `http.route` → `http_route`, `
 
 ### On-call agent
 
-Grafana Cloud alert rules (config-as-code: [`infra/grafana-alerting/`](infra/grafana-alerting/README.md)) open a GitHub issue containing `@claude` when `/health/ready` fails or (once #44 closes) error rate/latency SLOs breach on `development`; that summons an agent to investigate via Tempo/Loki/metrics and land a tested fix, which flows through CI/CD above like any other change. A human always makes the separate call to promote to production. Full runbook: [`_docs/on-call.md`](_docs/on-call.md).
+Grafana Cloud alert rules (config-as-code: [`infra/grafana-alerting/`](infra/grafana-alerting/README.md)) open a GitHub issue containing `@claude` when `/health/ready` fails or the 5xx error rate (> 5%) or p95 latency (> 1s) SLOs breach on `development`; that summons an agent to investigate via Tempo/Loki/metrics and land a tested fix, which flows through CI/CD above like any other change. A human always makes the separate call to promote to production. Full runbook: [`_docs/on-call.md`](_docs/on-call.md).
 
 ## Containers
 

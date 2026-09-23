@@ -16,6 +16,7 @@ ALERTING_DIR = Path(__file__).resolve().parent / "grafana-alerting"
 
 ALL_RULE_FILES = [
     "alert-rule-health-ready.json",
+    "alert-rule-health-ready-production.json",
     "alert-rule-error-rate.json",
     "alert-rule-latency-p95.json",
 ]
@@ -41,7 +42,7 @@ def test_alert_rule_shape(name):
     for field in ("uid", "title", "condition", "data", "for", "labels", "annotations", "isPaused"):
         assert field in rule, f"{name} missing required field {field!r}"
     assert rule["labels"].get("service") == "call-center-api"
-    assert rule["labels"].get("environment") == "development"
+    assert rule["labels"].get("environment") == ("production" if "production" in name else "development")
     # refIds referenced by "condition" and each query's own model.refId must be internally consistent.
     ref_ids = {q["refId"] for q in rule["data"]}
     assert rule["condition"] in ref_ids
@@ -49,14 +50,23 @@ def test_alert_rule_shape(name):
         assert q["model"]["refId"] == q["refId"]
 
 
-def test_health_ready_rule_is_enabled_and_not_blocked():
-    rule = load("alert-rule-health-ready.json")
+@pytest.mark.parametrize(
+    "name, instance",
+    [
+        ("alert-rule-health-ready.json", "https://api-development-2a42.up.railway.app/health/ready"),
+        ("alert-rule-health-ready-production.json", "https://frontend-prod-production-d39f.up.railway.app/api/health/ready"),
+    ],
+)
+def test_health_ready_rule_is_enabled_and_not_blocked(name, instance):
+    rule = load(name)
     assert rule["isPaused"] is False
     assert "#44" not in rule["annotations"]["description"]
     # Queries the live readiness URL directly, no OTel/#44 dependency.
     exprs = " ".join(q["model"].get("expr", "") for q in rule["data"])
     assert "probe_success" in exprs
     assert "/health/ready" in exprs
+    # Must match the Synthetic Monitoring check's target exactly, or probe_success never matches.
+    assert f'instance="{instance}"' in exprs
 
 
 @pytest.mark.parametrize("name", BLOCKED_RULE_FILES)

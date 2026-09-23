@@ -1,4 +1,4 @@
-"""Apply infra/grafana-alerting/synthetic-monitoring-check-health-ready.json to the live
+"""Apply infra/grafana-alerting/synthetic-monitoring-check-*.json (development and production) to the live
 Grafana Cloud Synthetic Monitoring stack (issue #35/#95).
 
 Not part of the running API -- a local/operator authoring tool only, stdlib-only, mirroring
@@ -40,13 +40,12 @@ import urllib.request
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-CHECK_FILE = HERE / "grafana-alerting" / "synthetic-monitoring-check-health-ready.json"
+CHECK_FILES = sorted((HERE / "grafana-alerting").glob("synthetic-monitoring-check-*.json"))
 SM_DATASOURCE_TYPE = "synthetic-monitoring-datasource"
 
 
-def load_check():
-    with open(CHECK_FILE, "r", encoding="utf-8") as f:
-        return json.load(f)
+def load_checks():
+    return [json.loads(path.read_text(encoding="utf-8")) for path in CHECK_FILES]
 
 
 def get_sm_api_host(grafana_base_url, grafana_token):
@@ -105,11 +104,12 @@ def main():
         )
         return 1
 
-    check = load_check()
+    checks = load_checks()
 
     if args.dry_run:
         sm_request(None, sm_token, "GET", "/probe/list", None, dry_run=True)
-        sm_request(None, sm_token, "POST", "/check/add", check, dry_run=True)
+        for check in checks:
+            sm_request(None, sm_token, "POST", "/check/add", check, dry_run=True)
         return 0
 
     api_host = get_sm_api_host(grafana_base_url, grafana_token)
@@ -125,12 +125,13 @@ def main():
     existing = sm_request(api_host, sm_token, "GET", "/check/list")
     if existing is None:
         return 1
-    match = next((c for c in existing if c.get("job") == check["job"]), None)
-    if match:
-        check_with_id = {**check, "id": match["id"], "tenantId": match["tenantId"]}
-        sm_request(api_host, sm_token, "POST", "/check/update", check_with_id)
-    else:
-        sm_request(api_host, sm_token, "POST", "/check/add", check)
+    for check in checks:
+        match = next((c for c in existing if c.get("job") == check["job"]), None)
+        if match:
+            check_with_id = {**check, "id": match["id"], "tenantId": match["tenantId"]}
+            sm_request(api_host, sm_token, "POST", "/check/update", check_with_id)
+        else:
+            sm_request(api_host, sm_token, "POST", "/check/add", check)
     return 0
 
 

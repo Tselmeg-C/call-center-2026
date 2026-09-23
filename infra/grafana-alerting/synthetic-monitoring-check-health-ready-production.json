@@ -1,0 +1,22 @@
+{
+  "job": "health-ready-production",
+  "target": "https://frontend-prod-production-d39f.up.railway.app/api/health/ready",
+  "enabled": true,
+  "frequency": 60000,
+  "timeout": 6000,
+  "probes": [
+    1
+  ],
+  "labels": [
+    {
+      "name": "environment",
+      "value": "production"
+    }
+  ],
+  "settings": {
+    "http": {
+      "ipVersion": "V4",
+      "method": "GET"
+    }
+  }
+}

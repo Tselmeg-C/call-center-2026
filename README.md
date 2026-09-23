@@ -4,6 +4,10 @@ Capstone project for AI Dev Zoomcamp 2026: a Sales customer-contact management a
 
 The active frontend lives in `apps/frontend` and uses TanStack Start with the supplied customer-contact design.
 
+## Demo
+
+[`demo/call-center-demo.mp4`](demo/call-center-demo.mp4) is a recorded walkthrough of the full customer journey against the live `development` deployment: Admin sets up the desk (users, Excel import, assignment rules), Sales works the queue (buckets, interactions, follow-ups, notes), Admin reads the result (reporting, audit log). It's produced by `demo/record-demo.ts` against synthetic data only; see [`_docs/demo_script.md`](_docs/demo_script.md) for what each act covers and how to re-record it.
+
 ## Local setup
 
 Use Node.js 24 and its bundled npm. If you use nvm, run `nvm install` and `nvm use` from the repository root. No environment variables or credentials are required for this scaffold.

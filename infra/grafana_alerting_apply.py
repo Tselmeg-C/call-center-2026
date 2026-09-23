@@ -77,17 +77,21 @@ def request(base_url, token, method, path, body=None, dry_run=False):
 
 def apply_contact_point(base_url, token, pat, dry_run):
     cp = load_json(CONTACT_POINT_FILE)
+    # authorization_credentials is a field inside `settings`, like url/payload -- this API has
+    # no separate top-level secureSettings object for contact points (that's a different,
+    # newer alerting API); sending it as a sibling key is silently ignored by the server.
     if pat:
-        cp["secureSettings"]["authorization_credentials"] = pat
+        cp["settings"]["authorization_credentials"] = pat
     # Try create; a 409 means it already exists, fall back to update-by-uid.
     result = request(base_url, token, "POST", "/api/v1/provisioning/contact-points", cp, dry_run)
     if result is None and not dry_run:
         update = dict(cp)
         if not pat:
-            # Without a real PAT, don't resend the placeholder -- Grafana keeps the
-            # existing secure value for any key omitted from secureSettings, so this
-            # is what stops an update run from clobbering a PAT set by an earlier run.
-            update.pop("secureSettings", None)
+            # "[REDACTED]" is the exact sentinel Grafana's update handler checks for to keep
+            # the existing secret; omitting the key or sending the placeholder text instead
+            # both get treated as a real (wrong) value and overwrite the stored credential.
+            update["settings"] = dict(cp["settings"])
+            update["settings"]["authorization_credentials"] = "[REDACTED]"
         request(
             base_url, token, "PUT",
             f"/api/v1/provisioning/contact-points/{cp['uid']}", update, dry_run,

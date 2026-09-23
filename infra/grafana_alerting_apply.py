@@ -42,7 +42,10 @@ RULES = [
     "alert-rule-latency-p95.json",
 ]
 CONTACT_POINT_FILE = "contact-point-github-issue.json"
-POLICY_ROUTE_FILE = "notification-policy-route.json"
+# Order matters: the email route has "continue": true so the GitHub-issue route after it
+# (continue: false) still matches. The email contact point "TselmegC" is owner-created in the
+# Grafana UI (#95) so its address never lives in this repo; only its name is referenced here.
+POLICY_ROUTE_FILES = ["notification-policy-route-email.json", "notification-policy-route.json"]
 
 
 def load_json(name):
@@ -112,25 +115,27 @@ def apply_alert_rule(base_url, token, filename, dry_run):
         )
 
 
+def merge_routes(routes, ours):
+    """Replace our managed routes (matched by receiver) in place, keep every other route.
+
+    Ours are inserted, in order, where the first managed route used to be (or appended), so
+    unrelated routes keep their position relative to ours."""
+    managed = {r["receiver"] for r in ours}
+    idx = next((i for i, r in enumerate(routes) if r.get("receiver") in managed), len(routes))
+    kept = [r for r in routes if r.get("receiver") not in managed]
+    return kept[:idx] + ours + kept[idx:]
+
+
 def apply_notification_policy(base_url, token, dry_run):
-    route = load_json(POLICY_ROUTE_FILE)
+    ours = [load_json(name) for name in POLICY_ROUTE_FILES]
     tree = request(base_url, token, "GET", "/api/v1/provisioning/policies", None, dry_run)
     if dry_run:
-        request(base_url, token, "PUT", "/api/v1/provisioning/policies", {"routes": [route]}, dry_run)
+        request(base_url, token, "PUT", "/api/v1/provisioning/policies", {"routes": ours}, dry_run)
         return
     if tree is None:
         print("Could not fetch existing policy tree; not applying (refusing to overwrite blind).")
         return
-    routes = tree.get("routes", [])
-    replaced = False
-    for i, existing in enumerate(routes):
-        if existing.get("receiver") == route["receiver"]:
-            routes[i] = route
-            replaced = True
-            break
-    if not replaced:
-        routes.append(route)
-    tree["routes"] = routes
+    tree["routes"] = merge_routes(tree.get("routes", []), ours)
     request(base_url, token, "PUT", "/api/v1/provisioning/policies", tree, dry_run)
 
 

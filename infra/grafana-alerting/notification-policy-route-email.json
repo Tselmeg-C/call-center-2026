@@ -1,0 +1,9 @@
+{
+  "receiver": "TselmegC",
+  "matchers": ["team=on-call", "service=call-center-api", "severity=critical"],
+  "group_by": ["alertname", "environment"],
+  "group_wait": "30s",
+  "group_interval": "5m",
+  "repeat_interval": "4h",
+  "continue": true
+}

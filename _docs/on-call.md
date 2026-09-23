@@ -6,9 +6,9 @@ investigates using Tempo/Loki/metrics, implements and tests a fix in `developmen
 flow through the normal CI pipeline; **a human then makes the deliberate call to promote the
 resulting image to production.** The agent never touches production directly.
 
-This mechanism is independent of, and not reconciled with, #27's `dev-health-monitor.yml` /
-#95's GitHub Actions cron path: that one is a simpler, Grafana-independent liveness signal meant
-for a human watching the Actions tab. This document is only about the Grafana Cloud alerting path.
+Grafana Cloud Synthetic Monitoring is the only health monitor. The old GitHub Actions cron
+`dev-health-monitor.yml` (#27) was deleted in #95. Critical `/health/ready` alerts also email the
+owner (see *Alert rules and webhook wiring* below and `_docs/deployment.md` → *Development health monitor*).
 
 ## Trigger mechanism
 
@@ -32,7 +32,8 @@ the alerting path itself.
 
 Config-as-code lives under [`infra/grafana-alerting/`](../infra/grafana-alerting/README.md),
 applied via `infra/grafana_alerting_apply.py` against the Grafana Alerting Provisioning HTTP API.
-Four rules, one webhook contact point, one notification-policy route:
+Four rules, two contact points (the GitHub-issue webhook and the owner's email) and two
+notification-policy routes:
 
 | Rule | Source | Status |
 | --- | --- | --- |
@@ -51,6 +52,16 @@ service, environment, firing time, links to the Grafana/Tempo/Loki dashboard) --
 interpolates raw log-line content, query results, credentials, or customer/note data, because the
 Go template only ever references `.CommonLabels`, `.CommonAnnotations`, `.StartsAt` and
 `.ExternalURL`, none of which can carry those.
+
+### Email route (#95)
+
+A second route, `infra/grafana-alerting/notification-policy-route-email.json`, sits before the
+GitHub route. It matches `team=on-call, service=call-center-api, severity=critical` and sends to the
+owner-created email contact point `TselmegC` (the address is kept only in Grafana), with
+`continue: true` so the GitHub route still matches after it. Both `/health/ready` rules (development
+and production) are `critical` and reach both receivers. The `warning` error-rate and latency rules
+reach only the GitHub route. Email repeats at most every 4 h while firing, and a "resolved" email is
+sent on recovery (`disableResolveMessage: false` on the contact point).
 
 ### Duplicate / flapping alerts
 

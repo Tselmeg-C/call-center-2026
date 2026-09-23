@@ -201,7 +201,7 @@ arrived hours apart.
   `/health/ready` alert emails too. The warning-level error-rate and latency rules do not email.
 - **Repeat and resolve:** a continuously failing check notifies once, then again at most every
   **4 h** (`repeat_interval`). The email contact point has `disableResolveMessage: false`, so a
-  "resolved" email is sent on recovery. The GitHub webhook has `disableResolveMessage: true`, so it
+  "resolved" email is sent on recovery (confirmed in the drill below). The GitHub webhook has `disableResolveMessage: true`, so it
   opens no issue on recovery.
 - **Pause it:** disable the SM check (Synthetics → `health-ready-development` → Disable, or set
   `"enabled": false` in the check JSON and re-run `grafana_sm_apply.py`). Or pause the alert rule, or
@@ -211,8 +211,8 @@ arrived hours apart.
   first `probe_success = 0` at 20:37:13Z. The alert fired at 20:43:10Z, and Grafana sent the email and
   the GitHub issue (#149, closed as a drill) at 20:43:40Z. The owner confirmed the email arrived at
   20:43Z. After the check was pointed at `/health/ready` it returned `probe_success = 1` at 20:44:26Z,
-  the alert was back to Normal by 20:50Z, and Grafana sent the resolved email at 20:53:40Z without
-  error (arrival not yet confirmed by the owner). The temporary
+  the alert was back to Normal by 20:50Z, and Grafana sent the resolved email at 20:53:40Z. The owner
+  confirmed it arrived at 20:53Z. The temporary
   check and rule were then deleted. The drill check ran every 4 minutes, not 60 s, because a third
   60 s check would exceed the stack's 100,000 checks-per-month Synthetic Monitoring quota.
 

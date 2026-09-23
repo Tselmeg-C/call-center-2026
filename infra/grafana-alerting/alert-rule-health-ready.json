@@ -1,0 +1,65 @@
+{
+  "uid": "oncall-health-ready-development",
+  "orgID": 1,
+  "folderUID": "oncall-alerts",
+  "ruleGroup": "on-call",
+  "title": "call-center-api: /health/ready failing (development)",
+  "condition": "C",
+  "data": [
+    {
+      "refId": "A",
+      "queryType": "",
+      "relativeTimeRange": { "from": 600, "to": 0 },
+      "datasourceUid": "${GRAFANA_PROM_DATASOURCE_UID}",
+      "model": {
+        "refId": "A",
+        "expr": "probe_success{instance=\"https://api-development-2a42.up.railway.app/health/ready\"}",
+        "instant": true,
+        "range": false
+      }
+    },
+    {
+      "refId": "B",
+      "queryType": "",
+      "relativeTimeRange": { "from": 600, "to": 0 },
+      "datasourceUid": "__expr__",
+      "model": {
+        "refId": "B",
+        "type": "reduce",
+        "expression": "A",
+        "reducer": "last"
+      }
+    },
+    {
+      "refId": "C",
+      "queryType": "",
+      "relativeTimeRange": { "from": 600, "to": 0 },
+      "datasourceUid": "__expr__",
+      "model": {
+        "refId": "C",
+        "type": "threshold",
+        "expression": "B",
+        "conditions": [
+          {
+            "evaluator": { "type": "lt", "params": [1] }
+          }
+        ]
+      }
+    }
+  ],
+  "noDataState": "Alerting",
+  "execErrState": "Alerting",
+  "for": "5m",
+  "labels": {
+    "team": "on-call",
+    "service": "call-center-api",
+    "environment": "development",
+    "severity": "critical"
+  },
+  "annotations": {
+    "summary": "call-center-api /health/ready is failing on development",
+    "description": "Grafana Synthetic Monitoring's probe_success for the development /health/ready check has been 0 for at least 5 minutes.",
+    "runbook_url": "https://github.com/Tselmeg-C/call-center-2026/blob/main/_docs/on-call.md"
+  },
+  "isPaused": false
+}

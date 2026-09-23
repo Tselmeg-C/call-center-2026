@@ -1,0 +1,65 @@
+{
+  "uid": "oncall-latency-p95-development",
+  "orgID": 1,
+  "folderUID": "oncall-alerts",
+  "ruleGroup": "on-call",
+  "title": "call-center-api: p95 latency SLO breach (development)",
+  "condition": "C",
+  "data": [
+    {
+      "refId": "A",
+      "queryType": "",
+      "relativeTimeRange": { "from": 600, "to": 0 },
+      "datasourceUid": "${GRAFANA_PROM_DATASOURCE_UID}",
+      "model": {
+        "refId": "A",
+        "instant": true,
+        "range": false,
+        "expr": "histogram_quantile(0.95, sum by (le) (rate(http_server_request_duration_seconds_bucket{job=\"call-center-api\"}[5m]) * on (job, instance) group_left(deployment_environment) max by (job, instance, deployment_environment) (target_info{job=\"call-center-api\", deployment_environment=\"development\"})))"
+      }
+    },
+    {
+      "refId": "B",
+      "queryType": "",
+      "relativeTimeRange": { "from": 600, "to": 0 },
+      "datasourceUid": "__expr__",
+      "model": {
+        "refId": "B",
+        "type": "reduce",
+        "expression": "A",
+        "reducer": "last"
+      }
+    },
+    {
+      "refId": "C",
+      "queryType": "",
+      "relativeTimeRange": { "from": 600, "to": 0 },
+      "datasourceUid": "__expr__",
+      "model": {
+        "refId": "C",
+        "type": "threshold",
+        "expression": "B",
+        "conditions": [
+          {
+            "evaluator": { "type": "gt", "params": [1] }
+          }
+        ]
+      }
+    }
+  ],
+  "noDataState": "OK",
+  "execErrState": "Error",
+  "for": "10m",
+  "labels": {
+    "team": "on-call",
+    "service": "call-center-api",
+    "environment": "development",
+    "severity": "warning"
+  },
+  "annotations": {
+    "summary": "call-center-api p95 request duration above 1s on development",
+    "description": "BLOCKED ON #44: authored and left disabled (isPaused=true) until OTel data is confirmed reaching Grafana Cloud with the deployment_environment=development label (issue #44). Threshold matches the 1s p95 target documented in _docs/persistence.md. Do not enable or treat as verified before #44 closes and this rule has been evaluated against real traffic.",
+    "runbook_url": "https://github.com/Tselmeg-C/call-center-2026/blob/main/_docs/on-call.md"
+  },
+  "isPaused": true
+}

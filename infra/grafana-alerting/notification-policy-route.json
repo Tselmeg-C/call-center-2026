@@ -1,0 +1,9 @@
+{
+  "receiver": "on-call-github-issue",
+  "matchers": ["team=on-call", "service=call-center-api"],
+  "group_by": ["alertname", "environment"],
+  "group_wait": "30s",
+  "group_interval": "5m",
+  "repeat_interval": "4h",
+  "continue": false
+}

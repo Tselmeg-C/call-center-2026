@@ -73,7 +73,7 @@ def test_contact_point_shape_and_github_target():
     settings = cp["settings"]
     assert settings["url"] == "https://api.github.com/repos/Tselmeg-C/call-center-2026/issues"
     assert settings["httpMethod"] == "POST"
-    payload = settings["payload"]
+    payload = settings["payload"]["template"]
     # The rendered payload must be valid JSON once Grafana's Go template placeholders are stripped
     # out to something inert, so a malformed template can't silently ship.
     inert = re.sub(r"\{\{.*?\}\}", "X", payload, flags=re.DOTALL)

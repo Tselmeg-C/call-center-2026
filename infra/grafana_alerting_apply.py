@@ -82,9 +82,15 @@ def apply_contact_point(base_url, token, pat, dry_run):
     # Try create; a 409 means it already exists, fall back to update-by-uid.
     result = request(base_url, token, "POST", "/api/v1/provisioning/contact-points", cp, dry_run)
     if result is None and not dry_run:
+        update = dict(cp)
+        if not pat:
+            # Without a real PAT, don't resend the placeholder -- Grafana keeps the
+            # existing secure value for any key omitted from secureSettings, so this
+            # is what stops an update run from clobbering a PAT set by an earlier run.
+            update.pop("secureSettings", None)
         request(
             base_url, token, "PUT",
-            f"/api/v1/provisioning/contact-points/{cp['uid']}", cp, dry_run,
+            f"/api/v1/provisioning/contact-points/{cp['uid']}", update, dry_run,
         )
 
 

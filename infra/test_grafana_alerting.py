@@ -86,7 +86,7 @@ def test_contact_point_shape_and_github_target():
 
 def test_contact_point_secret_is_a_placeholder_not_a_real_token():
     cp = load("contact-point-github-issue.json")
-    value = cp["secureSettings"]["authorization_credentials"]
+    value = cp["settings"]["authorization_credentials"]
     assert value.startswith("REPLACE-IN-GRAFANA-UI-ONLY")
     # Real fine-grained GitHub PATs are "github_pat_" + 82 base62 chars; make sure nobody pastes
     # a real-shaped one in here by accident.

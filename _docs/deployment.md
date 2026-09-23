@@ -211,7 +211,8 @@ arrived hours apart.
   first `probe_success = 0` at 20:37:13Z. The alert fired at 20:43:10Z, and Grafana sent the email and
   the GitHub issue (#149, closed as a drill) at 20:43:40Z. The owner confirmed the email arrived at
   20:43Z. After the check was pointed at `/health/ready` it returned `probe_success = 1` at 20:44:26Z,
-  the alert was back to Normal by 20:50Z, and the resolved email was sent at 20:53:40Z. The temporary
+  the alert was back to Normal by 20:50Z, and Grafana sent the resolved email at 20:53:40Z without
+  error (arrival not yet confirmed by the owner). The temporary
   check and rule were then deleted. The drill check ran every 4 minutes, not 60 s, because a third
   60 s check would exceed the stack's 100,000 checks-per-month Synthetic Monitoring quota.
 

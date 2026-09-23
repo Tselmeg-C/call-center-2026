@@ -82,7 +82,18 @@ class ActivityDatabase:
             rows = session.scalars(select(ActivityRow).where(ActivityRow.bcn.in_(bcns)).order_by(ActivityRow.created_at, ActivityRow.id))
             result = {}
             for item in rows:
-                result.setdefault(item.bcn, []).append({"id": item.id, "bcn": item.bcn, "kind": item.kind, "outcome": item.outcome, "note": None if item.deleted_at else item.text, "actorId": item.actor_id, "timestamp": item.created_at.isoformat(), "deleted": item.deleted_at is not None, "deletedBy": item.deleted_by, "deletedAt": item.deleted_at.isoformat() if item.deleted_at else None})
+                result.setdefault(item.bcn, []).append({"id": item.id, "bcn": item.bcn, "kind": item.kind, "outcome": item.outcome, "text": None if item.deleted_at else item.text, "actorId": item.actor_id, "timestamp": item.created_at.isoformat(), "deleted": item.deleted_at is not None, "deletedBy": item.deleted_by, "deletedAt": item.deleted_at.isoformat() if item.deleted_at else None})
+            return result
+
+    def followups_map(self, bcns: list[str]) -> dict[str, list[dict]]:
+        """Same batched-by-bcn shape as history_map, for the /customers list endpoint to embed
+        each row's follow-ups without one query per row (#118)."""
+        if not bcns: return {}
+        with Session(self.engine) as session:
+            rows = session.scalars(select(FollowUpRow).where(FollowUpRow.bcn.in_(bcns)).order_by(FollowUpRow.created_at, FollowUpRow.id))
+            result: dict[str, list[dict]] = {}
+            for item in rows:
+                result.setdefault(item.bcn, []).append({"id": item.id, "bcn": item.bcn, "type": item.type, "due": item.due.isoformat() if item.due else None, "note": item.note, "status": item.status, "interactionId": item.interaction_id, "actorId": item.actor_id, "createdAt": item.created_at.isoformat(), "updatedAt": item.updated_at.isoformat()})
             return result
 
     def soft_delete(self, record_id: str, actor_id: str) -> bool:

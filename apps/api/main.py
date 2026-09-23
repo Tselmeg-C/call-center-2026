@@ -614,7 +614,15 @@ def list_customers(user: Annotated[User, Depends(current_user)], page: int = Que
         if owner == "unassigned":
             rows = customer_db.search(page=page, page_size=page_size, unassigned=True, status=status_filter, query=q)
         else: rows = customer_db.search(page=page, page_size=page_size, owner_id=owner_id, status=status_filter, query=q)
-        items = [{"bcn": row.bcn, "name": row.name, "ownerId": row.owner_id, "ownerName": repo.users.get(row.owner_id or "", {}).get("name"), "status": row.status, "phones": phones, "source": row.source, "version": row.version, "histories": []} for row, phones in rows[0]]
+        bcns = [row.bcn for row, _ in rows[0]]
+        # #118: the detail endpoint (get_customer, below) includes each customer's histories/
+        # followUps; this list endpoint used to omit them, silently breaking every follow-up-driven
+        # feature (dashboard buckets, "Next action", "Save & complete follow-up") and the
+        # history-derived customer status against Postgres. Batched by bcn (one IN-query each,
+        # not one query per row) the same way readable_rows() already batches histories.
+        histories_map = activity_db.history_map(bcns) if activity_db is not None else {}
+        followups_map = activity_db.followups_map(bcns) if activity_db is not None else {}
+        items = [{"bcn": row.bcn, "name": row.name, "ownerId": row.owner_id, "ownerName": repo.users.get(row.owner_id or "", {}).get("name"), "status": row.status, "phones": phones, "source": row.source, "version": row.version, "histories": histories_map.get(row.bcn, []), "followUps": followups_map.get(row.bcn, [])} for row, phones in rows[0]]
         return CustomerPage(items=[Customer.model_validate(row) for row in items], page=page, page_size=page_size, total=rows[1])
     rows = readable_rows()
     if mine: rows = [row for row in rows if row["ownerId"] == user.id]

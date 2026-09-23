@@ -36,7 +36,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 ALERTING_DIR = HERE / "grafana-alerting"
 
-ALWAYS_RULES = ["alert-rule-health-ready.json"]
+ALWAYS_RULES = ["alert-rule-health-ready.json", "alert-rule-health-ready-production.json"]
 BLOCKED_RULES = ["alert-rule-error-rate.json", "alert-rule-latency-p95.json"]
 CONTACT_POINT_FILE = "contact-point-github-issue.json"
 POLICY_ROUTE_FILE = "notification-policy-route.json"

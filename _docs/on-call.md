@@ -37,6 +37,7 @@ Three rules, one webhook contact point, one notification-policy route:
 | Rule | Source | Status |
 | --- | --- | --- |
 | `/health/ready` failing (development) | Synthetic Monitoring `probe_success` against the live readiness URL directly -- no OTel dependency | Authored, ready to apply once a human supplies Grafana credentials and creates the SM check (see the README) |
+| `/health/ready` failing (production, #28) | Same Synthetic Monitoring check, against `frontend-prod-production-d39f.up.railway.app/api/health/ready` | Authored, not yet applied. It fires through the same contact point, so the issue says `production`. The agent still investigates and fixes in `development` only, and a human promotes the fix |
 | Elevated 5xx error rate (development) | OTel metrics (#34/#44) | Authored, `isPaused: true` -- **blocked on #44** (needs real OTel data in Grafana Cloud to evaluate against) |
 | p95 latency SLO breach (development) | OTel metrics (#34/#44) | Authored, `isPaused: true` -- **blocked on #44**, same reason |
 

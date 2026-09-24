@@ -197,26 +197,30 @@ unless noted.
 | --- | --- |
 | 21:08:28 | Synthetic bug [#151](https://github.com/Tselmeg-C/call-center-2026/pull/151) merged (`GET /version` returns a handled 500) as `d2a810c`. [CI run](https://github.com/Tselmeg-C/call-center-2026/actions/runs/35920558099) deployed it to `development` |
 | 21:12:29 | Orchestrator starts the traffic loop: `GET /version` on dev every 5 s, ran about 45 min (orchestrator's record) |
-| 21:24:50 | `oncall-error-rate-development` firing since (from the alert issue body). The `Pending` time was not captured from the ruler API |
+| 21:14:50 | `oncall-error-rate-development` Normal -> Pending, 5xx share 0.36 (Grafana state history, `/api/v1/rules/history`) |
+| 21:24:50 | Pending -> Alerting (`Firing`), 5xx share 0.92 (Grafana state history; matches the alert issue body) |
 | 21:25:21 | Webhook opens alert issue [#152](https://github.com/Tselmeg-C/call-center-2026/issues/152) (error-rate, `warning`), 12m52s after traffic started. No email expected (warning goes to GitHub only) |
 | 21:25:24 | On-call agent [run 35922335624](https://github.com/Tselmeg-C/call-center-2026/actions/runs/35922335624) starts; finishes in 1m42s, pushes branch `claude/issue-152-20260923-2125` with a "Create PR" link |
 | 21:30:28 | Orchestrator runs `pytest apps/api observability infra` locally (299 passed, 148 Postgres-only skipped) and opens fix PR [#153](https://github.com/Tselmeg-C/call-center-2026/pull/153) from the agent's branch. [CI `check`](https://github.com/Tselmeg-C/call-center-2026/actions/runs/35922868969) passed |
 | 21:35:24 | #153 merged as `ebf8486` ([CI run](https://github.com/Tselmeg-C/call-center-2026/actions/runs/35923385721) deployed it to `development`) |
-| 21:35:25 | #152 closed |
+| 21:35:25 | #152 auto-closed by the #153 merge (`Closes #152`), before the rule cleared |
+| 21:38:55 | Railway shows dev `api` running image `ebf8486` |
+| 21:41:50 | Alerting -> Normal, about 3 min after the fix deployed (Grafana state history) |
 | 2026-09-24 06:50 | Verified: dev `GET /version` returns 200, and all 4 Grafana alert rules are inactive (`Normal`) |
 
-- **Root cause found by the agent:** `GET /version` in `apps/api/main.py`, the `# SYNTHETIC BUG
-  (#148)` line from #151. Regression test: `test_version_endpoint_returns_ok` in
+- **Root cause found by the agent:** `GET /version` in `apps/api/main.py`, the synthetic-bug marker
+  comment from #151. Regression test: `test_version_endpoint_returns_ok` in
   `apps/api/test/test_auth.py`.
 - **Live telemetry: not used.** The owner chose to run without a read-only Grafana token (#148
   comment), so the agent diagnosed from code and git history only.
 - **Agent output:** a pushed branch plus a "Create PR" link, not a PR (see step 3 above). The push
   did not trigger CI; opening #153 did.
-- **Production:** never had the bug (#151 was never promoted). Prod `/api/version` returns 404
-  because the route isn't deployed there yet, and prod `/api/health/ready` returns 200.
-  **Pending (owner):** promote `ebf8486` through Actions -> Promote to production and approve the
-  `production` gate. The only `promote-production.yml` run so far predates the drill, so the agent
-  did not promote.
+- **Production:** never had the bug (#151 was never promoted). The owner then released the fix as
+  tag `v1.0.1` on `f16e7d9` ([run 35971145054](https://github.com/Tselmeg-C/call-center-2026/actions/runs/35971145054),
+  `production` gate approved by the owner). `f16e7d9` is a descendant of `ebf8486` with identical
+  `apps/` code, so promoting `ebf8486` itself would have rolled prod back. Prod `/api/version` and
+  `/api/health/ready` return 200 with `x-app-version` `f16e7d9`. The agent did not promote: the
+  only `promote-production.yml` run predates the drill, and both tags were pushed by the owner.
 - **Not drilled:** the `/health/ready` and p95 rules. `/health/ready` can't be broken past Railway's
   deploy healthcheck without a contrived bug; its alert path was already proven by #136 and #149.
   The p95 path was shown firing only in rule Preview (#35/#146).
@@ -245,7 +249,8 @@ two paths is part of the same follow-up as above.
    `infra/grafana-alerting/README.md`).
 5. ~~Run the follow-up end-to-end drill~~ -- **done for the error-rate path** (#148, see
    *Error-rate drill* above). The `/health/ready` and p95 paths were not drilled, for the reasons
-   given there. Promoting the fix `ebf8486` to production is still pending.
+   given there. The fix is in production as `v1.0.1`
+   (`f16e7d9`, same `apps/` code as `ebf8486`).
 
 **Confirmed live, 2026-09-23:** the full loop fired for real -- `/health/ready` alerted on a
 genuine `NoData` gap (this SM check didn't exist yet), the webhook opened

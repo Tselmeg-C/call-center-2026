@@ -225,12 +225,13 @@ class ActivityDatabase:
     def report_interactions(self, start: str | None = None, end: str | None = None) -> tuple[dict[str, dict[str, int]], dict[str, dict[str, int]]]:
         with Session(self.engine) as session:
             query = select(ActivityRow.bcn, ActivityRow.outcome, func.date(ActivityRow.created_at), func.count(ActivityRow.id)).where(ActivityRow.kind == "Interaction", ActivityRow.deleted_at.is_(None))
-            if start: query = query.where(func.date(ActivityRow.created_at) >= start)
-            if end: query = query.where(func.date(ActivityRow.created_at) <= end)
+            # #160: bind real dates -- Postgres has no `date >= varchar` operator, so string bounds 500'd.
+            if start: query = query.where(func.date(ActivityRow.created_at) >= date.fromisoformat(start))
+            if end: query = query.where(func.date(ActivityRow.created_at) <= date.fromisoformat(end))
             rows = session.execute(query.group_by(ActivityRow.bcn, ActivityRow.outcome, func.date(ActivityRow.created_at))).all()
         by_customer: dict[str, dict[str, int]] = {}; daily: dict[str, dict[str, int]] = {}
-        for bcn, outcome, date, count in rows:
-            key = "attempts" if outcome == "Attempt" else "contacts"; by_customer.setdefault(bcn, {"attempts": 0, "contacts": 0})[key] += count; daily.setdefault(str(date), {"date": str(date), "attempts": 0, "contacts": 0})[key] += count
+        for bcn, outcome, day, count in rows:
+            key = "attempts" if outcome == "Attempt" else "contacts"; by_customer.setdefault(bcn, {"attempts": 0, "contacts": 0})[key] += count; daily.setdefault(str(day), {"date": str(day), "attempts": 0, "contacts": 0})[key] += count
         return by_customer, daily
 
     def owner_interaction_totals(self) -> dict[str, dict[str, int]]:

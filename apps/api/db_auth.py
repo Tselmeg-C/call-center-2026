@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
-from sqlalchemy import Boolean, DateTime, ForeignKey, String, create_engine, select
+from sqlalchemy import Boolean, DateTime, ForeignKey, String, create_engine, select, text
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from contextlib import contextmanager
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
@@ -60,8 +60,14 @@ class AuthDatabase:
             row = session.scalar(select(SessionRow).where(SessionRow.digest == digest(token), SessionRow.revoked_at.is_(None), SessionRow.expires_at > now))
             return session.get(UserRow, row.user_id) if row else None
 
-    def create_user(self, *, user_id: str, name: str, email: str, role: str, password_hash: str) -> UserRow:
+    def create_user(self, *, user_id: str, name: str, email: str, role: str, password_hash: str, only_if_no_users: bool = False) -> UserRow | None:
+        """With only_if_no_users (#160 first-Admin bootstrap), returns None instead of inserting when
+        any user exists. The check and insert share one transaction serialised by a transaction-scoped
+        advisory lock, so concurrent callers on any replica can't both see an empty table."""
         with self.transaction() as session:
+            if only_if_no_users:
+                if self.engine.dialect.name == "postgresql": session.execute(text("SELECT pg_advisory_xact_lock(160160)"))
+                if session.scalar(select(UserRow.id).limit(1)) is not None: return None
             row = UserRow(id=user_id, name=name, email=email.strip().casefold(), role=role, active=True, password_hash=password_hash)
             session.add(row)
             session.flush(); return row

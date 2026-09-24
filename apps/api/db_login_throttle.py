@@ -37,13 +37,17 @@ class LoginThrottleStore:
             by_ip = session.scalar(select(func.count()).select_from(LoginFailureEventRow).where(LoginFailureEventRow.ip == ip, LoginFailureEventRow.occurred_at > cutoff))
         return email_ip, by_ip
 
-    def record_failure(self, email: str, ip: str, now: datetime, window: timedelta) -> None:
+    def record_failure(self, email: str, ip: str, now: datetime, window: timedelta) -> int:
         """Insert this failure and delete rows that have aged out of the window, in one
-        transaction -- the write-time prune that keeps the table bounded without a cron job."""
+        transaction -- the write-time prune that keeps the table bounded without a cron job.
+        Returns this email's failure count across every IP in the window, this one included
+        (#160 cross-IP detection; served by the (email, ip, occurred_at) index)."""
         cutoff = now - window
         with Session(self.engine) as session, session.begin():
             session.execute(delete(LoginFailureEventRow).where(LoginFailureEventRow.occurred_at < cutoff))
             session.add(LoginFailureEventRow(email=email, ip=ip, occurred_at=now))
+            session.flush()
+            return session.scalar(select(func.count()).select_from(LoginFailureEventRow).where(LoginFailureEventRow.email == email, LoginFailureEventRow.occurred_at > cutoff))
 
     def clear(self, email: str, ip: str) -> None:
         """Mirrors repo.login_failures.pop(key, None) on successful login -- clears only the

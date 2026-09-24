@@ -1,0 +1,65 @@
+{
+  "uid": "oncall-health-monitor-stale-development",
+  "orgID": 1,
+  "folderUID": "oncall-alerts",
+  "ruleGroup": "on-call",
+  "title": "call-center-api: health monitor stopped reporting (development)",
+  "condition": "C",
+  "data": [
+    {
+      "refId": "A",
+      "queryType": "",
+      "relativeTimeRange": { "from": 1800, "to": 0 },
+      "datasourceUid": "${GRAFANA_PROM_DATASOURCE_UID}",
+      "model": {
+        "refId": "A",
+        "expr": "sum(count_over_time(probe_success{job=\"health-ready-development\"}[30m]))",
+        "instant": true,
+        "range": false
+      }
+    },
+    {
+      "refId": "B",
+      "queryType": "",
+      "relativeTimeRange": { "from": 1800, "to": 0 },
+      "datasourceUid": "__expr__",
+      "model": {
+        "refId": "B",
+        "type": "reduce",
+        "expression": "A",
+        "reducer": "last"
+      }
+    },
+    {
+      "refId": "C",
+      "queryType": "",
+      "relativeTimeRange": { "from": 1800, "to": 0 },
+      "datasourceUid": "__expr__",
+      "model": {
+        "refId": "C",
+        "type": "threshold",
+        "expression": "B",
+        "conditions": [
+          {
+            "evaluator": { "type": "lt", "params": [1] }
+          }
+        ]
+      }
+    }
+  ],
+  "noDataState": "Alerting",
+  "execErrState": "Alerting",
+  "for": "2m",
+  "labels": {
+    "service": "call-center-api",
+    "environment": "development",
+    "severity": "critical",
+    "kind": "monitor-stale"
+  },
+  "annotations": {
+    "summary": "The development health monitor (Synthetic Monitoring check health-ready-development) has recorded no probe_success sample for 30 minutes. This says the MONITOR stopped, not that the API is failing.",
+    "description": "Check: 1) Grafana -> Testing & synthetics -> Synthetics -> health-ready-development is enabled (re-enable by re-running infra/grafana_sm_apply.py); 2) the Synthetic Monitoring monthly execution quota is not used up (two 60 s checks use 86,400 of 100,000); 3) Grafana Cloud / probe status. While this fires, development has no health monitoring. Email only, no on-call issue: the agent cannot fix a stopped check from the repo.",
+    "runbook_url": "https://github.com/Tselmeg-C/call-center-2026/blob/main/_docs/deployment.md#development-health-monitor-95"
+  },
+  "isPaused": false
+}

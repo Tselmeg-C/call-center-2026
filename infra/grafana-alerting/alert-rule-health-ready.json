@@ -47,7 +47,7 @@
       }
     }
   ],
-  "noDataState": "Alerting",
+  "noDataState": "OK",
   "execErrState": "Alerting",
   "for": "5m",
   "labels": {

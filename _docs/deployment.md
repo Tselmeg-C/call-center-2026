@@ -421,6 +421,7 @@ unauthenticated behavior). The secret is never logged, returned, or included in 
 
 ```sh
 curl -X POST https://api-development-2a42.up.railway.app/operator/provision \
+  -H 'Origin: https://frontend-development-83f4.up.railway.app' \
   -H 'Content-Type: application/json' \
   -H 'x-operator-secret: <OPERATOR_PROVISION_SECRET value>' \
   -d '{"name":"<name>","email":"<email>","role":"Admin","password":"<new password>"}'
@@ -474,6 +475,7 @@ Then, within the token's lifetime:
 
 ```sh
 curl -X POST https://api-development-2a42.up.railway.app/operator/recover \
+  -H 'Origin: https://frontend-development-83f4.up.railway.app' \
   -H 'Content-Type: application/json' \
   -H 'x-operator-recovery-token: <token printed above>' \
   -d '{"email":"qa.admin@example.test","password":"<new password>"}'
@@ -481,7 +483,9 @@ curl -X POST https://api-development-2a42.up.railway.app/operator/recover \
 
 Returns `200` with the updated user (no password echoed) and revokes that user's existing
 sessions; `401` for any missing/malformed/wrong/expired/mis-scoped token, before touching the
-database.
+database; `404 User not found.` for a valid token whose email has no account. Both operator
+`curl`s need the `Origin` header: every POST except `/session/login` gets `403 Origin not
+allowed.` without an allowed origin, before the secret/token is even checked.
 
 **Generating and rotating `OPERATOR_RECOVERY_SECRET`:** generate the same way as
 `OPERATOR_PROVISION_SECRET` (e.g. `openssl rand -hex 32`), set it as the `api` service's Railway

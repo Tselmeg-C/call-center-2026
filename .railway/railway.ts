@@ -12,7 +12,7 @@ export default defineRailway(() => {
   const api = service("api", {
     source: image("ghcr.io/tselmeg-c/call-center-2026-api:latest"),
     replicas: { "ams": 1 },
-    env: { CALL_CENTER_STORAGE: preserve(), DATABASE_URL: preserve(), FRONTEND_ORIGIN: preserve(), OTEL_EXPORTER_OTLP_ENDPOINT: preserve(), OTEL_EXPORTER_OTLP_HEADERS: preserve(), OTEL_RESOURCE_ATTRIBUTES: preserve(), OTEL_SERVICE_NAME: preserve(), PORT: preserve(), WEB_CONCURRENCY: preserve() },
+    env: { CALL_CENTER_STORAGE: preserve(), DATABASE_URL: preserve(), FRONTEND_ORIGIN: preserve(), OPERATOR_RECOVERY_SECRET: preserve(), OTEL_EXPORTER_OTLP_ENDPOINT: preserve(), OTEL_EXPORTER_OTLP_HEADERS: preserve(), OTEL_RESOURCE_ATTRIBUTES: preserve(), OTEL_SERVICE_NAME: preserve(), PORT: preserve(), WEB_CONCURRENCY: preserve() },
     deploy: { healthcheckPath: "/health/ready", healthcheckTimeout: 30 },
   });
 

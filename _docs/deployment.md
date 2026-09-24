@@ -168,9 +168,32 @@ Swap `<sha>` for `latest` to run the newest `main` build instead of a pinned com
 
 `.github/workflows/promote-production.yml` is a manual `workflow_dispatch` workflow (also called automatically by `ci.yml` after a `v*` release tag publishes its images) that takes an image tag (a commit SHA or `latest`) and points Railway's production service at that exact, already-published tag. It runs under the `production` GitHub Environment and never runs `docker build` -- it only re-points Railway at an image GHCR already has. Before touching Railway it verifies the given tag exists in GHCR for *both* `-api` and `-frontend` images (`docker manifest inspect`); if either is missing, the run fails with no Railway change made.
 
-After verification, the workflow runs `railway service source connect --image <image>:<tag> --service <api-prod|frontend-prod> --environment production --project <id>` for both services, authenticated with the account-scoped `RAILWAY_API_TOKEN` secret (the same one the development deploy uses; a Project Token cannot run this mutation). The `api-prod` and `frontend-prod` services (Railway service names are unique across the whole project, so production cannot reuse dev's `api`/`frontend`/`Postgres`; its database is `postgres-prod`), their variables, and their domains must already exist in `production` -- the first `source connect` creates a service, but with no variables it would crash-loop. Promote the exact SHA development is running (`/health/ready`), not `latest`.
+After verification, the workflow runs `railway service source connect --image <image>:<tag> --service <api-prod|frontend-prod> --environment production --project <id>` for both services, authenticated with the `production` environment's own `RAILWAY_API_TOKEN` secret (see *CI deploy tokens* below; a Project Token cannot run this mutation). The `api-prod` and `frontend-prod` services (Railway service names are unique across the whole project, so production cannot reuse dev's `api`/`frontend`/`Postgres`; its database is `postgres-prod`), their variables, and their domains must already exist in `production` -- the first `source connect` creates a service, but with no variables it would crash-loop. Promote the exact SHA development is running (`/health/ready`), not `latest`.
 
 **Required-reviewer gate:** CI can't create the `production` environment's required-reviewer rule, because this repo's `GITHUB_TOKEN` gets a 403 on `PUT .../environments/production`. A repo admin added it by hand (Settings -> Environments -> `production` -> Required reviewers -> `Tselmeg-C`). Confirmed working: run [35910206055](https://github.com/Tselmeg-C/call-center-2026/actions/runs/35910206055) waited for that approval. `gh workflow run` from a codespace gets a 403 because it uses the integration token, so start promotions from the Actions web UI.
+
+### CI deploy tokens (#162)
+
+Each Railway deploy token is a GitHub **environment** secret, so only a job that declares that environment, and that the environment's deployment policy admits, can read it. The name is `RAILWAY_API_TOKEN` in both, so the workflow `env:` lines are the same.
+
+| GitHub environment | Read by | Deployment branches and tags | Reviewers | Railway token |
+| --- | --- | --- | --- | --- |
+| `development` | `ci.yml` job `deploy-development` | branch `main` only | none (unattended) | its own account token |
+| `production` | `promote-production.yml` job `promote` (manual, or called by `ci.yml`'s `deploy-production` on a tag) | branch `main`, tag `v*.*.*` | `Tselmeg-C` | a separate account token |
+
+- **Token type.** Both are Railway tokens created at railway.com/account/tokens: an account token (no workspace), or a workspace token if the project is in a workspace. A Project Token can't be used because it gets "Unauthorized" on `railway service source connect`.
+- **Tag pattern.** GitHub's UI rejected `v*` as a tag rule, so production allows `v*.*.*`. Release tags like `v1.0.1` (and `v1.2.3-rc1`) match. A tag that doesn't, such as `v1` or `v1.2`, still runs `publish` and gets its image tag, but `deploy-production` then fails with "not allowed to deploy to production due to environment protection rules". Use `vX.Y.Z` tags, or promote that SHA by hand from `main` with `promote-production.yml`. The `v*` triggers in `ci.yml` are unchanged.
+- **Why `deploy-development` is its own job.** `publish` also runs for tag pushes, which the `development` policy (`main` only) would reject. The deploy job runs only for a push to `main` whose commit is still the head of `main`. It is skipped for tags, PRs, other branches and re-runs of old commits, and docs-only pushes don't start CI at all. A job on any other branch that names `environment: development` fails before any step runs, so it never sees the secret.
+- **Remaining limit.** Development and production are in one Railway project, and no Railway token type can reach one environment but not the other while still being able to run `service source connect`. So a leaked token of either kind can still change both environments on Railway. The GitHub-side split only limits which jobs can read each token. Railway-side isolation is #173.
+- **Repo-level secret.** Until the owner deletes the old repository-level `RAILWAY_API_TOKEN`, it is shadowed: an environment secret overrides a repository secret with the same name. Delete it once a `deploy-development` run has succeeded with the environment secret. If the old token was not reused, revoke it in Railway too.
+
+**Rotating a token** (one environment at a time):
+
+1. Create the new token at railway.com/account/tokens (same type as above). Paste it only into the GitHub secret field, never into an issue, PR, log or chat.
+2. Settings -> Environments -> `development` or `production` -> Environment secrets -> `RAILWAY_API_TOKEN` -> update.
+3. Run a deploy that uses it. For development, push to `main` or wait for the next merge. For production, run `promote-production.yml` from the Actions UI with the SHA production already runs, then approve it.
+4. Confirm the run succeeded and `/health/ready` reports the expected `version`.
+5. Revoke the old token at railway.com/account/tokens.
 
 ## Railway `development` environment (#27)
 
@@ -386,10 +409,10 @@ without shell access via either surface.
 
 ### Auto-deploy on every `main` build
 
-`.github/workflows/ci.yml`'s `publish` job, after publishing both images and only if the commit is still the head of `main` (so re-running an old run never redeploys an old commit), calls
+`.github/workflows/ci.yml`'s `deploy-development` job, after `publish` has pushed both images and only if the commit is still the head of `main` (so re-running an old run never redeploys an old commit), calls
 `railway service source connect --image ...:$GITHUB_SHA --service <api|frontend> --environment
-development --project $RAILWAY_PROJECT_ID` for each service, authenticated with the account-scoped
-`RAILWAY_API_TOKEN` GitHub Actions secret (a Project Token gets "Unauthorized" on this mutation, and
+development --project $RAILWAY_PROJECT_ID` for each service, authenticated with the `development`
+environment's `RAILWAY_API_TOKEN` secret (see *CI deploy tokens (#162)*; a Project Token gets "Unauthorized" on this mutation, and
 `source connect` has no `--yes` flag). This is a CI-triggered redeploy, not a Railway-side
 webhook: the installed CLI pins an image-sourced service to one fixed reference and (confirmed via
 `railway service source --help`) only GitHub-repo sources get an automatic redeploy trigger on

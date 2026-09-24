@@ -60,7 +60,7 @@ Never skip grooming. Each subagent prompt must be self-contained: issue number, 
 | Push feature branch (incl. merging `main` into it) | yes | no | no | no |
 | PR opened/updated | yes | no | no | no |
 | Merge → `main` | yes | yes (once per commit) | `<sha>`, `<short-sha>`, `latest` | development |
-| Push `v*` tag | yes | no -- re-tags the `<sha>` image main already built (builds only if missing) | adds `v*` tag | production (`promote-production.yml`, `production` approval) |
+| Push `v*` tag | yes | no -- re-tags the `<sha>` image main already built (builds only if missing) | adds `v*` tag | production (`promote-production.yml`, `production` approval; the environment only accepts `vX.Y.Z` tags matching `v*.*.*`) |
 | Docs-only change (`_docs/**`, `**/*.md`, `.claude/**`) | no | no | no | no |
 | Re-run of an old `main` run | yes | no (image exists) | no `latest` move | no |
 

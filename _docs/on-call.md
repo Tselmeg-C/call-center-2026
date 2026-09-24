@@ -32,7 +32,7 @@ the alerting path itself.
 
 Config-as-code lives under [`infra/grafana-alerting/`](../infra/grafana-alerting/README.md),
 applied via `infra/grafana_alerting_apply.py` against the Grafana Alerting Provisioning HTTP API.
-Four rules, two contact points (the GitHub-issue webhook and the owner's email) and two
+Five rules, two contact points (the GitHub-issue webhook and the owner's email) and three
 notification-policy routes:
 
 | Rule | Source | Status |
@@ -41,6 +41,7 @@ notification-policy routes:
 | `/health/ready` failing (production, #28) | Same Synthetic Monitoring check, against `frontend-prod-production-d39f.up.railway.app/api/health/ready` | **Applied and live** (2026-09-23, `probe_success = 1`). It fires through the same contact point, so the issue says `production`. The agent still investigates and fixes in `development` only, and a human promotes the fix |
 | Elevated 5xx error rate (development) | OTel metrics, joined to `target_info` on `deployment_environment` like the dashboard | **Applied and live**, `isPaused: false` (#35). 5xx share > 5% over 5m, for 10m. Idle `development` gives no data, which maps to OK |
 | p95 latency SLO breach (development) | OTel metrics, same join | **Applied and live**, `isPaused: false` (#35). p95 > 1s over 5m, for 10m (target from `_docs/persistence.md`). Idle gives NaN/no data, which never crosses the threshold |
+| Health monitor stopped reporting (development, #99) | Absence of Synthetic Monitoring `probe_success{job="health-ready-development"}` for 30 minutes (dead man's switch) | **Applied and live** (2026-09-24, `Normal`). **Emails the owner only and does not open an on-call issue**: a stopped check can't be fixed from the repo. See `_docs/deployment.md` → *Development health monitor* |
 
 The webhook contact point `POST`s directly to `https://api.github.com/repos/Tselmeg-C/call-center-2026/issues`
 with a custom JSON payload (`title`, `body`, `labels`) -- no new hosted middleman service. The
@@ -62,6 +63,12 @@ owner-created email contact point `TselmegC` (the address is kept only in Grafan
 and production) are `critical` and reach both receivers. The `warning` error-rate and latency rules
 reach only the GitHub route. Email repeats at most every 4 h while firing, and a "resolved" email is
 sent on recovery (`disableResolveMessage: false` on the contact point).
+
+A third route, `notification-policy-route-monitor-stale.json` (#99), is listed first. It matches
+`kind=monitor-stale`, a label only the stale-monitor rule carries, sends to `TselmegC` with
+`continue: false`, so that alert emails once and never opens an on-call issue. The development
+`/health/ready` rule has `noDataState: OK` since #99, so a stopped check doesn't also open an "API
+failing" issue; the production rule still fires on no data (#169).
 
 ### Duplicate / flapping alerts
 

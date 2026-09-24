@@ -20,6 +20,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.routing import Match
+from starlette.datastructures import Headers
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, StrictBool, StrictInt, StrictStr, StringConstraints, field_validator, model_validator
 from pwdlib import PasswordHash
 from .storage import mode, database_url
@@ -413,18 +414,15 @@ async def _request_has_nul(request: Request) -> bool:
     return _contains_nul(parsed)
 
 
+def _request_id(candidate: str) -> str:
+    return candidate if re.fullmatch(r"[A-Za-z0-9._-]{1,128}", candidate) else str(uuid4())
+
+
 @app.middleware("http")
 async def origin_guard(request: Request, call_next):
     started = perf_counter()
-    candidate = request.headers.get("x-request-id", "")
-    request_id = candidate if re.fullmatch(r"[A-Za-z0-9._-]{1,128}", candidate) else str(uuid4())
+    request_id = _request_id(request.headers.get("x-request-id", ""))
     otel_setup.annotate_request_id(request_id)
-    if request.url.path == "/admin/imports":
-        try: content_length = int(request.headers.get("content-length", "0"))
-        except ValueError: content_length = 0
-        if content_length > 11 * 1024 * 1024:
-            logger.warning("request id=%s method=%s route=%s status=413 duration_ms=%.3f error=upload_limit", request_id, request.method, route_template(request), (perf_counter() - started) * 1000, extra={"request_id": request_id})
-            return Response("Upload is too large.", status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, headers={"x-request-id": request_id}, media_type="application/json")
     # /session/login is deliberately exempt, not a gap (checked live for #27): this guard exists
     # to stop CSRF -- an already-authenticated session cookie being replayed cross-site to mutate
     # state without consent. Login has no such ambient cookie/authority to steal (it's what
@@ -455,12 +453,67 @@ async def origin_guard(request: Request, call_next):
     return response
 
 
+# #159: the API caps every request body itself, because the dev API's public domain skips the
+# frontend nginx's `client_max_body_size 11M` (apps/frontend/nginx/default.conf.template names this
+# constant; change both together). 11 MiB = the 10 MiB workbook + 1 MiB multipart overhead.
+MAX_REQUEST_BODY_BYTES = 11 * 1024 * 1024
+
+
+class BodyLimit:
+    """Pure ASGI (not BaseHTTPMiddleware, which would buffer an unbounded body first). Reads the
+    body up front, counting bytes and stopping as soon as it passes the limit, then replays it to
+    the app. Buffering here costs nothing extra: origin_guard's NUL check reads the whole body into
+    memory on every request anyway. Reading it before origin_guard means an oversized body gets 413
+    whatever its Origin or session, with or without Content-Length. Registered between origin_guard
+    and security_headers, so the 413 still gets the security headers."""
+
+    def __init__(self, app) -> None:
+        self.app = app
+
+    async def __call__(self, scope, receive, send) -> None:
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+        started = perf_counter()
+        headers = Headers(scope=scope)
+        try: declared = int(headers.get("content-length", "0"))
+        except ValueError: declared = 0
+        chunks: list[bytes] = []
+        total = 0
+        if declared <= MAX_REQUEST_BODY_BYTES:
+            while True:
+                message = await receive()
+                if message["type"] == "http.disconnect": return  # client gone: nobody to answer
+                chunks.append(message.get("body", b""))
+                total += len(chunks[-1])
+                if total > MAX_REQUEST_BODY_BYTES or not message.get("more_body", False): break
+        if declared > MAX_REQUEST_BODY_BYTES or total > MAX_REQUEST_BODY_BYTES:
+            request = Request(scope)
+            request_id = _request_id(headers.get("x-request-id", ""))
+            otel_setup.annotate_request_id(request_id)
+            logger.warning("request id=%s method=%s route=%s status=413 duration_ms=%.3f error=upload_limit", request_id, request.method, route_template(request), (perf_counter() - started) * 1000, extra={"request_id": request_id})
+            response = Response("Upload is too large.", status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, headers={"x-request-id": request_id}, media_type="application/json")
+            return await response(scope, receive, send)
+        body = b"".join(chunks)
+        replayed = False
+
+        async def replay():
+            nonlocal replayed
+            if replayed: return await receive()  # after the body: pass http.disconnect etc. through
+            replayed = True
+            return {"type": "http.request", "body": body, "more_body": False}
+
+        await self.app(scope, replay, send)
+
+
+app.add_middleware(BodyLimit)
+
+
 # #72: fixed baseline security headers on every API response, so a client hitting the API's own
 # domain directly gets the same protection as one going through the frontend's /api/ proxy. Values
 # match apps/frontend/nginx/default.conf.template (#61); CSP/X-Frame-Options are omitted because the
 # API only serves JSON. A fixed set on purpose (like otel_setup's attribute allowlist), not a
 # configurable header framework. Registered after origin_guard, so it wraps it and also covers that
-# guard's early 403/413 returns and CORS preflights.
+# guard's early 403/422 returns, BodyLimit's 413 (#159) and CORS preflights.
 SECURITY_HEADERS = {"Strict-Transport-Security": "max-age=31536000", "X-Content-Type-Options": "nosniff", "Referrer-Policy": "strict-origin-when-cross-origin"}
 
 

@@ -7,7 +7,7 @@
 # Run (Railway/containers inject $PORT; default to 8080 locally):
 #   docker run --rm -p 8080:8080 -e PORT=8080 call-center-frontend
 
-FROM node:24-alpine AS build
+FROM node:24-alpine@sha256:ebfe2f90462722a7a4de65e91990e97fe0d401c70e0e762c5b53302f905ec1c1 AS build
 
 WORKDIR /app
 
@@ -22,7 +22,7 @@ COPY apps/frontend apps/frontend
 ENV VITE_SERVICE_MODE=http
 RUN npm run build --workspace @call-center/frontend
 
-FROM nginx:1.27-alpine AS runtime
+FROM nginx:1.30-alpine@sha256:985220252f3863977e468f611ef118ebd01421289dd86ee1ae99cb068c3bce2b AS runtime
 
 COPY apps/frontend/nginx/default.conf.template /etc/nginx/templates/default.conf.template
 COPY --from=build /app/apps/frontend/dist /usr/share/nginx/html

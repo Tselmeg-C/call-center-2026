@@ -26,6 +26,16 @@ echo "==> Building images"
 docker build -q -f apps/api/Dockerfile -t "$api_image" . >/dev/null
 docker build -q -f apps/frontend/Dockerfile -t "$frontend_image" . >/dev/null
 
+# #161: test-only packages (apps/api/requirements-dev.txt) must not ship in the API image.
+echo "==> Checking the API image has no test-only packages (#161)"
+for module in pytest httpx2; do
+  if docker run --rm --entrypoint python "$api_image" -c "import $module" >/dev/null 2>&1; then
+    echo "API image can import test-only package '$module'" >&2
+    exit 1
+  fi
+done
+echo "    pytest, httpx2: not importable"
+
 echo "==> Starting test Postgres ($compose_test)"
 docker compose -f "$compose_test" up -d postgres
 

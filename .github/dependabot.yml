@@ -1,5 +1,7 @@
 # Keeps the SHA-pinned actions in .github/workflows (#62) current (#65).
 # Dependabot bumps the commit SHA and its trailing `# vX.Y.Z` comment together.
+# #161: also the digest-pinned Dockerfile FROM lines, the pip-compile lock
+# (apps/api/requirements.in -> requirements.txt) and the npm workspace lockfile.
 version: 2
 updates:
   - package-ecosystem: github-actions
@@ -8,4 +10,37 @@ updates:
       interval: weekly
     groups:
       github-actions:
+        patterns: ['*']
+
+  - package-ecosystem: docker
+    directories:
+      - /apps/api
+      - /apps/frontend
+    schedule:
+      interval: weekly
+    groups:
+      docker:
+        patterns: ['*']
+    # CI's Python (3.12) and .nvmrc/engines (24) must move together with the
+    # images, so those bumps are manual. Digest and nginx bumps stay automatic.
+    ignore:
+      - dependency-name: python
+        update-types: ['version-update:semver-major', 'version-update:semver-minor']
+      - dependency-name: node
+        update-types: ['version-update:semver-major']
+
+  - package-ecosystem: pip
+    directory: /apps/api
+    schedule:
+      interval: weekly
+    groups:
+      pip:
+        patterns: ['*']
+
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      npm:
         patterns: ['*']

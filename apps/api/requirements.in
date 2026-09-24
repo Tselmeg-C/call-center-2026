@@ -1,0 +1,15 @@
+# Direct runtime dependencies of the API image. Lock with (Python 3.12, Linux):
+#   pip-compile --generate-hashes apps/api/requirements.in
+# which rewrites requirements.txt. Test-only packages live in requirements-dev.txt (#161).
+fastapi>=0.115,<1
+uvicorn[standard]>=0.30,<1
+pwdlib[argon2]>=0.2,<1
+openpyxl>=3.1,<4
+python-multipart>=0.0.9,<1
+sqlalchemy>=2.0,<3
+alembic>=1.14,<2
+psycopg[binary]>=3.2,<4
+opentelemetry-sdk>=1.27,<2
+opentelemetry-instrumentation-fastapi>=0.48b0,<1
+opentelemetry-instrumentation-sqlalchemy>=0.48b0,<1
+opentelemetry-exporter-otlp>=1.27,<2

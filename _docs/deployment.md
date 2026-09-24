@@ -86,9 +86,9 @@ docker build -f apps/api/Dockerfile -t call-center-api .
 docker build -f apps/frontend/Dockerfile -t call-center-frontend .
 ```
 
-The API image is `python:3.12-slim` (matches CI); the builder stage installs `apps/api/requirements.txt` and the runtime stage copies the installed packages plus the `apps/api` and `observability` source, runs as a non-root user, and execs the unchanged `apps/api/start.sh` -- the migration-before-traffic gate, the `WEB_CONCURRENCY` guard, and `/health/live`/`/health/ready` all behave exactly as they do outside a container. Run it with the same environment variables as any other deployment (`CALL_CENTER_STORAGE`, `DATABASE_URL` when in postgres mode, `FRONTEND_ORIGIN`, `PORT`); nothing environment-specific is baked into the image.
+The API image is `python:3.12-slim`, digest-pinned (matches CI); the builder stage installs only the hash-locked runtime dependencies (`pip install --require-hashes -r apps/api/requirements.txt`, no test-only packages -- see [Dependency locks and base images](#dependency-locks-and-base-images)) and the runtime stage copies the installed packages plus the `apps/api` and `observability` source, runs as a non-root user, and execs the unchanged `apps/api/start.sh` -- the migration-before-traffic gate, the `WEB_CONCURRENCY` guard, and `/health/live`/`/health/ready` all behave exactly as they do outside a container. Run it with the same environment variables as any other deployment (`CALL_CENTER_STORAGE`, `DATABASE_URL` when in postgres mode, `FRONTEND_ORIGIN`, `PORT`); nothing environment-specific is baked into the image.
 
-The frontend image builds with `node:24-alpine` (matches `.nvmrc`) and serves the resulting `dist/` bundle from `nginx:1.27-alpine` -- no Node runtime or extra static-server dependency ships in the final image. nginx's official envsubst-templates mechanism (`apps/frontend/nginx/default.conf.template`) substitutes `$PORT` at container start and falls back unmatched routes to `index.html` for the client-side router.
+The frontend image builds with `node:24-alpine` (matches `.nvmrc`) and serves the resulting `dist/` bundle from `nginx:1.30-alpine` (nginx stable line) -- both digest-pinned -- no Node runtime or extra static-server dependency ships in the final image. nginx's official envsubst-templates mechanism (`apps/frontend/nginx/default.conf.template`) substitutes `$PORT` at container start and falls back unmatched routes to `index.html` for the client-side router.
 
 `infra/docker-compose.yml` adds optional `api` and `frontend` services alongside `postgres`, so `docker compose -f infra/docker-compose.yml up --build` runs the whole stack in containers locally:
 
@@ -97,6 +97,25 @@ POSTGRES_PASSWORD=<local-only-value> docker compose -f infra/docker-compose.yml 
 ```
 
 This is additive: the non-container `npm run dev` / `apps/api/start.sh` workflow keeps working unchanged, and nothing here requires containers for day-to-day development.
+
+### Dependency locks and base images
+
+(#161) Every `FROM` line in both Dockerfiles is `image:tag@sha256:<digest>`: `python:3.12-slim` (API builder + runtime), `node:24-alpine` (frontend build) and `nginx:1.30-alpine` (frontend runtime, the nginx.org stable line at the time, 1.30.5). Dependabot (`.github/dependabot.yml`) bumps the digests and nginx version weekly, but never the Python minor or the Node major, because CI's Python and `.nvmrc`/`engines` must move with them -- change those by hand, together.
+
+API Python dependencies are locked with pip-tools:
+
+- `apps/api/requirements.in` -- direct runtime dependencies (version ranges). Edit this file.
+- `apps/api/requirements.txt` -- generated lock, every package `==` with `--hash=sha256:`. Regenerate with Python 3.12 on Linux (same as the image and CI), from the repo root: `pip install pip-tools && pip-compile --generate-hashes apps/api/requirements.in`. Without a local 3.12, run it in `python:3.12-slim`.
+- `apps/api/requirements-dev.txt` -- test-only packages (`pytest`, `httpx2`), unhashed. Development and CI install runtime + dev in **two** separate commands, because pip rejects one install that mixes hashed and unhashed requirements:
+
+  ```sh
+  python -m pip install --require-hashes -r apps/api/requirements.txt
+  python -m pip install -r apps/api/requirements-dev.txt
+  ```
+
+The API image installs the runtime lock only, with `--require-hashes` (an edited hash fails `docker build`); `infra/smoke-test.sh` fails if `pytest` or `httpx2` can be imported in it. Dependabot's `pip` ecosystem updates `requirements.in`/`requirements.txt` together.
+
+Accepted advisory: `npm audit` reports GHSA-82fw-gwwq-j7x9 (moderate, `vitest` / `@vitest/mocker` 3.x). It is dev-only, not in the nginx image (`npm audit --omit=dev` is clean); the fix is the breaking Vitest 3 -> 5 upgrade tracked in #175.
 
 `infra/smoke-test.sh` (`npm run smoke:containers`) is the container-run smoke check: it builds both images, starts `infra/docker-compose.test.yml`'s Postgres, runs the API and frontend containers against it, and asserts `/health/ready` returns healthy and the frontend serves its index page.
 
@@ -339,7 +358,7 @@ restart on the API's redeploys, so it kept silently proxying to the now-dead old
 was reproduced live 4/4 times against `frontend-development-83f4.up.railway.app`. The fix:
 `default.conf.template` now declares `resolver ${NGINX_LOCAL_RESOLVERS} valid=10s;` (nginx's
 own async resolver, using the container's real nameserver(s) from `/etc/resolv.conf`, populated
-by the base `nginx:1.27-alpine` image's built-in `15-local-resolvers.envsh` -- turned on via
+by the base `nginx:1.30-alpine` image's built-in `15-local-resolvers.envsh` -- turned on via
 `NGINX_ENTRYPOINT_LOCAL_RESOLVERS=1` in `apps/frontend/Dockerfile`) and uses a variable
 (`set $api_upstream http://${API_UPSTREAM}; proxy_pass $api_upstream;`) instead of a literal
 string in `proxy_pass`, so nginx re-resolves `API_UPSTREAM` at most every 10s instead of once at

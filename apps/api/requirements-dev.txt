@@ -1,0 +1,8 @@
+# Test-only packages (#161): never installed in the API image.
+# Unhashed on purpose: install it in a separate `pip install` AFTER the hashed
+# runtime lock, because pip rejects a single install that mixes hashed and
+# unhashed requirements:
+#   python -m pip install --require-hashes -r apps/api/requirements.txt
+#   python -m pip install -r apps/api/requirements-dev.txt
+pytest>=9.0.3,<10
+httpx2>=2,<3

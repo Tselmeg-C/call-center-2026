@@ -528,6 +528,33 @@ keeps routing to the last good deployment during a broken-migration redeploy (th
 `service source connect --image` immediately pins to a new reference, so this needs the plugin-
 pause approach or a deliberately broken migration on a redeploy, not a connect-level drill).
 
+### Failure drill on the real Railway Postgres (`development`, 2026-09-24)
+
+The owner ran `railway service restart --service Postgres` against `development` from their own
+terminal (the sandbox blocks infra-mutating Railway commands). Observed, from Railway deploy/HTTP
+logs and a curl probe (times UTC):
+
+| Time | Event |
+|---|---|
+| 12:42:05.389 | Synthetic Monitoring probe `/health/ready` -> 200 |
+| 12:42:15.066 | Postgres: `received fast shutdown request`; active connections terminated |
+| 12:42:15.108 | Postgres: `database system is shut down` |
+| 12:42:16.203 | Postgres: `database system was shut down at 12:42:15`; existing data directory reused ("Skipping initialization") on the same volume |
+| 12:42:16.222 | Postgres: `ready to accept connections` (~1.2 s outage) |
+| 12:42:30.630 | curl `/health/ready` -> **503**; API log `route=/health/ready status=503 duration_ms=2.744 error=http_error` (safe category, no DSN) |
+| 12:42:31.019 | next curl -> 200; subsequent requests 200 |
+| 12:43:05 | next Synthetic Monitoring probe -> 200 |
+
+- The 503 came from a pooled connection that Postgres had killed during shutdown. That request
+  failed fast and the pool reconnected on the next request, so no API restart was needed. The
+  engines don't set `pool_pre_ping`, so each stale pooled connection fails one request after a DB
+  restart. That's acceptable here, and adding `pool_pre_ping=True` is a follow-up only if it matters.
+- The outage fell between two 1-minute probes, so the probe never saw a failure and no health
+  alert fired. That's expected for a restart this short.
+- Data preserved: Postgres restarted on the same volume without re-initialising, and `/health/ready`
+  returned 200 with the migration revision. The pre-drill accounts still log in, which is checked
+  in #27's QA smoke journey.
+
 ### Rollback
 
 `railway service source connect --image ghcr.io/tselmeg-c/call-center-2026-api:<previous-sha>

@@ -19,6 +19,7 @@ ALL_RULE_FILES = [
     "alert-rule-health-ready-production.json",
     "alert-rule-error-rate.json",
     "alert-rule-latency-p95.json",
+    "alert-rule-health-monitor-stale.json",
 ]
 
 
@@ -34,6 +35,7 @@ def load(name):
         "contact-point-github-issue.json",
         "notification-policy-route.json",
         "notification-policy-route-email.json",
+        "notification-policy-route-monitor-stale.json",
     ],
 )
 def test_file_is_valid_json(name):
@@ -154,12 +156,26 @@ def test_email_route_references_an_existing_receiver_and_continues():
     assert route["receiver"] == EMAIL_CONTACT_POINT
     # continue: true, and listed before the GitHub route, so the GitHub route still matches too.
     assert route["continue"] is True
-    assert apply.POLICY_ROUTE_FILES == ["notification-policy-route-email.json", "notification-policy-route.json"]
+    assert apply.POLICY_ROUTE_FILES[-2:] == ["notification-policy-route-email.json", "notification-policy-route.json"]
     assert route["repeat_interval"] == "4h"
 
 
 def _labels_match(route, labels):
     return all(labels.get(k) == v for k, v in (m.split("=", 1) for m in route["matchers"]))
+
+
+def _receivers(labels):
+    """Receivers the managed routes deliver to, walked the way Alertmanager does
+    (first match, keep going on continue)."""
+    import grafana_alerting_apply as apply
+
+    receivers = []
+    for route in (load(n) for n in apply.POLICY_ROUTE_FILES):
+        if _labels_match(route, labels):
+            receivers.append(route["receiver"])
+            if not route["continue"]:
+                break
+    return receivers
 
 
 @pytest.mark.parametrize("environment", ["development", "production"])
@@ -171,13 +187,7 @@ def test_health_ready_alerts_route_to_both_email_and_github_issue(environment):
         "alert-rule-health-ready.json" if environment == "development" else "alert-rule-health-ready-production.json"
     )["labels"]
     assert labels["environment"] == environment
-    receivers = []
-    for route in (load(n) for n in apply.POLICY_ROUTE_FILES):
-        if _labels_match(route, labels):
-            receivers.append(route["receiver"])
-            if not route["continue"]:
-                break
-    assert receivers == [EMAIL_CONTACT_POINT, "on-call-github-issue"]
+    assert _receivers(labels) == [EMAIL_CONTACT_POINT, "on-call-github-issue"]
 
 
 def test_warning_rules_do_not_email():
@@ -210,3 +220,44 @@ def test_no_committed_file_contains_an_email_address():
     email = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
     for path in ALERTING_DIR.glob("*.json"):
         assert not email.search(path.read_text(encoding="utf-8")), path.name
+
+
+# --- #99: dead man's switch for the development health monitor -------------------------------
+
+STALE_RULE = "alert-rule-health-monitor-stale.json"
+
+
+def test_stale_monitor_rule_query_and_nodata():
+    rule = load(STALE_RULE)
+    expr = rule["data"][0]["model"]["expr"]
+    assert expr.startswith("sum(count_over_time(")
+    assert 'probe_success{job="health-ready-development"}[30m]' in expr
+    assert rule["noDataState"] == "Alerting"  # no samples in 30m == monitor stopped == fire
+    assert rule["isPaused"] is False
+    assert "stopped reporting" in rule["title"] and "(development)" in rule["title"]
+    notes = " ".join(rule["annotations"].values())
+    assert "enabled" in notes and "quota" in notes
+    assert "_docs/deployment.md#development-health-monitor-95" in rule["annotations"]["runbook_url"]
+
+
+def test_stale_monitor_rule_emails_owner_only():
+    import grafana_alerting_apply as apply
+
+    assert apply.POLICY_ROUTE_FILES[0] == "notification-policy-route-monitor-stale.json"
+    assert _receivers(load(STALE_RULE)["labels"]) == [EMAIL_CONTACT_POINT]
+
+
+def test_dev_health_ready_does_not_fire_on_no_data_but_production_still_does():
+    assert load("alert-rule-health-ready.json")["noDataState"] == "OK"
+    assert load("alert-rule-health-ready-production.json")["noDataState"] == "Alerting"
+
+
+def test_merge_routes_with_two_email_routes_is_idempotent():
+    import grafana_alerting_apply as apply
+
+    ours = [load(n) for n in apply.POLICY_ROUTE_FILES]
+    other = {"receiver": "someone-else", "matchers": ["a=b"]}
+    live_before_99 = [other, load("notification-policy-route-email.json"), load("notification-policy-route.json")]
+    merged = apply.merge_routes(live_before_99, ours)
+    assert merged == [other, *ours]
+    assert apply.merge_routes(merged, ours) == merged

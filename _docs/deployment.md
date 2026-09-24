@@ -193,8 +193,9 @@ arrived hours apart.
   `infra/grafana-alerting/synthetic-monitoring-check-health-ready.json`, applied by `infra/grafana_sm_apply.py`.
 - **History:** Grafana → Testing & synthetics → Synthetics → `health-ready-development`, or query
   `probe_success{job="health-ready-development"}` in the Prometheus datasource.
-- **Alert:** rule `oncall-health-ready-development` fires when `probe_success` < 1 for 5 minutes, or
-  when there is no data.
+- **Alert:** rule `oncall-health-ready-development` fires when `probe_success` < 1 for 5 minutes.
+  Since #99 it does **not** fire on no data (`noDataState: OK`): a stopped check is reported only by
+  the stale-monitor alert below, so it doesn't also open a misleading "API failing" on-call issue.
 - **Who is notified:** the owner by **email** (Grafana contact point `TselmegC`; the address is kept
   only in Grafana) **and** the #35 on-call GitHub-issue webhook (`on-call-github-issue`). The email
   route matches `team=on-call, service=call-center-api, severity=critical`, so the production
@@ -205,8 +206,9 @@ arrived hours apart.
   opens no issue on recovery.
 - **Pause it:** disable the SM check (Synthetics → `health-ready-development` → Disable, or set
   `"enabled": false` in the check JSON and re-run `grafana_sm_apply.py`). Or pause the alert rule, or
-  add a silence for `alertname`, in Grafana → Alerting. With the check disabled, the rule sees no
-  data and fires (`noDataState: Alerting`), so pause or silence the rule as well.
+  add a silence for `alertname`, in Grafana → Alerting. With the check disabled, the `/health/ready`
+  rule sees no data and stays Normal (`noDataState: OK`, #99), but the **stale-monitor alert fires
+  after 30 minutes**. Follow the planned-pause procedure below.
 - **Drill (2026-09-23, #95):** a temporary check against `/health/does-not-exist` (404) gave its
   first `probe_success = 0` at 20:37:13Z. The alert fired at 20:43:10Z, and Grafana sent the email and
   the GitHub issue (#149, closed as a drill) at 20:43:40Z. The owner confirmed the email arrived at
@@ -215,6 +217,37 @@ arrived hours apart.
   confirmed it arrived at 20:53Z. The temporary
   check and rule were then deleted. The drill check ran every 4 minutes, not 60 s, because a third
   60 s check would exceed the stack's 100,000 checks-per-month Synthetic Monitoring quota.
+
+#### Stale-monitor alert (dead man's switch, #99)
+
+- **Rule:** `oncall-health-monitor-stale-development`, "call-center-api: health monitor stopped
+  reporting (development)", in `infra/grafana-alerting/alert-rule-health-monitor-stale.json`. Query:
+  `sum(count_over_time(probe_success{job="health-ready-development"}[30m]))`, threshold `< 1`,
+  `noDataState: Alerting`, `for: 2m`, evaluated every 60 s. With the check running it returns about
+  30. When no sample has arrived for **30 minutes** the query returns no data and the rule fires
+  about 2-3 minutes later (within 40 minutes of the last sample). The `sum` is needed because the
+  metric is split into several series by `config_version`.
+- **Who is notified: email only** (`TselmegC`), through its own route
+  `notification-policy-route-monitor-stale.json`. That route is listed first, matches
+  `kind=monitor-stale` (a label only this rule carries) and has `continue: false`, so no on-call
+  GitHub issue opens. A stopped check comes from things the on-call agent can't fix from the repo: the
+  check was disabled, the SM quota ran out, or a probe or Grafana-side outage. A "resolved" email is
+  sent once samples arrive again.
+- **Likely causes, in order:** the check was disabled in Synthetics (re-enable it by re-running
+  `infra/grafana_sm_apply.py`, the committed JSON has `enabled: true`). The **Synthetic Monitoring
+  quota** is used up: two 60 s checks use 86,400 of the 100,000 monthly executions, so any extra check
+  can exhaust it. Or a probe or Grafana Cloud incident.
+- **Known limitation:** the switch runs inside the same Grafana Cloud stack it watches. If Grafana
+  alerting or email delivery itself stops, nothing fires. An external watchdog would need a new
+  service and is not planned. The production check has no switch yet (#169).
+- **Planned pause:** before disabling the check, add a silence in Grafana → Alerting → Silences with
+  matcher `alertname = call-center-api: health monitor stopped reporting (development)` and an end
+  time at least **30 minutes after** the planned re-enable time. Re-enable the check by re-running
+  `infra/grafana_sm_apply.py`, then remove the silence (or let it expire). Pausing the stale rule
+  instead also works. Unpause it afterwards (or re-run `infra/grafana_alerting_apply.py`, which
+  applies `isPaused: false`).
+- **Applied:** 2026-09-24 14:49Z; live state `Normal`, query value 30.
+- **Drill:** pending (pause the real dev check; see #99).
 
 ### Topology
 

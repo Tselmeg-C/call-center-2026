@@ -40,12 +40,18 @@ RULES = [
     "alert-rule-health-ready-production.json",
     "alert-rule-error-rate.json",
     "alert-rule-latency-p95.json",
+    "alert-rule-health-monitor-stale.json",
 ]
 CONTACT_POINT_FILE = "contact-point-github-issue.json"
-# Order matters: the email route has "continue": true so the GitHub-issue route after it
+# Order matters: the stale-monitor route (#99) is first with "continue": false, so the stale
+# alert emails TselmegC once and never reaches the email/GitHub routes below it. The email route has "continue": true so the GitHub-issue route after it
 # (continue: false) still matches. The email contact point "TselmegC" is owner-created in the
 # Grafana UI (#95) so its address never lives in this repo; only its name is referenced here.
-POLICY_ROUTE_FILES = ["notification-policy-route-email.json", "notification-policy-route.json"]
+POLICY_ROUTE_FILES = [
+    "notification-policy-route-monitor-stale.json",
+    "notification-policy-route-email.json",
+    "notification-policy-route.json",
+]
 
 
 def load_json(name):

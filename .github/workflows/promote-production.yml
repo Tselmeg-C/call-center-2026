@@ -58,10 +58,11 @@ jobs:
           docker manifest inspect "$IMAGE_FRONTEND:$TAG" > /dev/null
           echo "Both images verified for tag $TAG."
 
-      # Same account-scoped token and pattern as ci.yml's "Deploy development" step: a Project
-      # Token is environment-scoped and read-mostly and cannot run `service source connect`
-      # ("Unauthorized"). RAILWAY_API_TOKEN already exists and works for every environment in
-      # this account, so production reuses it rather than needing a separate secret.
+      # Same pattern as ci.yml's deploy-development job: a Project Token is environment-scoped and
+      # read-mostly and cannot run `service source connect` ("Unauthorized"), so this is an
+      # account/workspace token. #162: RAILWAY_API_TOKEN resolves to the `production` GitHub
+      # environment's own secret (a separate token from development's), readable only by jobs the
+      # environment admits: `main` or a `v*.*.*` tag, after required-reviewer approval.
       - name: Point Railway production service at verified tag
         env:
           TAG: ${{ inputs.image_tag }}

@@ -50,10 +50,10 @@ Service names are unique across the whole project, which is why production has t
 ## How code reaches Railway (build once, promote the same image)
 
 - **Merge to `main`, then development (automatic).** In `.github/workflows/ci.yml`, the
-  `Deploy development (Railway)` step runs
+  `deploy-development` job (`development` GitHub environment) runs
   `railway service source connect --image ghcr.io/tselmeg-c/call-center-2026-{api,frontend}:$GITHUB_SHA --service {api,frontend} --environment development --project $RAILWAY_PROJECT_ID`.
   - It runs only when the commit is still the head of `main`.
-  - Auth is `RAILWAY_API_TOKEN`, an account token. A Project Token gets "Unauthorized" on this mutation.
+  - Auth is `RAILWAY_API_TOKEN`, an account (or workspace) token stored as a per-environment GitHub environment secret: `development` for this job, `production` for `promote-production.yml`, each a separate token. There is no repo-level secret once the owner deletes it. A Project Token gets "Unauthorized" on this mutation. Details and rotation: `_docs/deployment.md` -> *CI deploy tokens (#162)*.
   - There's no `--yes`; `source connect` rejects it.
   - The CLI is pinned to `@railway/cli@5.57.5`.
   - An image-sourced service never redeploys on its own when a new tag is pushed. This step *is* the deploy.
@@ -61,7 +61,7 @@ Service names are unique across the whole project, which is why production has t
   at an existing GHCR tag.
   - It runs automatically after a tag push, or by hand via `workflow_dispatch`.
   - It checks that both images exist before it changes anything.
-  - The `production` GitHub environment needs the owner's approval.
+  - The `production` GitHub environment needs the owner's approval and only admits `main` or a `v*.*.*` tag (a tag like `v1` gets blocked; use `vX.Y.Z`).
   - `gh workflow run` from a codespace gets a 403, so start manual promotions from the Actions web UI.
   - Promote the exact SHA that dev runs, not `latest`.
 - **Rollback.**

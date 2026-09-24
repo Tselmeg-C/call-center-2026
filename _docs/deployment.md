@@ -329,8 +329,9 @@ without shell access via either surface.
 
 `.github/workflows/ci.yml`'s `publish` job, after publishing both images and only if the commit is still the head of `main` (so re-running an old run never redeploys an old commit), calls
 `railway service source connect --image ...:$GITHUB_SHA --service <api|frontend> --environment
-development --yes` for each service, authenticated with a Railway project token in the
-`RAILWAY_TOKEN` GitHub Actions secret. This is a CI-triggered redeploy, not a Railway-side
+development --project $RAILWAY_PROJECT_ID` for each service, authenticated with the account-scoped
+`RAILWAY_API_TOKEN` GitHub Actions secret (a Project Token gets "Unauthorized" on this mutation, and
+`source connect` has no `--yes` flag). This is a CI-triggered redeploy, not a Railway-side
 webhook: the installed CLI pins an image-sourced service to one fixed reference and (confirmed via
 `railway service source --help`) only GitHub-repo sources get an automatic redeploy trigger on
 their own -- a Docker-image source does not notice a new tag landing in GHCR by itself. Production

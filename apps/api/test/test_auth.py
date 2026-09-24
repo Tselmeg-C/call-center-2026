@@ -114,85 +114,76 @@ def test_login_never_logs_credentials_or_cookie(caplog) -> None:
     assert "correct horse battery staple" not in caplog.text
     assert token is not None and token not in caplog.text
 
-def test_client_ip_reads_fixed_trusted_hop_from_the_right_not_leftmost() -> None:
-    # A client can prepend as many entries as it wants to X-Forwarded-For -- they only ever land
-    # further left, never displacing the entries our own trusted hops (Railway edge + this app's
-    # frontend nginx, TRUSTED_PROXY_HOPS = 2) append to the right. So the left-most entry
-    # ("203.0.113.7" below) is always attacker-controlled and must NOT be trusted -- only the
-    # second-from-right entry ("10.0.0.5", the address nginx saw) is genuinely ours to trust.
-    from ..main import client_ip, TRUSTED_PROXY_HOPS
+def test_client_ip_reads_railway_edge_x_real_ip_not_forwarded_for() -> None:
+    # #27: Railway's edge overwrites X-Real-IP with the connecting address; X-Forwarded-For carries
+    # client-controlled and per-request-varying edge entries, so it's never read.
+    from ..main import client_ip
     from unittest.mock import Mock
-    assert TRUSTED_PROXY_HOPS == 2
     request = Mock()
-    request.headers = {"x-forwarded-for": "203.0.113.7, 10.0.0.5, 10.0.0.1"}
-    assert client_ip(request) == "10.0.0.5"
-    # Missing header -> safe fallback to the TCP peer.
-    request.headers = {}
     request.client = Mock(host="10.0.0.9")
-    assert client_ip(request) == "10.0.0.9"
-    # Empty header -> same fallback.
-    request.headers = {"x-forwarded-for": ""}
-    assert client_ip(request) == "10.0.0.9"
-    # Too short (fewer entries than TRUSTED_PROXY_HOPS) -> same fallback, not an exception and not
-    # the lone client-controlled entry.
-    request.headers = {"x-forwarded-for": "203.0.113.7"}
-    assert client_ip(request) == "10.0.0.9"
-    # Malformed (blank entry at the trusted-hop position) -> same fallback.
-    request.headers = {"x-forwarded-for": "203.0.113.7, , 10.0.0.1"}
-    assert client_ip(request) == "10.0.0.9"
+    request.headers = {"x-real-ip": "203.0.113.7", "x-forwarded-for": "198.51.100.1, 100.64.0.11, 100.64.0.11"}
+    assert client_ip(request) == "203.0.113.7"
+    # Missing or blank header -> safe fallback to the TCP peer, never X-Forwarded-For.
+    for headers in ({}, {"x-real-ip": " "}, {"x-forwarded-for": "198.51.100.1, 10.0.0.5"}):
+        request.headers = headers
+        assert client_ip(request) == "10.0.0.9"
     # No header and no TCP peer either -> last-resort sentinel, never an unhandled exception.
     request.headers = {}
     request.client = None
     assert client_ip(request) == "unknown"
 
 
-def test_forwarded_for_prepended_entries_cannot_inflate_shrink_or_shift_the_throttle() -> None:
+def test_frontend_proxy_path_throttles_despite_varying_forwarded_for() -> None:
+    # #27 QA FAIL: through the frontend nginx the X-Forwarded-For entry at any fixed position from
+    # the right was a per-request edge address (100.64.0.x), so every attempt landed in a fresh
+    # email+IP bucket and never reached 429. Reproduce that header shape: X-Real-IP (set by the
+    # edge, forwarded by nginx) is stable, so the 6th attempt must be throttled.
     repo.reset(); client = TestClient(app, base_url="http://localhost")
-    real_hops = "10.0.0.7, 10.0.0.1"  # the two trusted-hop entries a real request would carry
+    statuses = [
+        client.post("/session/login", json={"email": "victim@example.test", "password": "wrong password"}, headers={"x-real-ip": "203.0.113.50", "x-forwarded-for": f"203.0.113.50, 100.64.0.{index}, 100.64.0.{index}"}).status_code
+        for index in range(6)
+    ]
+    assert statuses == [401] * 5 + [429]
 
-    def attempt(header: str) -> int:
-        return client.post("/session/login", json={"email": "victim@example.test", "password": "wrong password"}, headers={"x-forwarded-for": header}).status_code
 
-    # Alternate between a clean header and one with attacker-chosen junk prepended (including a
-    # value that looks like another real client's address) -- both share the same trailing trusted
-    # hops, so both must count against the exact same bucket.
+def test_forwarded_for_cannot_inflate_shrink_or_shift_the_throttle() -> None:
+    repo.reset(); client = TestClient(app, base_url="http://localhost")
+
+    def attempt(forwarded: str) -> int:
+        return client.post("/session/login", json={"email": "victim@example.test", "password": "wrong password"}, headers={"x-real-ip": "10.0.0.7", "x-forwarded-for": forwarded}).status_code
+
+    # Attacker-chosen X-Forwarded-For junk (including another client's address) neither buys extra
+    # attempts nor resets the count: only the edge's X-Real-IP decides the bucket.
     for index in range(5):
-        header = real_hops if index % 2 == 0 else f"198.51.100.{index}, 203.0.113.99, {real_hops}"
-        assert attempt(header) == 401
-    # The same number of failures (5) throttles it, regardless of how much junk was prepended --
-    # padding neither buys extra attempts nor resets the count.
-    assert attempt(f"a, b, c, {real_hops}") == 429
+        assert attempt(f"198.51.100.{index}, 203.0.113.99") == 401
+    assert attempt("a, b, c") == 429
 
 
-def test_forwarded_for_prepended_entry_cannot_frame_another_ip() -> None:
+def test_forwarded_for_entry_cannot_frame_another_ip() -> None:
     repo.reset(); client = TestClient(app, base_url="http://localhost")
     victim_ip = "203.0.113.30"
 
-    def attempt(header: str, email: str) -> int:
-        return client.post("/session/login", json={"email": email, "password": "wrong password"}, headers={"x-forwarded-for": header}).status_code
+    def attempt(real_ip: str, email: str) -> int:
+        return client.post("/session/login", json={"email": email, "password": "wrong password"}, headers={"x-real-ip": real_ip, "x-forwarded-for": f"{victim_ip}, {victim_ip}"}).status_code
 
-    # The attacker prepends the victim's real address as a fake leftmost entry, but their own
-    # trailing trusted-hop entries (their real address, then the edge's) are different -- this
-    # must count against the ATTACKER's bucket, never the victim's.
+    # The attacker puts the victim's address everywhere in X-Forwarded-For; the failures still
+    # count against the ATTACKER's real address, never the victim's.
     for index in range(50):
-        assert attempt(f"{victim_ip}, 198.51.100.9, 10.0.0.1", f"attacker-{index}@example.test") == 401
-    assert attempt(f"{victim_ip}, 198.51.100.9, 10.0.0.1", "attacker-final@example.test") == 429
-    # The victim, reaching the endpoint with their own real address at the trusted-hop position,
-    # is unaffected by the attacker's framing attempt.
-    assert attempt(f"{victim_ip}, 10.0.0.1", "victim@example.test") == 401
+        assert attempt("198.51.100.9", f"attacker-{index}@example.test") == 401
+    assert attempt("198.51.100.9", "attacker-final@example.test") == 429
+    assert attempt(victim_ip, "victim@example.test") == 401
 
 
-def test_distinct_real_clients_at_trusted_hop_are_throttled_independently() -> None:
+def test_distinct_real_clients_are_throttled_independently() -> None:
     repo.reset(); client = TestClient(app, base_url="http://localhost")
 
     def attempt(client_addr: str, email: str) -> int:
-        return client.post("/session/login", json={"email": email, "password": "wrong password"}, headers={"x-forwarded-for": f"{client_addr}, 10.0.0.1"}).status_code
+        return client.post("/session/login", json={"email": email, "password": "wrong password"}, headers={"x-real-ip": client_addr}).status_code
 
     for index in range(50):
         assert attempt("203.0.113.10", f"a-{index}@example.test") == 401
     assert attempt("203.0.113.10", "a-final@example.test") == 429
-    # A distinct real client -- differing only in the address at the trusted-hop position -- is
-    # not bucketed together with the first and is not throttled by its neighbor's failures.
+    # A distinct real client is not bucketed together with the first.
     assert attempt("203.0.113.20", "b@example.test") == 401
 
 
@@ -206,7 +197,7 @@ def test_login_failure_dicts_evict_stale_keys_at_write_time() -> None:
     # One new failure, from a client and email never seen before, must sweep every other key whose
     # timestamps have all aged out of the 15-minute window -- not just filter them on the next read
     # of that specific key -- so the dicts don't grow without bound across many distinct keys.
-    response = client.post("/session/login", json={"email": "fresh@example.test", "password": "wrong password"}, headers={"x-forwarded-for": "198.51.100.9, 9.9.9.9, 1.1.1.1"})
+    response = client.post("/session/login", json={"email": "fresh@example.test", "password": "wrong password"}, headers={"x-real-ip": "198.51.100.9"})
     assert response.status_code == 401
     assert len(repo.login_failures) == 1
     assert len(repo.login_failures_by_ip) == 1
@@ -261,7 +252,7 @@ def test_version_endpoint_returns_ok(monkeypatch) -> None:
     response = client.get("/version")
     assert response.status_code == 200 and response.json() == {"version": "abc1234"}
 
-def test_security_headers_on_every_response() -> None:
+def test_security_headers_on_every_response(caplog) -> None:
     # #72: same values as the frontend nginx (#61), on success, guard, framework-error and unhandled-500 responses alike.
     from ..main import current_user
     expected = {"strict-transport-security": "max-age=31536000", "x-content-type-options": "nosniff", "referrer-policy": "strict-origin-when-cross-origin"}
@@ -278,8 +269,16 @@ def test_security_headers_on_every_response() -> None:
     responses[429] = [throttled]
     def boom() -> None: raise RuntimeError("boom")
     app.dependency_overrides[current_user] = boom
-    try: responses[500] = [TestClient(app, base_url="http://localhost", raise_server_exceptions=False).get("/session/me")]
+    try:
+        with caplog.at_level(logging.INFO, logger="call-center.api"):
+            responses[500] = [TestClient(app, base_url="http://localhost", raise_server_exceptions=False).get("/session/me", headers={"x-request-id": "qa27-unhandled"})]
     finally: app.dependency_overrides.pop(current_user)
+    # #27: an unhandled 500 still carries its request id and gets the structured line, with a safe
+    # category (exception class name only, never the message, which could carry SQL/params).
+    assert responses[500][0].headers.get("x-request-id") == "qa27-unhandled"
+    lines = [record.getMessage() for record in caplog.records if record.getMessage().startswith("request id=qa27-unhandled ")]
+    assert len(lines) == 1 and lines[0].startswith("request id=qa27-unhandled method=GET route=/session/me status=500 duration_ms=")
+    assert lines[0].endswith(" error=unhandled exception=RuntimeError") and "boom" not in lines[0]
     for code, items in responses.items():
         for response in items:
             assert response.status_code == code

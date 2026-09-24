@@ -340,48 +340,52 @@ promotion stays the separate, human-approved `workflow_dispatch` in `promote-pro
 
 ### Trusted-proxy assumption for the login throttle
 
-The per-IP login throttle (`apps/api/main.py`'s `login`, 50 failures/IP/15min, plus the per-email
-5/15min one) needs the real client IP. `request.client.host` is always a proxy hop once anything
-sits in front of the process, never the browser. `X-Forwarded-For` is a comma-separated list that
-each hop *appends its own address to the right end of*, so the only entry a client can never
-overwrite or displace is the one a fixed number of positions in from the right -- counting from
-the *left* (`.split(",")[0]`, the previous, now-fixed behavior) is exactly backwards: a client can
-prepend as many fake entries as it likes, which only ever pushes new entries further left and
-never touches the right end, so the left-most entry is always attacker-controlled. `client_ip()`
-now reads `TRUSTED_PROXY_HOPS` entries in from the right instead.
+The login throttle (`apps/api/main.py`'s `login`: 5 failures per email+IP and 50 per IP, per
+15 minutes) needs the real client IP. `request.client.host` is always a proxy, never the browser.
+`client_ip()` reads **`X-Real-IP`**, which Railway's edge sets to the address that connected to it
+and overwrites on every public request
+([Railway specs](https://docs.railway.com/networking/public-networking/specs-and-limits)).
+If `X-Real-IP` is missing or blank, it falls back to `request.client.host`, then `"unknown"`.
 
-**Trusted-hop count: `TRUSTED_PROXY_HOPS = 2`**, justified against both ways this login endpoint
-can currently be reached:
+There are two paths, and both see the same value:
 
-- **Through the frontend's `/api/` nginx proxy** (`apps/frontend/nginx/default.conf.template`) --
-  the path real traffic takes: the browser only ever loads the frontend domain. (The API's own
-  public domain also exists -- see Development URLs above -- but no UI traffic goes to it.) Two
-  trusted hops sit between the browser and this process: Railway's edge, and this app's own
-  frontend nginx. Each appends
-  the address of whoever connected to it, so for a clean request the header ends up
-  `<client-or-forged-entries>, <browser's real address as nginx saw it>, <nginx's own address as
-  Railway's edge saw it>` -- the second-from-right entry is the real client, which is exactly what
-  `TRUSTED_PROXY_HOPS = 2` reads. A client can prepend anything it wants; it only ever lands to the
-  left of that position, never at or past it.
-- **Directly against the API service's own public `*.up.railway.app` domain** (it exists -- see
-  Development URLs above) -- only one trusted hop exists on that path, Railway's edge.
-  `TRUSTED_PROXY_HOPS = 2` does not match this path, and #58 deliberately does not special-case it
-  (out of scope: provisioning/restricting that domain is #27's job, not the throttle's). What the
-  throttle does if a login request arrives this way: if the client sends no `X-Forwarded-For` of
-  its own, Railway's edge still appends its own view of the connecting client, giving a 1-entry
-  header -- shorter than `TRUSTED_PROXY_HOPS`, so `client_ip()` falls back to `request.client.host`
-  (Railway edge's address), bucketing every such request behind one shared counter rather than
-  crashing or trusting a client-controlled value. If the client instead sends its own single fake
-  entry, the header reaches the 2-entry length `TRUSTED_PROXY_HOPS` expects, and the attacker's own
-  fake entry -- not the real client -- ends up read: the throttle can be bypassed by IP the same
-  way it could before this fix, but only via a path that isn't part of this deployment's traffic
-  yet. Closing that gap means removing or restricting the API's own public domain, which is #27's
-  responsibility per #58's declared scope, not a case this fix special-cases.
+- **Browser -> Railway edge -> API** (the API's own public domain, development only;
+  `api-prod` has no public domain). The edge sets `X-Real-IP`.
+- **Browser -> Railway edge -> frontend nginx -> API** (the path real users take). The nginx
+  `/api/` location passes the edge's `X-Real-IP` through unchanged
+  (`proxy_set_header X-Real-IP $http_x_real_ip`) and reaches the API over Railway's private
+  network, which has no edge and adds nothing.
 
-A missing, empty, or too-short (fewer than `TRUSTED_PROXY_HOPS` comma-separated entries)
-`X-Forwarded-For`, or one whose entry at that position is blank, falls back to
-`request.client.host` (`"unknown"` if even that is unavailable) rather than raising or silently
-trusting a client-controlled value.
+A client can't choose its own `X-Real-IP`: on both paths the edge replaces it before anything of
+ours reads it. The API is only reachable through the edge or, over the private network, through
+our nginx. A local `docker compose` stack has no edge, so the header can be spoofed there. That's
+fine for local use.
+
+**Why not `X-Forwarded-For` (#27, eighth QA pass).** The first version counted
+`TRUSTED_PROXY_HOPS = 2` entries in from the right of `X-Forwarded-For`. That worked on the direct
+path and failed on the frontend path. The live API logs (2026-09-24) show why:
+
+- The direct-path TCP peer was a different edge address (`100.64.0.x`) on almost every request.
+- The frontend-path peer was always nginx (`10.237.58.252`).
+- The direct path still throttled even though its peer kept changing, so its second-from-right
+  entry was the stable client. On the frontend path nginx appends the edge's per-request address,
+  which pushes a varying edge entry into that position. This is inferred from the logs, since the
+  API doesn't log headers.
+
+So every attempt through the frontend landed in a new email+IP bucket, and 12 of 12 wrong
+passwords got `401` with no `429`. No fixed hop count is right for both paths. `X-Real-IP` is
+right for both, and its value doesn't depend on how many hops come after the edge.
+
+**Per-email throttling does not ignore the IP.** The 5-failure limit is per email **and** IP, so
+an attacker spread across many real IPs gets 5 tries per IP against one email. That's the
+documented design. It deliberately avoids an email-only lockout, which would let anyone lock a
+known user out with 5 bad passwords. Once the client IP is stable, one client is throttled after
+5 failures on either path, and the 50/IP limit caps it across emails.
+
+Live check after a deploy: send 6 wrong-password logins for one fresh email to
+`https://frontend-development-83f4.up.railway.app/api/session/login`. Expect `401` x5, then `429`
+with `Retry-After: 900`. Then repeat it with a different `X-Real-IP: <random>` header on each
+request. It should still reach `429`, which shows the edge overwrites the header.
 
 **This single-replica/single-region pin (`railway scale ams=1`) only applies to
 `CALL_CENTER_STORAGE=memory`** (local/dev use): in that mode these counters are held in Python
@@ -547,9 +551,18 @@ logs and a curl probe (times UTC):
 | 12:43:05 | next Synthetic Monitoring probe -> 200 |
 
 - The 503 came from a pooled connection that Postgres had killed during shutdown. That request
-  failed fast and the pool reconnected on the next request, so no API restart was needed. The
-  engines don't set `pool_pre_ping`, so each stale pooled connection fails one request after a DB
-  restart. That's acceptable here, and adding `pool_pre_ping=True` is a follow-up only if it matters.
+  failed fast and the pool reconnected on the next request, so no API restart was needed.
+- **A stale pooled connection also broke a user-facing request.** Each engine (auth, customers,
+  activity, assignment, login throttle) keeps its own pool. The stale connections sat unused until
+  something checked them out. At 12:49:46, 7 minutes after the restart, the QA smoke run's
+  `POST /admin/users` got a **500**
+  (`psycopg.errors.AdminShutdown: terminating connection due to administrator command`), and it
+  had no `x-request-id` or structured log line. #27 fixed both:
+  - Every `create_engine` in `apps/api/db_*.py` now sets `pool_pre_ping=True`. A connection that
+    Postgres killed is replaced when it's checked out, so the request doesn't fail.
+    `test_engines_survive_postgres_killing_pooled_connections` covers this against real Postgres.
+  - Unhandled 500s now carry `x-request-id` and log
+    `request id=... status=500 error=unhandled exception=<ClassName>`.
 - The outage fell between two 1-minute probes, so the probe never saw a failure and no health
   alert fired. That's expected for a restart this short.
 - Data preserved: Postgres restarted on the same volume without re-initialising, and `/health/ready`

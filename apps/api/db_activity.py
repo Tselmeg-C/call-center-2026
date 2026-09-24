@@ -45,7 +45,7 @@ def fingerprint(payload: str | bytes) -> str: return sha256(payload if isinstanc
 class ActivityDatabase:
     def __init__(self, url: str, *, create_schema: bool = True):
         options = {"connect_args": {"check_same_thread": False}, "poolclass": StaticPool} if ":memory:" in url else {}
-        self.engine = create_engine(url, **options)
+        self.engine = create_engine(url, pool_pre_ping=True, **options)
         if create_schema: ActivityBase.metadata.create_all(self.engine)
 
     def save_idempotent(self, *, actor_id: str, operation: str, submission_id: str, payload: str | bytes, result: dict) -> dict:

@@ -53,7 +53,7 @@ class AssignmentSettingRow(AssignmentBase):
 class AssignmentDatabase:
     def __init__(self, url: str, *, create_schema: bool = True):
         options = {"connect_args": {"check_same_thread": False}, "poolclass": StaticPool} if ":memory:" in url else {}
-        self.engine = create_engine(url, **options)
+        self.engine = create_engine(url, pool_pre_ping=True, **options)
         if create_schema: AssignmentBase.metadata.create_all(self.engine)
 
     def create_rule(self, *, rule_id: str, name: str, position: int, actor_id: str, conditions: list[dict] | None = None, member_ids: list[str] | None = None) -> RuleRow:

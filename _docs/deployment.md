@@ -378,13 +378,34 @@ their own -- a Docker-image source does not notice a new tag landing in GHCR by 
 promotion stays the separate, human-approved `workflow_dispatch` in `promote-production.yml`
 (#28); every `development` deploy after this issue is unattended.
 
+### Request body limit
+
+The frontend nginx `/api/` location caps bodies with `client_max_body_size 11M`. The dev API's own
+public domain skips nginx, so the API enforces the same cap itself (#159): `MAX_REQUEST_BODY_BYTES`
+(11 MiB = 11,534,336 bytes) in `apps/api/main.py`, on every route and method, before
+authentication, the Origin check and the NUL check. A larger `Content-Length` gets `413` before
+any body byte is read; a chunked body gets `413` as soon as it passes the limit, and the API
+stops reading. The `413` carries `x-request-id` and the security headers and logs
+`error=upload_limit`. The two values name each other; change both together. The `/admin/imports`
+10 MiB workbook limit is separate and unchanged.
+
+Live check after a dev deploy (throwaway body, no credentials):
+
+```bash
+head -c 12582912 /dev/zero | curl -sS -o /dev/null -D - -H 'Transfer-Encoding: chunked' \
+  -H 'Content-Type: application/json' --data-binary @- \
+  https://api-development-2a42.up.railway.app/session/login | grep -iE '^HTTP|^x-request-id'
+```
+
+Expect `413` and an `x-request-id` header.
+
 ### Trusted-proxy assumption for the login throttle
 
 The login throttle (`apps/api/main.py`'s `login`: 5 failures per email+IP and 50 per IP, per
 15 minutes) needs the real client IP. `request.client.host` is always a proxy, never the browser.
 `client_ip()` reads **`X-Real-IP`**, which Railway's edge sets to the address that connected to it
-and overwrites on every public request
-([Railway specs](https://docs.railway.com/networking/public-networking/specs-and-limits)).
+and overwrites on every public request. Railway's docs don't say so; the evidence is the
+2026-09-24 live probe recorded below.
 If `X-Real-IP` is missing or blank, it falls back to `request.client.host`, then `"unknown"`.
 
 There are two paths, and both see the same value:

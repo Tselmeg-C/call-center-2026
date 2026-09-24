@@ -505,8 +505,8 @@ def client_ip(request: Request) -> str:
     """The real client IP for the per-IP login throttle (#27/#58). Railway's edge sets X-Real-IP to
     the address that connected to it, replacing anything the client sent, on every public request
     (not stated in Railway's docs; confirmed by a live probe, see #27 and _docs/deployment.md).
-    The frontend nginx forwards it unchanged to the API over the private network, so both paths -- browser -> edge -> api and
-    browser -> edge -> nginx -> api -- see the same value. X-Forwarded-For is deliberately not used:
+    The frontend nginx forwards it unchanged to the API over the private network, so both paths --
+    browser -> edge -> api and browser -> edge -> nginx -> api -- see the same value. X-Forwarded-For is deliberately not used:
     the edge's own entries in it vary per request (live logs, 2026-09-24), so no fixed hop count
     yields a stable address on both paths. See _docs/deployment.md "Trusted-proxy assumption"."""
     real_ip = request.headers.get("x-real-ip", "").strip()

@@ -228,6 +228,18 @@ The real, `railway config pull`-verified config-as-code is committed at
 [`/.railway/railway.ts`](../.railway/railway.ts); see [`infra/railway.md`](../infra/railway.md)
 for what it names and why it lives there instead of under `infra/`.
 
+Image refs in that file are deliberately `:latest`, not a SHA (#155). CI owns the exact image
+(`railway service source connect --image <image>:<sha>` on every merge to `main`), and CI only
+moves `latest` for the current head of `main`, so `railway config apply` can never roll
+development back. Consequences:
+
+- `railway config plan` always shows the `api` and `frontend` image refs changing (`<sha>` ->
+  `latest`). That is expected, not drift.
+- After any `railway config pull`, reset both refs to `:latest`, or the CI `check` job's
+  `.github/workflows/test-railway-image-latest.sh` step fails.
+- To roll development back, use `railway service source connect --image <image>:<previous-sha>`
+  (see Rollback below). Do not edit `railway.ts`.
+
 Reproducing this from scratch:
 
 ```sh

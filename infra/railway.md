@@ -31,6 +31,24 @@ Running `railway config plan`/`apply` requires the `railway` npm package
   `ghcr.io/tselmeg-c/call-center-2026-frontend:latest`, same `source connect`
   approach. Start command is the nginx entrypoint baked into the image.
 
+## Image refs: CI owns the tag, the file pins `:latest` (#155)
+
+- CI owns the exact image: on every merge to `main` the `Deploy development
+  (Railway)` step runs `railway service source connect --image <image>:<sha>`
+  for `api` and `frontend`. `.railway/railway.ts` deliberately pins both to
+  `ghcr.io/tselmeg-c/call-center-2026-{api,frontend}:latest`. CI moves
+  `latest` only for the current head of `main`, so `railway config apply` can
+  never roll development back to an older build.
+- `railway config plan` therefore always shows those two image refs changing
+  (`<sha>` -> `latest`). That is expected, not drift.
+- After any `railway config pull`, reset both refs to `:latest`.
+  `.github/workflows/test-railway-image-latest.sh` (run in the CI `check`
+  job, no secrets) fails on any other image ref: SHA, release tag, digest,
+  untagged, or another owner/repo.
+- To roll development back, run `railway service source connect --image
+  <image>:<previous-sha>` (see `_docs/deployment.md`). Do not edit
+  `railway.ts` for that.
+
 ## Variable wiring
 
 - `api`'s `DATABASE_URL` = `${{Postgres.DATABASE_URL}}` (Railway variable

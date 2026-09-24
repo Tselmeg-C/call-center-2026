@@ -63,6 +63,10 @@ server {
         rewrite ^/api/(.*)$ /$1 break;
         proxy_pass $api_upstream;
         proxy_set_header Host $host;
+        # The API's login throttle keys on X-Real-IP (apps/api/main.py client_ip). Railway's edge
+        # sets it to the real client address in front of this nginx; pass that value through
+        # unchanged so the API sees the same client IP here as on its own public domain (#27).
+        proxy_set_header X-Real-IP $http_x_real_ip;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
     }

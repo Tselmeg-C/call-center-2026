@@ -441,7 +441,14 @@ async def origin_guard(request: Request, call_next):
     if await _request_has_nul(request):
         logger.warning("request id=%s method=%s route=%s status=422 duration_ms=%.3f error=nul", request_id, request.method, route_template(request), (perf_counter() - started) * 1000, extra={"request_id": request_id})
         return JSONResponse({"detail": "Invalid request."}, status_code=422, headers={"x-request-id": request_id})
-    response = await call_next(request)
+    request.state.request_id = request_id
+    try:
+        response = await call_next(request)
+    except Exception as exc:
+        # #27: the 500 itself is written by unhandled_error (outside this middleware), which reads
+        # request.state.request_id for the header; re-raise so the traceback is still logged.
+        logger.error("request id=%s method=%s route=%s status=500 duration_ms=%.3f error=unhandled exception=%s", request_id, request.method, route_template(request), (perf_counter() - started) * 1000, type(exc).__name__, extra={"request_id": request_id})
+        raise
     response.headers["x-request-id"] = request_id
     response.headers["x-app-version"] = APP_VERSION
     logger.info("request id=%s method=%s route=%s status=%s duration_ms=%.3f error=%s", request_id, request.method, route_template(request), response.status_code, (perf_counter() - started) * 1000, "none" if response.status_code < 400 else "http_error", extra={"request_id": request_id})
@@ -465,10 +472,14 @@ async def security_headers(request: Request, call_next):
 
 
 # Unhandled exceptions are answered by Starlette's outermost ServerErrorMiddleware, which bypasses
-# every middleware above; this keeps its default plain-text 500 body and just adds the headers.
+# every middleware above; this keeps its default plain-text 500 body and just adds the headers,
+# including the x-request-id origin_guard stored (and already logged) for this request.
 @app.exception_handler(Exception)
-async def unhandled_error(_: Request, __: Exception) -> Response:
-    return Response("Internal Server Error", status_code=500, headers=SECURITY_HEADERS, media_type="text/plain")
+async def unhandled_error(request: Request, __: Exception) -> Response:
+    headers = {**SECURITY_HEADERS, "x-app-version": APP_VERSION}
+    request_id = getattr(request.state, "request_id", None)
+    if request_id: headers["x-request-id"] = request_id
+    return Response("Internal Server Error", status_code=500, headers=headers, media_type="text/plain")
 
 
 # Configured entirely from OTEL_* environment variables; a no-op with zero network calls
@@ -490,30 +501,17 @@ def safe_email(value: str) -> str:
     return value.strip().casefold()
 
 
-# Number of trusted hops between the real client and this process: Railway's edge, plus this
-# app's own frontend nginx `/api/` reverse proxy (apps/frontend/nginx/default.conf.template) for
-# the only path production traffic currently takes (the API's own public Railway domain isn't
-# provisioned yet -- see _docs/deployment.md's "Trusted-proxy assumption" section for the full
-# justification, including what happens if a request ever arrives by that other path).
-TRUSTED_PROXY_HOPS = 2
-
-
 def client_ip(request: Request) -> str:
-    """The real client IP for the per-IP login throttle. `request.client.host` is the TCP peer,
-    which behind Railway's edge (and, for browser traffic, this app's own frontend nginx reverse
-    proxy) is always a proxy, never the browser -- trusting it directly would bucket every real
-    user behind one shared counter. Each trusted hop appends the address it saw to the *right*
-    end of X-Forwarded-For, so the value we want is a fixed number of entries counted from the
-    right (TRUSTED_PROXY_HOPS), never the left-most entry: a client can freely prepend its own
-    fake entries (they only ever land further left), but it cannot remove or move the entries our
-    own trusted hops append. See the trusted-proxy note in _docs/deployment.md for why this many
-    hops, and the fallback below for a missing/empty/too-short header."""
-    forwarded = request.headers.get("x-forwarded-for", "")
-    parts = forwarded.split(",") if forwarded else []
-    if len(parts) >= TRUSTED_PROXY_HOPS:
-        candidate = parts[-TRUSTED_PROXY_HOPS].strip()
-        if candidate:
-            return candidate
+    """The real client IP for the per-IP login throttle (#27/#58). Railway's edge sets X-Real-IP to
+    the address that connected to it, replacing anything the client sent, on every public request
+    (docs.railway.com/networking/public-networking/specs-and-limits). The frontend nginx forwards it
+    unchanged to the API over the private network, so both paths -- browser -> edge -> api and
+    browser -> edge -> nginx -> api -- see the same value. X-Forwarded-For is deliberately not used:
+    the edge's own entries in it vary per request (live logs, 2026-09-24), so no fixed hop count
+    yields a stable address on both paths. See _docs/deployment.md "Trusted-proxy assumption"."""
+    real_ip = request.headers.get("x-real-ip", "").strip()
+    if real_ip:
+        return real_ip
     return request.client.host if request.client else "unknown"
 
 

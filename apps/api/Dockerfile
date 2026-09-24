@@ -11,14 +11,16 @@
 #     -e FRONTEND_ORIGIN=http://localhost:4174 \
 #     call-center-api
 
-FROM python:3.12-slim AS builder
+FROM python:3.12-slim@sha256:2f17fc044b579bab302c2e8054d3a686e2cb9a83de48e70534b94cd8ebbe06a9 AS builder
 
 WORKDIR /build
 
 COPY apps/api/requirements.txt apps/api/requirements.txt
-RUN pip install --no-cache-dir --prefix=/install -r apps/api/requirements.txt
+# Hash-locked runtime deps only (pip-compile output, #161); test-only packages are in
+# requirements-dev.txt and never reach this image. A changed hash fails the build.
+RUN pip install --no-cache-dir --require-hashes --prefix=/install -r apps/api/requirements.txt
 
-FROM python:3.12-slim AS runtime
+FROM python:3.12-slim@sha256:2f17fc044b579bab302c2e8054d3a686e2cb9a83de48e70534b94cd8ebbe06a9 AS runtime
 
 # Non-root user the process runs as.
 RUN useradd --create-home --shell /usr/sbin/nologin appuser

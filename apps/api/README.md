@@ -1,6 +1,6 @@
 # Local API
 
-Run the single-process in-memory API with `python -m pip install -r requirements.txt` and `uvicorn main:app --app-dir apps/api --reload`. Memory state is intentionally lost on restart; PostgreSQL mode persists the implemented domain state and requires migrations first.
+Install from the repo root with `python -m pip install --require-hashes -r apps/api/requirements.txt` (hash-locked runtime dependencies, the only thing the API image installs) and, for tests, a separate `python -m pip install -r apps/api/requirements-dev.txt` (pip rejects one install mixing hashed and unhashed requirements). Edit `requirements.in` and regenerate the lock with `pip-compile --generate-hashes apps/api/requirements.in` on Python 3.12 (see [Dependency locks](../../_docs/deployment.md#dependency-locks-and-base-images)). Run the single-process in-memory API with `uvicorn main:app --app-dir apps/api --reload`. Memory state is intentionally lost on restart; PostgreSQL mode persists the implemented domain state and requires migrations first.
 For a deployment-style start, use `apps/api/start.sh`; PostgreSQL mode applies Alembic migrations before serving traffic.
 
 In memory mode, operator provisioning and password recovery must be attached to this same process. In PostgreSQL mode, run `CALL_CENTER_STORAGE=postgres python -m apps.api.operator` with `DATABASE_URL` supplied in the environment; the console reads secret input without echo. No credentials are accepted as command-line arguments or written to logs.

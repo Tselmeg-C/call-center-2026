@@ -48,7 +48,8 @@ jobs:
       - run: npm run build
       - name: Backend auth checks
         run: |
-          python -m pip install -r apps/api/requirements.txt
+          python -m pip install --require-hashes -r apps/api/requirements.txt
+          python -m pip install -r apps/api/requirements-dev.txt
           python -m compileall -q apps/api
           python -m pytest apps/api/test/test_auth.py apps/api/test/test_auth_adapters.py --tb=no
           DATABASE_URL=sqlite+pysqlite:////tmp/call-center-ci.db alembic -c apps/api/alembic.ini upgrade head

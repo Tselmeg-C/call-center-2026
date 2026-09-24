@@ -420,6 +420,29 @@ def postgres_url(monkeypatch):
         engine.dispose()
 
 
+def test_engines_survive_postgres_killing_pooled_connections(postgres_url):
+    # #27: after the live Postgres restart drill a stale pooled connection 500'd a user-facing
+    # POST /admin/users 7 minutes later. pool_pre_ping must replace a connection the server killed.
+    from ..db_activity import ActivityDatabase
+    from ..db_assignment import AssignmentDatabase
+    from ..db_customers import CustomerDatabase
+    databases = [cls(postgres_url, create_schema=False) for cls in (AuthDatabase, LoginThrottleStore, ActivityDatabase, AssignmentDatabase, CustomerDatabase)]
+    admin = create_engine(postgres_url, hide_parameters=True)
+    try:
+        pids = []
+        for database in databases:
+            with database.engine.connect() as connection:
+                pids.append(connection.execute(text("SELECT pg_backend_pid()")).scalar_one())
+        with admin.begin() as connection:
+            for pid in pids: connection.execute(text("SELECT pg_terminate_backend(:pid)"), {"pid": pid})
+        for database in databases:
+            with database.engine.connect() as connection:
+                assert connection.execute(text("SELECT 1")).scalar_one() == 1
+    finally:
+        for database in databases: database.engine.dispose()
+        admin.dispose()
+
+
 def migrate(revision="head"):
     command.upgrade(Config("apps/api/alembic.ini"), revision)
 
@@ -596,7 +619,7 @@ def test_login_failure_timing_parity(adapter, capsys):
         def attempt(email, password):
             n = next(counter)
             started = perf_counter()
-            response = client.post("/session/login", json={"email": email, "password": password}, headers={"x-forwarded-for": f"10.{n // 65536}.{n // 256 % 256}.{n % 256}, 10.255.255.254"})
+            response = client.post("/session/login", json={"email": email, "password": password}, headers={"x-real-ip": f"10.{n // 65536}.{n // 256 % 256}.{n % 256}"})
             elapsed = perf_counter() - started
             assert response.status_code == 401
             return elapsed

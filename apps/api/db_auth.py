@@ -38,7 +38,7 @@ class StorageError(RuntimeError):
 
 class AuthDatabase:
     def __init__(self, url: str, *, create_schema: bool = True):
-        self.engine = create_engine(url, hide_parameters=True)
+        self.engine = create_engine(url, hide_parameters=True, pool_pre_ping=True)
         if create_schema: Base.metadata.create_all(self.engine)
 
     @contextmanager

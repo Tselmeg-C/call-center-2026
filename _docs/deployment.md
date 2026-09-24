@@ -247,7 +247,14 @@ arrived hours apart.
   instead also works. Unpause it afterwards (or re-run `infra/grafana_alerting_apply.py`, which
   applies `isPaused: false`).
 - **Applied:** 2026-09-24 14:49Z; live state `Normal`, query value 30.
-- **Drill:** pending (pause the real dev check; see #99).
+- **Drill (2026-09-24, UTC):** QA disabled the real dev check through the SM API at 14:54:57Z.
+  - The last sample before the pause was at 14:54:39Z.
+  - The stale rule went Pending at 15:24:50Z (last sample + 30m11s) and fired at 15:26:50Z (+32m11s).
+  - Grafana sent the email to `TselmegC` at 15:27:22Z.
+  - QA re-enabled the check with `infra/grafana_sm_apply.py` at 15:28:16Z. The first new sample came at 15:28:57Z.
+  - The rule was back to Normal at 15:29:50Z, and the "resolved" email was sent at 15:32:22Z.
+  - No on-call GitHub issue was opened. The dev `/health/ready` rule stayed Normal (NoData) throughout.
+  - Evidence: [#99 QA](https://github.com/Tselmeg-C/call-center-2026/issues/99#issuecomment-5817180459).
 
 ### Topology
 

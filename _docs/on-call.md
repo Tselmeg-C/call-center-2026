@@ -15,13 +15,23 @@ owner (see *Alert rules and webhook wiring* below and `_docs/deployment.md` → 
 The actual trigger is the `secrets.CLAUDE_CODE_OAUTH_TOKEN` GitHub Actions secret being set --
 **not** just the Claude GitHub App being installed on the repo (two different facts; only the app
 install is confirmed as of this writing). `.github/workflows/claude.yml` runs on `issues: opened`
-whenever the issue title or body contains the literal substring `@claude`:
+(and `assigned`) whenever the issue title or body contains the literal substring `@claude` **and**
+the issue author is `OWNER`, `MEMBER` or `COLLABORATOR` (author guard, #162):
 
 ```yaml
-if: github.event_name == 'issues' && (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude'))
+(github.event_name == 'issues' && (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude')) &&
+  contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.issue.author_association))
 ```
 
-No `assigned` step, no label-based trigger -- issue creation alone fires it. Confirmed live: a
+Comments and reviews get the same guard on `comment.author_association` / `review.author_association`.
+**The webhook PAT (see *GitHub PAT scope*) must belong to an account with `OWNER`, `MEMBER` or
+`COLLABORATOR` association** -- today it is the owner's (`Tselmeg-C`, `OWNER`). If it is ever
+replaced by a bot, a GitHub App or another user's token without that association, on-call issues
+are **silently skipped** (the `claude` job shows `skipped`, nothing comments). The guard checks the
+issue *author*, not the assigner: assigning an outsider's `@claude` issue does not run the agent; a
+maintainer who wants that must comment `@claude` on it themselves.
+
+No label-based trigger -- issue creation alone fires it. Confirmed live: a
 manually created test issue containing `@claude`
 ([#134](https://github.com/Tselmeg-C/call-center-2026/issues/134)) caused the workflow to run and
 the agent to comment, in [this run](https://github.com/Tselmeg-C/call-center-2026/actions/runs/35831411962)

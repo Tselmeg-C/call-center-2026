@@ -36,11 +36,19 @@ updates:
     groups:
       pip:
         patterns: ['*']
+        update-types: ['minor', 'patch']
 
   - package-ecosystem: npm
     directory: /
     schedule:
       interval: weekly
+    # Only minor/patch bumps are grouped. Each major bump gets its own PR so a
+    # breaking change can't hold every other update hostage (see #181).
     groups:
       npm:
         patterns: ['*']
+        update-types: ['minor', 'patch']
+    # typescript-eslint doesn't support TypeScript 7 yet; lift this once it does.
+    ignore:
+      - dependency-name: typescript
+        update-types: ['version-update:semver-major']

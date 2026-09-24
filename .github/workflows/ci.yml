@@ -36,6 +36,10 @@ jobs:
         with:
           node-version-file: .nvmrc
           cache: npm
+      - name: Railway image refs pinned to :latest
+        run: |
+          .github/workflows/test-railway-image-latest.sh --self-test
+          .github/workflows/test-railway-image-latest.sh
       - run: npm ci
       - run: npm run contract:check
       - run: npm run lint

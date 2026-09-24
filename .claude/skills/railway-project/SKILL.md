@@ -127,8 +127,9 @@ during a monitor evidence window.
 What was observed on 2026-09-24:
 - Postgres was down for about 1.2 s and came back on the same volume ("Skipping initialization").
 - The first `/health/ready` afterwards returned 503 (`error=http_error` in the log, no DSN leaked),
-  and the next one returned 200. The engines don't set `pool_pre_ping`, so each stale pooled
-  connection fails once.
+  and the next one returned 200. The engines had no `pool_pre_ping`, so each stale pooled
+  connection failed once. One of those failures was a user-facing 500, 7 minutes later.
+  Fixed in #166: every `apps/api/db_*.py` engine now sets `pool_pre_ping=True`.
 - The 60 s probe missed the outage, so no alert fired.
 
 To gather evidence, pull the Postgres deploy logs and the `api` http logs for the window via MCP,

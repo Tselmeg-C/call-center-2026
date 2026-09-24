@@ -387,6 +387,12 @@ Live check after a deploy: send 6 wrong-password logins for one fresh email to
 with `Retry-After: 900`. Then repeat it with a different `X-Real-IP: <random>` header on each
 request. It should still reach `429`, which shows the edge overwrites the header.
 
+Confirmed live on 2026-09-24 against `ddab9d5`. On the frontend path and on the direct path, with
+the header left unset or rotated on every request, the sequence was 401 x5, then 429 with
+`Retry-After: 900` ([#27 QA](https://github.com/Tselmeg-C/call-center-2026/issues/27#issuecomment-5815321770)).
+Railway's specs page doesn't say the edge overwrites the header, so this probe is the only evidence.
+Re-run it if Railway changes its edge.
+
 **This single-replica/single-region pin (`railway scale ams=1`) only applies to
 `CALL_CENTER_STORAGE=memory`** (local/dev use): in that mode these counters are held in Python
 process memory (`repo.login_failures*`), not a shared store -- `apps/api/start.sh` refuses to boot

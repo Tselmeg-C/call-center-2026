@@ -144,7 +144,7 @@ function AdminReports() {
                 <PieChart>
                   <Pie data={closureData} dataKey="value" nameKey="name" innerRadius={55} outerRadius={95}>
                     {closureData.map((_, i) => (
-                      <Cell key={i} fill={pieColors[i % pieColors.length]} />
+                      <Cell key={i} fill={pieColors[i % pieColors.length] ?? "var(--chart-1)"} />
                     ))}
                   </Pie>
                   <Tooltip

@@ -485,6 +485,18 @@ documented design. It deliberately avoids an email-only lockout, which would let
 known user out with 5 bad passwords. Once the client IP is stable, one client is throttled after
 5 failures on either path, and the 50/IP limit caps it across emails.
 
+Decision (#160, owner 2026-09-24): **detection only**, with no per-account lockout and no
+progressive delay. Any per-email block lets anyone deny a known user sign-in, and a delay in the
+sync `login` handler holds a worker thread per request, which turns into thread exhaustion. When
+one email's failures across all IPs reach **20** within the 15-minute window, the API logs one
+`WARNING` line: `login.cross_ip_failures account=<user id or none> count=20 window_minutes=15`.
+It carries no email, password or IP. Postgres mode counts from `login_failure_events` (shared by
+all replicas), and memory mode counts from process memory. Two replicas hitting the 20th failure
+at the same moment can log it twice. The alert on this line is
+[#176](https://github.com/Tselmeg-C/call-center-2026/issues/176). **Accepted residual risk:** 5
+guesses per IP per account per 15 minutes, limited by the Argon2 cost, the password policy and
+the 50/IP cap.
+
 Live check after a deploy: send 6 wrong-password logins for one fresh email to
 `https://frontend-development-83f4.up.railway.app/api/session/login`. Expect `401` x5, then `429`
 with `Retry-After: 900`. Then repeat it with a different `X-Real-IP: <random>` header on each

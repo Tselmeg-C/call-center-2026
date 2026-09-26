@@ -9,6 +9,7 @@ from uuid import uuid4
 import json
 import re
 import logging
+import threading
 from hashlib import sha256
 import hmac
 import os
@@ -569,6 +570,7 @@ def client_ip(request: Request) -> str:
 
 
 LOGIN_FAILURE_WINDOW = timedelta(minutes=15)
+CROSS_IP_FAILURE_THRESHOLD = 20  # #160: failures for one email across all IPs in LOGIN_FAILURE_WINDOW
 
 
 def _prune_stale_login_failures(now: datetime) -> None:
@@ -630,11 +632,19 @@ def login(body: Login, request: Request, response: Response) -> User:
         stored, active = None, False
     if not password_hash.verify(body.password, stored or LOGIN_DUMMY_HASH) or not active:
         if login_throttle_db is not None:
-            login_throttle_db.record_failure(email, ip, now, LOGIN_FAILURE_WINDOW)
+            email_count = login_throttle_db.record_failure(email, ip, now, LOGIN_FAILURE_WINDOW)
         else:
             _prune_stale_login_failures(now)
             repo.login_failures[key] = [stamp for stamp in repo.login_failures.get(key, []) if now - stamp < LOGIN_FAILURE_WINDOW] + [now]
             repo.login_failures_by_ip[ip] = [stamp for stamp in repo.login_failures_by_ip.get(ip, []) if now - stamp < LOGIN_FAILURE_WINDOW] + [now]
+            email_count = sum(1 for (failed_email, _), stamps in repo.login_failures.items() if failed_email == email for stamp in stamps if now - stamp < LOGIN_FAILURE_WINDOW)
+        # #160: detection only, no per-account lockout or delay (see _docs/deployment.md "Per-email
+        # throttling does not ignore the IP"). Logged once, when the count crosses the threshold;
+        # never the email, password or IP. Alerting on this line is #176.
+        # ponytail: two replicas racing on the 20th failure may both log it (or, rarely, neither); fine for a detection signal.
+        if email_count == CROSS_IP_FAILURE_THRESHOLD:
+            account = (record.id if auth_db is not None else record["id"]) if record else "none"
+            logger.warning("login.cross_ip_failures account=%s count=%d window_minutes=15", account, email_count)
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Unable to sign in.")
     if auth_db is not None:
         (login_throttle_db.clear(email, ip) if login_throttle_db is not None else repo.login_failures.pop(key, None))
@@ -1103,20 +1113,30 @@ class AssignmentRunRequest(BaseModel):
     submissionId: SubmissionId
 
 
-def provision_user(data: Provision) -> User:
+class AlreadyProvisioned(Exception):
+    pass
+
+_memory_users_lock = threading.Lock()
+
+def provision_user(data: Provision, *, first_admin: bool = False) -> User:
+    """first_admin (#160): create the user only if no user exists yet, atomically with the check,
+    else raise AlreadyProvisioned -- a DB advisory lock in postgres mode, a process lock in memory."""
     data = Provision.model_validate({key: getattr(data, key) for key in ("name", "email", "role", "password")})
     email = data.email
     # #69: hash unconditionally, before the existence check, so an already-registered email can't
     # be told apart from a new one by whether the Argon2 hash ran (same pattern as #63's login()).
     hashed = password_hash.hash(data.password)
     if auth_db is not None:
-        if auth_db.user_by_email(email): raise ValueError("normalized identity already exists")
-        row = auth_db.create_user(user_id=f"user-{uuid4()}", name=data.name, email=email, role=data.role, password_hash=hashed)
+        if not first_admin and auth_db.user_by_email(email): raise ValueError("normalized identity already exists")
+        row = auth_db.create_user(user_id=f"user-{uuid4()}", name=data.name, email=email, role=data.role, password_hash=hashed, only_if_no_users=first_admin)
+        if row is None: raise AlreadyProvisioned()
         return User(id=row.id, name=row.name, email=row.email, role=row.role, active=row.active)
-    if any(item["email"] == email for item in repo.users.values()):
-        raise ValueError("normalized identity already exists")
-    record = {"id": f"user-{len(repo.users) + 1}", "name": data.name, "email": email, "role": data.role, "active": True, "password": hashed}
-    repo.users[record["id"]] = record
+    with _memory_users_lock:
+        if first_admin and repo.users: raise AlreadyProvisioned()
+        if any(item["email"] == email for item in repo.users.values()):
+            raise ValueError("normalized identity already exists")
+        record = {"id": f"user-{uuid4()}", "name": data.name, "email": email, "role": data.role, "active": True, "password": hashed}
+        repo.users[record["id"]] = record
     return User.model_validate(record)
 
 def admin_user(user: Annotated[User, Depends(current_user)]) -> User:
@@ -1505,9 +1525,20 @@ def workload_contract(user: Annotated[User, Depends(current_user)]) -> dict:
         customers.append(Customer.model_validate(row).model_dump() | {"workloadBucket": bucket, "relevantDue": None})
     return {"asOf": datetime.now(timezone.utc).isoformat(), "today": today, "counts": counts, "customers": customers}
 
-@app.get("/admin/reports")
-def admin_reports(start: str | None = None, end: str | None = None, _: Annotated[User, Depends(admin_user)] = None) -> dict:
+def _calendar_date(value: str | None) -> str | None:
+    if value is not None: date.fromisoformat(value)  # ValueError (-> 422) on e.g. 2026-02-30
+    return value
+
+# #160: report/audit bounds are strict YYYY-MM-DD, so a bad value is a 422 (via the
+# RequestValidationError handler) instead of a Postgres 500 or a silent string mis-filter.
+DateBound = Annotated[str | None, Query(pattern=r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$"), AfterValidator(_calendar_date)]
+
+def _check_date_range(start: str | None, end: str | None) -> None:
     if start and end and start > end: raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Start date must not be after end date.")
+
+@app.get("/admin/reports")
+def admin_reports(start: DateBound = None, end: DateBound = None, _: Annotated[User, Depends(admin_user)] = None) -> dict:
+    _check_date_range(start, end)
     if customer_db is not None and activity_db is not None:
         _, daily = activity_db.report_interactions(start, end); owners: dict[str, dict] = {}
         for owner_id, status_value, count in customer_db.owner_counts():
@@ -1537,7 +1568,8 @@ def admin_reports(start: str | None = None, end: str | None = None, _: Annotated
     return {"owners": list(owners.values()), "daily": sorted(daily.values(), key=lambda item: item["date"]), "closureReasons": list(repo.reasons.values()), "followUps": followups}
 
 @app.get("/admin/audit")
-def admin_audit(actor: str | None = None, action: str | None = None, bcn: str | None = None, start: str | None = None, end: str | None = None, page: int = Query(1, ge=1), page_size: int = Query(25, ge=1, le=100), _: Annotated[User, Depends(admin_user)] = None) -> dict:
+def admin_audit(actor: str | None = None, action: str | None = None, bcn: str | None = None, start: DateBound = None, end: DateBound = None, page: int = Query(1, ge=1), page_size: int = Query(25, ge=1, le=100), _: Annotated[User, Depends(admin_user)] = None) -> dict:
+    _check_date_range(start, end)
     if assignment_db is not None:
         rows, total = assignment_db.audit(page, page_size, actor=actor, action=action, target=bcn, start=start, end=end)
         return {"items": [{"id": str(item.id), "actor": item.actor_id or "", "actorId": item.actor_id or "", "action": item.action, "target": item.target, "timestamp": item.created_at.isoformat(), "details": {key: value for key, value in item.details.items() if key in AUDIT_DETAIL_KEYS}} for item in rows], "page": page, "page_size": page_size, "total": total}
@@ -1564,7 +1596,9 @@ def operator_provision(data: Provision, x_operator_secret: Annotated[str | None,
     if repo.users or (auth_db is not None and auth_db.all_users()):
         raise HTTPException(status.HTTP_409_CONFLICT, "Initial Admin already provisioned.")
     try:
-        return provision_user(data)
+        return provision_user(data, first_admin=True)  # #160: re-checks atomically; the check above is only a fast path
+    except AlreadyProvisioned:
+        raise HTTPException(status.HTTP_409_CONFLICT, "Initial Admin already provisioned.") from None
     except ValueError as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
 

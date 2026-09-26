@@ -1079,7 +1079,7 @@ def test_operator_reset_password_route_requires_explicit_flag() -> None:
 
 
 def test_password_bounds_and_inactive_users_have_safe_failures() -> None:
-    repo.reset(); provision_user(type("P", (), {"name": "Inactive", "email": "inactive@example.test", "role": "Sales", "password": "correct horse battery staple"})()); repo.users["user-1"]["active"] = False
+    repo.reset(); inactive = provision_user(type("P", (), {"name": "Inactive", "email": "inactive@example.test", "role": "Sales", "password": "correct horse battery staple"})()); repo.users[inactive.id]["active"] = False
     client = TestClient(app, base_url="http://localhost")
     assert client.post("/session/login", json={"email": "inactive@example.test", "password": "correct horse battery staple"}).status_code == 401
     short = client.post("/session/login", json={"email": "inactive@example.test", "password": "short"})

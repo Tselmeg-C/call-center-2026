@@ -22,7 +22,7 @@ COPY apps/frontend apps/frontend
 ENV VITE_SERVICE_MODE=http
 RUN npm run build --workspace @call-center/frontend
 
-FROM nginx:1.30-alpine@sha256:985220252f3863977e468f611ef118ebd01421289dd86ee1ae99cb068c3bce2b AS runtime
+FROM nginx:1.31-alpine@sha256:713fc2ebfd92e8217db451477182ee91944b123d2b1ee9fd5a8c6e91ca6c3a11 AS runtime
 
 COPY apps/frontend/nginx/default.conf.template /etc/nginx/templates/default.conf.template
 COPY --from=build /app/apps/frontend/dist /usr/share/nginx/html

@@ -11,7 +11,7 @@
 #     -e FRONTEND_ORIGIN=http://localhost:4174 \
 #     call-center-api
 
-FROM python:3.12-slim@sha256:2f17fc044b579bab302c2e8054d3a686e2cb9a83de48e70534b94cd8ebbe06a9 AS builder
+FROM python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b AS builder
 
 WORKDIR /build
 
@@ -20,7 +20,7 @@ COPY apps/api/requirements.txt apps/api/requirements.txt
 # requirements-dev.txt and never reach this image. A changed hash fails the build.
 RUN pip install --no-cache-dir --require-hashes --prefix=/install -r apps/api/requirements.txt
 
-FROM python:3.12-slim@sha256:2f17fc044b579bab302c2e8054d3a686e2cb9a83de48e70534b94cd8ebbe06a9 AS runtime
+FROM python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b AS runtime
 
 # Non-root user the process runs as.
 RUN useradd --create-home --shell /usr/sbin/nologin appuser
